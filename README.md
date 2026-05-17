@@ -4,6 +4,13 @@ Minimal ROS 2 workspace containing only the VOXL/PX4 smoke tests from the origin
 
 ## Build
 
+If this workspace is not already overlaying an environment that provides `px4_msgs` and Auterion's PX4 ROS 2 interface library, import the minimal dependencies first:
+
+```bash
+cd starling_testing_ws
+vcs import src < dependencies.repos
+```
+
 ```bash
 cd starling_testing_ws
 source /opt/ros/humble/setup.bash
@@ -11,7 +18,7 @@ colcon build --packages-select starling_testing
 source install/setup.bash
 ```
 
-The workspace expects `px4_msgs` and `px4_ros2_cpp` to already be available in the sourced ROS environment.
+The C++ goto and mission tests use Auterion's `px4-ros2-interface-lib`, which exports the ROS package `px4_ros2_cpp`. If you already sourced another workspace that provides `px4_msgs` and `px4_ros2_cpp`, you do not need to import them here.
 
 ## Run Individual Tests
 

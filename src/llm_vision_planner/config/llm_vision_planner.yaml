@@ -1,0 +1,103 @@
+semantic_obstacle_perception:
+  ros__parameters:
+    point_cloud_topic: /voa_pc_out
+    pose_topic: /qvio
+    detection_topic: /tflite_data
+    obstacle_topic: /llm_vision/semantic_obstacles
+    goal_x: 3.0
+    goal_y: 0.0
+    goal_z: -0.45
+    min_range_m: 0.3
+    max_range_m: 6.0
+    dbscan_eps: 0.2
+    dbscan_min_samples: 8
+
+obstacle_perception:
+  ros__parameters:
+    point_cloud_topic: /voa_pc_out
+    pose_topic: /qvio
+    obstacle_topic: /llm_vision/obstacles
+    goal_x: 3.0
+    goal_y: 0.0
+    goal_z: -0.45
+    min_range_m: 0.15
+    max_range_m: 4.5
+    dbscan_eps: 0.5
+    dbscan_min_samples: 8
+
+prompt_generator:
+  ros__parameters:
+    mode: semantic
+    single_shot: true
+    initial_plan_id: 1
+    workspace_x_min: 0.0
+    workspace_x_max: 4.0
+    workspace_y_min: 0.0
+    workspace_y_max: 4.0
+    fixed_z: -0.45
+    goal_x: 3.0
+    goal_y: 0.0
+    goal_z: -0.45
+    clearance_m: 0.30
+    semantic_obstacle_topic: /llm_vision/semantic_obstacles
+    normal_obstacle_topic: /llm_vision/obstacles
+    prompt_topic: /llm_vision/prompt
+    verified_plan_topic: /llm_vision/plan_verified
+    pose_topic: /qvio
+    fresh_data_timeout_s: 2.0
+
+llm_planner:
+  ros__parameters:
+    prompt_topic: /llm_vision/prompt
+    plan_topic: /llm_vision/plan_raw
+    model_name: gpt-5-mini
+    goal_tolerance_m: 0.05
+
+path_refinement:
+  ros__parameters:
+    raw_plan_topic: /llm_vision/plan_raw
+    refined_plan_topic: /llm_vision/plan_refined
+    interpolation_spacing_m: 0.3
+    safety_margin_m: 0.40
+    nudge_epsilon_m: 0.02
+    fixed_z: -0.45
+
+path_verifier:
+  ros__parameters:
+    refined_plan_topic: /llm_vision/plan_refined
+    verified_plan_topic: /llm_vision/plan_verified
+    safety_margin_m: 0.40
+    interpolation_spacing_m: 0.3
+    cruise_speed_mps: 0.5
+    max_velocity_mps: 1.5
+    max_acceleration_mps2: 1.5
+    goal_tolerance_m: 0.05
+    progress_tolerance_m: 0.001
+
+planner_visualizer:
+  ros__parameters:
+    raw_plan_topic: /llm_vision/plan_raw
+    refined_plan_topic: /llm_vision/plan_refined
+    verified_plan_topic: /llm_vision/plan_verified
+    obstacle_topic: /llm_vision/obstacles
+    semantic_obstacle_topic: /llm_vision/semantic_obstacles
+    pose_topic: /qvio
+    output_png: /tmp/llm_vision_plot.png
+    show_window: true
+    fixed_z: -0.45
+    workspace_x_min: 0.0
+    workspace_x_max: 4.0
+    workspace_y_min: 0.0
+    workspace_y_max: 4.0
+
+llm_vision_trajectory_follower:
+  ros__parameters:
+    plan_topic: /llm_vision/plan_verified
+    speed: 0.5
+    vertical_speed: 0.5
+    accept_m: 0.35
+    start_accept_m: 0.75
+    hold_after_mission: false
+    heading: .nan
+    takeoff_altitude_amsl: .nan
+    land_after_mission: true

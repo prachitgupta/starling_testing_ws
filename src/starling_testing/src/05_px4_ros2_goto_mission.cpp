@@ -3,12 +3,13 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <string>
 
+#include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <px4_ros2/components/mode.hpp>
 #include <px4_ros2/components/mode_executor.hpp>
 #include <px4_ros2/components/node_with_mode.hpp>
 #include <px4_ros2/control/setpoint_types/multicopter/goto.hpp>
-#include <px4_ros2/odometry/local_position.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 class VoxlGotoMissionMode : public px4_ros2::ModeBase
@@ -17,8 +18,7 @@ public:
   explicit VoxlGotoMissionMode(rclcpp::Node & node)
   : ModeBase(node, Settings{"VOXL Goto Mission"}.preventArming(false)),
     node_(node),
-    goto_(std::make_shared<px4_ros2::MulticopterGotoSetpointType>(*this)),
-    local_position_(std::make_shared<px4_ros2::OdometryLocalPosition>(*this))
+    goto_(std::make_shared<px4_ros2::MulticopterGotoSetpointType>(*this))
   {
     target_.x() = static_cast<float>(node_.declare_parameter<double>("x", 0.0));
     target_.y() = static_cast<float>(node_.declare_parameter<double>("y", 2.0));
@@ -26,10 +26,27 @@ public:
     speed_ = static_cast<float>(node_.declare_parameter<double>("speed", 1.0));
     vertical_speed_ = static_cast<float>(node_.declare_parameter<double>("vertical_speed", 0.8));
     accept_m_ = static_cast<float>(node_.declare_parameter<double>("accept_m", 0.4));
+    pose_topic_ = node_.declare_parameter<std::string>("pose_topic", "/fmu/out/vehicle_odometry");
+    pose_timeout_s_ = node_.declare_parameter<double>("pose_timeout_s", 0.5);
     const double heading = node_.declare_parameter<double>("heading", std::numeric_limits<double>::quiet_NaN());
     if (std::isfinite(heading)) {
       heading_ = static_cast<float>(heading);
     }
+    odometry_sub_ = node_.create_subscription<px4_msgs::msg::VehicleOdometry>(
+      pose_topic_, rclcpp::SensorDataQoS(),
+      [this](const px4_msgs::msg::VehicleOdometry::SharedPtr msg) {
+        if (msg->pose_frame != px4_msgs::msg::VehicleOdometry::POSE_FRAME_NED) {
+          RCLCPP_WARN_THROTTLE(
+            node_.get_logger(), *node_.get_clock(), 2000,
+            "ignoring %s: pose_frame=%u, expected NED", pose_topic_.c_str(), msg->pose_frame);
+          return;
+        }
+        odometry_position_ = Eigen::Vector3f{
+          msg->position[0],
+          msg->position[1],
+          msg->position[2]};
+        last_odometry_time_ = node_.now();
+      });
   }
 
   void onActivate() override { reached_ = false; }
@@ -37,16 +54,23 @@ public:
   void updateSetpoint(float dt_s) override
   {
     (void)dt_s;
-    goto_->update(target_, heading_, speed_, vertical_speed_);
-
-    if (reached_ || !local_position_->positionXYValid() || !local_position_->positionZValid()) {
+    if (!odometryFresh()) {
+      RCLCPP_WARN_THROTTLE(
+        node_.get_logger(), *node_.get_clock(), 2000,
+        "waiting for fresh PX4 odometry on %s", pose_topic_.c_str());
       return;
     }
 
-    const float error_m = (local_position_->positionNed() - target_).norm();
+    goto_->update(target_, heading_, speed_, vertical_speed_);
+
+    if (reached_) {
+      return;
+    }
+
+    const float error_m = (*odometry_position_ - target_).norm();
     RCLCPP_INFO_THROTTLE(
       node_.get_logger(), *node_.get_clock(), 1000,
-      "goto target=(%.2f %.2f %.2f), error=%.2f m",
+      "goto target=(%.2f %.2f %.2f), odometry error=%.2f m",
       target_.x(), target_.y(), target_.z(), error_m);
 
     if (error_m <= accept_m_) {
@@ -57,14 +81,23 @@ public:
   }
 
 private:
+  bool odometryFresh() const
+  {
+    return odometry_position_.has_value() && (node_.now() - last_odometry_time_).seconds() <= pose_timeout_s_;
+  }
+
   rclcpp::Node & node_;
   std::shared_ptr<px4_ros2::MulticopterGotoSetpointType> goto_;
-  std::shared_ptr<px4_ros2::OdometryLocalPosition> local_position_;
+  rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odometry_sub_;
+  std::optional<Eigen::Vector3f> odometry_position_{};
+  rclcpp::Time last_odometry_time_{0, 0, RCL_ROS_TIME};
   Eigen::Vector3f target_{0.0f, 2.0f, -1.5f};
   std::optional<float> heading_{};
+  std::string pose_topic_{"/fmu/out/vehicle_odometry"};
   float speed_{1.0f};
   float vertical_speed_{0.8f};
   float accept_m_{0.4f};
+  double pose_timeout_s_{0.5};
   bool reached_{false};
 };
 
@@ -140,4 +173,3 @@ int main(int argc, char * argv[])
   rclcpp::shutdown();
   return 0;
 }
-

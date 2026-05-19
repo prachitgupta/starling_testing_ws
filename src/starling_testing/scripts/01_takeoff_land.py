@@ -9,8 +9,8 @@ from rclpy.node import Node
 class TakeoffLand(Node):
     def __init__(self):
         super().__init__("voxl_takeoff_land")
-        self.declare_parameter("takeoff_alt_m", 0.5)
-        self.declare_parameter("hold_s", 5.0)
+        self.declare_parameter("takeoff_alt_m", 0.1)
+        self.declare_parameter("hold_s", 30.0)
         self.pub = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", 10)
 
     def cmd(self, command, p1=0.0, p2=0.0, p3=0.0, p4=0.0, p5=0.0, p6=0.0, p7=0.0):

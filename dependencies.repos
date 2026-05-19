@@ -2,8 +2,12 @@ repositories:
   src/px4-ros2-interface-lib:
     type: git
     url: https://github.com/Auterion/px4-ros2-interface-lib
-    version: main
+    version: 4fb88a1b3da69b417ceb1e42d4870a33e58938c2
   src/px4_msgs:
     type: git
     url: https://github.com/PX4/px4_msgs.git
-    version: main
+    version: 8c476cde60d60ce4d508205bfd2e7b2162fd7a4b
+  src/voxl-mpa-to-ros2:
+    type: git
+    url: https://gitlab.com/voxl-public/voxl-sdk/utilities/voxl-mpa-to-ros2.git
+    version: b2f7b769d2ea39f7587257a64e416c4fa6a4af23

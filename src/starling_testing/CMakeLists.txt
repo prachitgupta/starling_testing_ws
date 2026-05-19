@@ -12,12 +12,12 @@ find_package(px4_ros2_cpp REQUIRED)
 
 add_executable(voxl_px4_ros2_goto_waypoint_cpp src/04_px4_ros2_goto_waypoint.cpp)
 target_compile_features(voxl_px4_ros2_goto_waypoint_cpp PUBLIC cxx_std_17)
-ament_target_dependencies(voxl_px4_ros2_goto_waypoint_cpp rclcpp)
+ament_target_dependencies(voxl_px4_ros2_goto_waypoint_cpp rclcpp px4_msgs)
 target_link_libraries(voxl_px4_ros2_goto_waypoint_cpp px4_ros2_cpp::px4_ros2_cpp)
 
 add_executable(voxl_px4_ros2_goto_mission_cpp src/05_px4_ros2_goto_mission.cpp)
 target_compile_features(voxl_px4_ros2_goto_mission_cpp PUBLIC cxx_std_17)
-ament_target_dependencies(voxl_px4_ros2_goto_mission_cpp rclcpp)
+ament_target_dependencies(voxl_px4_ros2_goto_mission_cpp rclcpp px4_msgs)
 target_link_libraries(voxl_px4_ros2_goto_mission_cpp px4_ros2_cpp::px4_ros2_cpp)
 
 install(TARGETS
@@ -35,4 +35,3 @@ install(PROGRAMS
 )
 
 ament_package()
-

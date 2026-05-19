@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
+import math
+import time
+
 import rclpy
-from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleLocalPosition
+from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleOdometry
 from rclpy.node import Node
+from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+
+ODOMETRY_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=10,
+)
 
 
 class TrajectoryWaypoint(Node):
@@ -12,27 +22,50 @@ class TrajectoryWaypoint(Node):
         self.declare_parameter("z", -0.5)
         self.declare_parameter("arm_and_offboard", False)
         self.declare_parameter("move_after_s", 3.0)
+        self.declare_parameter("pose_topic", "/fmu/out/vehicle_odometry")
+        self.declare_parameter("pose_timeout_s", 0.5)
         self.offboard = self.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
         self.setpoint = self.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
         self.command = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", 10)
-        self.local_position_sub = self.create_subscription(
-            VehicleLocalPosition, "/fmu/out/vehicle_local_position", self.local_position_callback, 10)
+        self.pose_topic = str(self.get_parameter("pose_topic").value)
+        self.pose_sub = self.create_subscription(VehicleOdometry, self.pose_topic, self.pose_callback, ODOMETRY_QOS)
         self.count = 0
-        self.local_position = None
+        self.odometry = None
         self.hold_xy = None
         self.hold_heading = float("nan")
         self.create_timer(0.05, self.tick)
 
-    def local_position_callback(self, msg):
-        if not msg.xy_valid or not msg.z_valid:
+    def pose_callback(self, msg):
+        if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
+            self.get_logger().warn(
+                f"ignoring {self.pose_topic}: pose_frame={msg.pose_frame}, expected NED",
+                throttle_duration_sec=2.0,
+            )
             return
-        self.local_position = msg
+        self.odometry = {
+            "x": float(msg.position[0]),
+            "y": float(msg.position[1]),
+            "z": float(msg.position[2]),
+            "yaw": self.quat_to_yaw(msg.q[1], msg.q[2], msg.q[3], msg.q[0]),
+            "stamp": time.time(),
+        }
         if self.hold_xy is None:
-            self.hold_xy = (float(msg.x), float(msg.y))
-            if msg.heading_good_for_control:
-                self.hold_heading = float(msg.heading)
+            self.hold_xy = (self.odometry["x"], self.odometry["y"])
+            self.hold_heading = self.odometry["yaw"]
             self.get_logger().info(
-                f"holding current XY before move: x={self.hold_xy[0]:.2f}, y={self.hold_xy[1]:.2f}")
+                f"holding current odometry XY before move: x={self.hold_xy[0]:.2f}, y={self.hold_xy[1]:.2f}")
+
+    @staticmethod
+    def quat_to_yaw(x, y, z, w):
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        return math.atan2(siny_cosp, cosy_cosp)
+
+    def odometry_fresh(self):
+        if self.odometry is None:
+            return False
+        timeout_s = float(self.get_parameter("pose_timeout_s").value)
+        return time.time() - self.odometry["stamp"] <= timeout_s
 
     def vehicle_command(self, command, p1=0.0, p2=0.0):
         msg = VehicleCommand()
@@ -46,8 +79,8 @@ class TrajectoryWaypoint(Node):
         self.command.publish(msg)
 
     def tick(self):
-        if self.local_position is None or self.hold_xy is None:
-            self.get_logger().warn("waiting for /fmu/out/vehicle_local_position", throttle_duration_sec=2.0)
+        if not self.odometry_fresh() or self.hold_xy is None:
+            self.get_logger().warn(f"waiting for fresh PX4 odometry on {self.pose_topic}", throttle_duration_sec=2.0)
             return
 
         now = int(self.get_clock().now().nanoseconds / 1000)
@@ -92,4 +125,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

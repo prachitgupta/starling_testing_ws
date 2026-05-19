@@ -3,4 +3,6 @@ install/
 log/
 __pycache__/
 *.pyc
-
+src/px4-ros2-interface-lib/
+src/px4_msgs/
+src/voxl-mpa-to-ros2/

@@ -6,6 +6,7 @@ import time
 import numpy as np
 import rclpy
 import sensor_msgs_py.point_cloud2 as pc2
+from nav_msgs.msg import Odometry
 from px4_msgs.msg import VehicleOdometry
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
@@ -44,6 +45,7 @@ class SemanticObstaclePerception(Node):
                 ("detection_topic", "/tflite_data"),
                 ("point_cloud_topic", "/tof_pc"),
                 ("pose_topic", "/fmu/out/vehicle_odometry"),
+                ("pose_msg_type", "px4_vehicle_odometry"),
                 ("obstacle_topic", "/llm_vision/semantic_obstacles"),
                 ("goal_x", 3.0),
                 ("goal_y", 0.0),
@@ -122,12 +124,22 @@ class SemanticObstaclePerception(Node):
             self.point_cloud_callback,
             BEST_EFFORT_QOS,
         )
-        self.create_subscription(
-            VehicleOdometry,
-            str(self.get_parameter("pose_topic").value),
-            self.pose_callback,
-            BEST_EFFORT_QOS,
-        )
+        pose_topic = str(self.get_parameter("pose_topic").value)
+        pose_msg_type = str(self.get_parameter("pose_msg_type").value).lower()
+        if pose_msg_type in ("nav_msgs/odometry", "odometry", "qvio"):
+            self.create_subscription(
+                Odometry,
+                pose_topic,
+                self.odom_pose_callback,
+                BEST_EFFORT_QOS,
+            )
+        else:
+            self.create_subscription(
+                VehicleOdometry,
+                pose_topic,
+                self.pose_callback,
+                BEST_EFFORT_QOS,
+            )
         self.obstacle_pub = self.create_publisher(
             String,
             str(self.get_parameter("obstacle_topic").value),
@@ -158,6 +170,20 @@ class SemanticObstaclePerception(Node):
                 2.0 * (q[0] * q[3] + q[1] * q[2]),
                 1.0 - 2.0 * (q[2] * q[2] + q[3] * q[3]),
             ),
+        }
+
+    def odom_pose_callback(self, msg):
+        q = msg.pose.pose.orientation
+        self.pose = {
+            "position": np.array(
+                [
+                    msg.pose.pose.position.x,
+                    msg.pose.pose.position.y,
+                    msg.pose.pose.position.z,
+                ],
+                dtype=float,
+            ),
+            "yaw": self.yaw_from_xyzw(q.x, q.y, q.z, q.w),
         }
 
     def publish_obstacles(self):
@@ -439,6 +465,13 @@ class SemanticObstaclePerception(Node):
     def yaw_matrix(yaw):
         c, s = math.cos(yaw), math.sin(yaw)
         return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+
+    @staticmethod
+    def yaw_from_xyzw(x, y, z, w):
+        return math.atan2(
+            2.0 * (w * z + x * y),
+            1.0 - 2.0 * (y * y + z * z),
+        )
 
 
 def main():

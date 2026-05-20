@@ -93,11 +93,13 @@ planner_visualizer:
 llm_vision_trajectory_follower:
   ros__parameters:
     plan_topic: /llm_vision/plan_verified
+    pose_topic: /fmu/out/vehicle_odometry
     speed: 0.5
-    vertical_speed: 0.5
     accept_m: 0.1
     start_accept_m: 0.75
-    hold_after_mission: false
-    heading: .nan
-    takeoff_altitude_amsl: .nan
+    pose_timeout_s: 0.5
+    prime_s: 1.5
+    auto_arm: true
     land_after_mission: true
+    hold_after_mission: false
+    min_segment_duration_s: 0.8

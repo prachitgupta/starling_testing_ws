@@ -6,4 +6,6 @@ __pycache__/
 src/px4-ros2-interface-lib/
 src/px4_msgs/
 src/voxl-mpa-to-ros2/
-src/papers/
+src/papers/*.aux
+src/papers/*.log
+src/papers/*.out

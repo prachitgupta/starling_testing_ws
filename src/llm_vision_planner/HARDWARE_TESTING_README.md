@@ -4,7 +4,7 @@
 
 ```bash
 cd ~/Desktop/starling_testing_ws
-colcon build --packages-select llm_vision_planner voxl_msgs
+colcon build --packages-select px4_msgs starling_testing llm_vision_planner
 source install/setup.bash
 ```
 
@@ -15,8 +15,6 @@ nano src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
 
 Current file is set for semantic mode, goal `(3.0, 0.0, -0.45)`, fixed `z=-0.45`, and `0.40 m` safety margin.
-
-Before flight, set `llm_vision_trajectory_follower.takeoff_altitude_amsl` to a real value, or pass it on the command line in step 5.
 
 ## 3. Confirm Required Hardware Topics
 
@@ -47,18 +45,17 @@ ros2 launch llm_vision_planner full_plot.launch.py mode:=normal
 ```bash
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
-ros2 run llm_vision_planner trajectory_follower_cpp --ros-args \
-  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml \
-  -p takeoff_altitude_amsl:=1.5
+ros2 run llm_vision_planner trajectory_follower.py --ros-args \
+  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
 
 Expected sequence:
 
-1. PX4 pre-arm checks pass.
-2. Vehicle arms and takes off to `takeoff_altitude_amsl`.
-3. Follower holds post-takeoff position.
+1. Follower waits for fresh `/fmu/out/vehicle_odometry`.
+2. Follower primes PX4 Offboard mode with hold setpoints.
+3. Vehicle switches to Offboard and arms if `auto_arm: true`.
 4. Planner publishes `/llm_vision/plan_verified` with `passed=true`.
-5. Follower latches the verified trajectory and flies it.
+5. Follower latches the verified trajectory, smooths each segment with Bezier position/velocity setpoints, and flies it.
 6. Vehicle lands if `land_after_mission: true`.
 
 ## 6. Quick Monitoring

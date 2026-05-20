@@ -4,24 +4,24 @@ import math
 import time
 
 import rclpy
-from nav_msgs.msg import Odometry
+from px4_msgs.msg import VehicleOdometry
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import String
 
 DEFAULT_WORKSPACE_X = (0.0, 4.0)
 DEFAULT_WORKSPACE_Y = (0.0, 4.0)
-DEFAULT_FIXED_Z = -0.2
-DEFAULT_GOAL = (3.0, 1.0, DEFAULT_FIXED_Z)
-DEFAULT_CLEARANCE_M = 0.30
+DEFAULT_FIXED_Z = -0.45
+DEFAULT_GOAL = (3.0, 0.0, -0.45)
+DEFAULT_CLEARANCE_M = 0.40
 DEFAULT_SEMANTIC_OBSTACLE_TOPIC = "/llm_vision/semantic_obstacles"
 DEFAULT_NORMAL_OBSTACLE_TOPIC = "/llm_vision/obstacles"
 DEFAULT_PROMPT_TOPIC = "/llm_vision/prompt"
 DEFAULT_VERIFIED_PLAN_TOPIC = "/llm_vision/plan_verified"
 DEFAULT_MISSION_STATE_TOPIC = "/llm_vision/mission_state"
-DEFAULT_POSE_TOPIC = "/qvio"
+DEFAULT_POSE_TOPIC = "/fmu/out/vehicle_odometry"
 DEFAULT_FRESH_DATA_TIMEOUT_S = 2.0
-QVIO_QOS = QoSProfile(
+ODOM_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.BEST_EFFORT,
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=10,
@@ -58,6 +58,8 @@ class PromptGenerator(Node):
         self.declare_parameter("required_mission_state", "HOLDING_FOR_PLAN")
         self.declare_parameter("require_mission_state", True)
         self.declare_parameter("snapshot_after_hover_s", 1.0)
+        self.declare_parameter("prefer_nonempty_obstacle_snapshot", True)
+        self.declare_parameter("nonempty_obstacle_wait_s", 3.0)
         self.declare_parameter("start_drift_replan_m", 0.25)
         self.declare_parameter("feedback_enabled", True)
         self.declare_parameter("pose_topic", DEFAULT_POSE_TOPIC)
@@ -97,6 +99,8 @@ class PromptGenerator(Node):
         self.required_mission_state = str(self.get_parameter("required_mission_state").value)
         self.require_mission_state = bool(self.get_parameter("require_mission_state").value)
         self.snapshot_after_hover_s = float(self.get_parameter("snapshot_after_hover_s").value)
+        self.prefer_nonempty_obstacle_snapshot = bool(self.get_parameter("prefer_nonempty_obstacle_snapshot").value)
+        self.nonempty_obstacle_wait_s = float(self.get_parameter("nonempty_obstacle_wait_s").value)
         self.start_drift_replan_m = float(self.get_parameter("start_drift_replan_m").value)
         self.feedback_enabled = bool(self.get_parameter("feedback_enabled").value)
         self.pose_topic = str(self.get_parameter("pose_topic").value)
@@ -105,7 +109,7 @@ class PromptGenerator(Node):
         self.waiting_for_verification = False
         self.single_shot_complete = False
 
-        self.pose_sub = self.create_subscription(Odometry, self.pose_topic, self.pose_callback, QVIO_QOS)
+        self.pose_sub = self.create_subscription(VehicleOdometry, self.pose_topic, self.pose_callback, ODOM_QOS)
         self.mission_state_sub = self.create_subscription(String, self.mission_state_topic, self.mission_state_callback, 10)
         self.obstacle_sub = self.create_subscription(String, self.obstacle_topic, self.obstacle_callback, 10)
         self.verified_sub = self.create_subscription(String, self.verified_plan_topic, self.verified_callback, 10)
@@ -128,12 +132,13 @@ class PromptGenerator(Node):
         return str(self.get_parameter("semantic_obstacle_topic").value)
 
     def pose_callback(self, msg):
-        position = msg.pose.pose.position
-        orientation = msg.pose.pose.orientation
-        heading_deg = math.degrees(self.quat_to_yaw(orientation.x, orientation.y, orientation.z, orientation.w))
+        if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
+            self.get_logger().warning("Ignoring VehicleOdometry that is not in NED pose frame.", throttle_duration_sec=5.0)
+            return
+        heading_deg = math.degrees(self.quat_to_yaw(msg.q[1], msg.q[2], msg.q[3], msg.q[0]))
         self.current_pose = {
-            "x": round(position.x, 2),
-            "y": round(position.y, 2),
+            "x": round(float(msg.position[0]), 2),
+            "y": round(float(msg.position[1]), 2),
             "z": self.fixed_z,
             "heading_deg": round(heading_deg, 1),
             "stamp": time.time(),
@@ -298,7 +303,25 @@ class PromptGenerator(Node):
                 throttle_duration_sec=5.0,
             )
             return False
+        if needs_obstacle_snapshot and self.should_wait_for_nonempty_obstacles(now):
+            self.get_logger().info(
+                f"Waiting briefly for a non-empty obstacle snapshot on {self.obstacle_topic}.",
+                throttle_duration_sec=1.0,
+            )
+            return False
         return True
+
+    def should_wait_for_nonempty_obstacles(self, now):
+        if not self.prefer_nonempty_obstacle_snapshot:
+            return False
+        if self.latest_obstacle_msg is None:
+            return False
+        if self.latest_obstacle_msg.get("obstacles", []):
+            return False
+        if self.hover_started_s is None:
+            return False
+        wait_deadline = self.hover_started_s + self.snapshot_after_hover_s + self.nonempty_obstacle_wait_s
+        return now < wait_deadline
 
     def snapshot_context(self):
         start = self.build_start()

@@ -6,7 +6,7 @@ import os
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import rclpy
-from nav_msgs.msg import Odometry
+from px4_msgs.msg import VehicleOdometry
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import String
@@ -16,11 +16,11 @@ REFINED_PLAN_TOPIC = "/llm_vision/plan_refined"
 VERIFIED_PLAN_TOPIC = "/llm_vision/plan_verified"
 OBSTACLE_TOPIC = "/llm_vision/obstacles"
 SEMANTIC_OBSTACLE_TOPIC = "/llm_vision/semantic_obstacles"
-POSE_TOPIC = "/qvio"
+POSE_TOPIC = "/fmu/out/vehicle_odometry"
 DEFAULT_OUTPUT_PNG = "/tmp/llm_vision_plot.png"
-DEFAULT_Z = -0.2
+DEFAULT_Z = -0.45
 
-QVIO_QOS = QoSProfile(
+ODOM_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.BEST_EFFORT,
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=10,
@@ -80,7 +80,7 @@ class PlannerVisualizer(Node):
         self.verified_sub = self.create_subscription(String, self.verified_plan_topic, self.verified_plan_callback, 10)
         self.obstacle_sub = self.create_subscription(String, self.obstacle_topic, self.obstacle_callback, 10)
         self.semantic_obstacle_sub = self.create_subscription(String, self.semantic_obstacle_topic, self.obstacle_callback, 10)
-        self.pose_sub = self.create_subscription(Odometry, self.pose_topic, self.pose_callback, QVIO_QOS)
+        self.pose_sub = self.create_subscription(VehicleOdometry, self.pose_topic, self.pose_callback, ODOM_QOS)
         self.timer = self.create_timer(0.5, self.render)
 
         self.get_logger().info(
@@ -134,11 +134,13 @@ class PlannerVisualizer(Node):
             self.current_pose = pose
 
     def pose_callback(self, msg):
-        position = msg.pose.pose.position
+        if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
+            self.get_logger().warning("Ignoring VehicleOdometry that is not in NED pose frame.", throttle_duration_sec=5.0)
+            return
         self.current_pose = {
-            "x": float(position.x),
-            "y": float(position.y),
-            "z": float(position.z) if not math.isnan(float(position.z)) else self.fixed_z,
+            "x": float(msg.position[0]),
+            "y": float(msg.position[1]),
+            "z": float(msg.position[2]) if not math.isnan(float(msg.position[2])) else self.fixed_z,
         }
 
     def render(self):

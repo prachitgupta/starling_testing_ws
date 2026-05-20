@@ -9,10 +9,10 @@ from std_msgs.msg import String
 
 RAW_PLAN_TOPIC = "/llm_vision/plan_raw"
 REFINED_PLAN_TOPIC = "/llm_vision/plan_refined"
-INTERPOLATION_SPACING_M = 0.5
-SAFETY_MARGIN_M = 0.30
+INTERPOLATION_SPACING_M = 0.3
+SAFETY_MARGIN_M = 0.40
 NUDGE_EPSILON_M = 0.02
-FIXED_Z = -0.2
+FIXED_Z = -0.45
 
 
 class PathRefinement(Node):

@@ -49,14 +49,58 @@ ros2 topic echo /llm_vision/plan_verified
 
 ## Hardware Mission
 
+Connect to the Starling/VOXL over USB-C/Wi-Fi and start the ModalAI MPA-to-ROS 2 bridge on the vehicle:
+
+```bash
+ssh root@192.168.8.1
+```
+
+When prompted:
+
+```text
+root@192.168.8.1's password: oelinux123
+```
+
+On the VOXL shell:
+
+```bash
+source /opt/ros/foxy/setup.bash
+source /opt/ros/foxy/mpa_to_ros2/install/setup.bash
+ros2 run voxl_mpa_to_ros2 voxl_mpa_to_ros2_node
+```
+
+If the node name differs on the installed SDK image, list the available executable and run the one shown:
+
+```bash
+ros2 pkg executables voxl_mpa_to_ros2
+ros2 run voxl_mpa_to_ros2 voxl_mpa_to_ros2
+```
+
 Required hardware topics:
 
 ```bash
 ros2 topic hz /fmu/out/vehicle_odometry
-ros2 topic hz /qvio
-ros2 topic hz /voa_pc_out
 ros2 topic hz /tflite_data
+ros2 topic hz /tof_pc
 ```
+
+In semantic mode, `perception_detection.py` fuses `/tflite_data` detections with metric XYZ samples from the organized `/tof_pc` point cloud, then places obstacles in the same PX4 local NED frame used by `/fmu/out/vehicle_odometry`.
+
+ModalAI calibration notes: camera extrinsics are stored in `/etc/modalai/extrinsics.conf`, and tracking-front intrinsics can be inspected with:
+
+```bash
+cat /data/modalai/opencv_tracking_front_intrinsics.yml
+```
+
+Object detection debug note: if `/tflite_data` is not updating, edit `/etc/modalai/voxl-tflite-server.conf` with `vi`, change the input pipe from `hires/` to `hires_small_color`, then restart and inspect frames:
+
+```bash
+sudo vi /etc/modalai/voxl-tflite-server.conf
+sudo systemctl restart voxl-tflite-server
+voxl-inspect-cam tflite
+```
+
+Offboard setup note: disable the default Figure 8 sequence before running this mission by setting `offboard` from `figure8` to `off` IN vi /etc/modalai/voxl-vision-hub.conf
 
 Start the planner:
 

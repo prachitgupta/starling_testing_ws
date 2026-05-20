@@ -57,6 +57,9 @@ class PathVerifier(Node):
         output = dict(payload)
         output["metrics"] = metrics
         output["passed"] = metrics["passed"]
+        output["failed_constraints"] = metrics["failed_constraints"]
+        output["thresholds"] = metrics["thresholds"]
+        output["verification_feedback_table"] = metrics["feedback_table"]
         output["timestamp_verified"] = time.time()
 
         out = String()
@@ -87,17 +90,33 @@ class PathVerifier(Node):
         max_speed, max_accel = self.kinematic_metrics(waypoints)
         smoothness = self.smoothness_score(waypoints)
 
-        passed = all(
-            (
-                bool(waypoints),
-                in_workspace,
-                collision_free,
-                goal_match,
-                monotonic_progress,
-                max_speed <= self.max_velocity_mps,
-                max_accel <= self.max_acceleration_mps2,
-            )
+        checks = {
+            "has_waypoints": bool(waypoints),
+            "in_workspace": in_workspace,
+            "collision_free": collision_free,
+            "goal_match": goal_match,
+            "monotonic_goal_progress": monotonic_progress,
+            "max_segment_speed": max_speed <= self.max_velocity_mps,
+            "max_segment_accel": max_accel <= self.max_acceleration_mps2,
+        }
+        failed_constraints = [name for name, ok in checks.items() if not ok]
+        thresholds = {
+            "min_clearance_m": self.safety_margin_m,
+            "max_segment_speed": self.max_velocity_mps,
+            "max_segment_accel": self.max_acceleration_mps2,
+            "goal_tolerance_m": self.goal_tolerance_m,
+            "progress_tolerance_m": self.progress_tolerance_m,
+        }
+        feedback_table = self.feedback_table(
+            min_clearance,
+            max_speed,
+            max_accel,
+            in_workspace,
+            collision_free,
+            goal_match,
+            monotonic_progress,
         )
+        passed = not failed_constraints
 
         return {
             "collision_free": collision_free,
@@ -110,7 +129,25 @@ class PathVerifier(Node):
             "goal_match": goal_match,
             "in_workspace": in_workspace,
             "nominal_dt_s": round(self.nominal_dt_s, 3),
+            "failed_constraints": failed_constraints,
+            "thresholds": thresholds,
+            "feedback_table": feedback_table,
         }
+
+    def feedback_table(self, min_clearance, max_speed, max_accel, in_workspace, collision_free, goal_match, monotonic_progress):
+        rows = [
+            ("in_workspace", str(in_workspace), "true", in_workspace),
+            ("collision_free", str(collision_free), "true", collision_free),
+            ("min_clearance_m", f"{min_clearance:.3f}", f">= {self.safety_margin_m:.3f}", min_clearance >= self.safety_margin_m),
+            ("goal_match", str(goal_match), "true", goal_match),
+            ("monotonic_goal_progress", str(monotonic_progress), "true", monotonic_progress),
+            ("max_segment_speed", f"{max_speed:.3f}", f"<= {self.max_velocity_mps:.3f}", max_speed <= self.max_velocity_mps),
+            ("max_segment_accel", f"{max_accel:.3f}", f"<= {self.max_acceleration_mps2:.3f}", max_accel <= self.max_acceleration_mps2),
+        ]
+        lines = ["| Metric | Value | Required | Status |", "|---|---:|---:|---|"]
+        for metric, value, required, ok in rows:
+            lines.append(f"| {metric} | {value} | {required} | {'PASS' if ok else 'FAIL'} |")
+        return "\n".join(lines)
 
     @staticmethod
     def point_in_workspace(point, workspace):

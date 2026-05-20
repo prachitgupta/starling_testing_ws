@@ -65,27 +65,34 @@ class TrajectoryFollower(Node):
     def __init__(self):
         super().__init__("llm_vision_trajectory_follower")
         self.declare_parameter("plan_topic", "/llm_vision/plan_verified")
+        self.declare_parameter("mission_state_topic", "/llm_vision/mission_state")
         self.declare_parameter("pose_topic", "/fmu/out/vehicle_odometry")
         self.declare_parameter("speed", 0.5)
         self.declare_parameter("accept_m", 0.1)
         self.declare_parameter("start_accept_m", 0.75)
         self.declare_parameter("pose_timeout_s", 0.5)
         self.declare_parameter("prime_s", 1.5)
+        self.declare_parameter("takeoff_z", -0.45)
+        self.declare_parameter("takeoff_accept_m", 0.10)
+        self.declare_parameter("takeoff_settle_s", 1.0)
         self.declare_parameter("auto_arm", True)
         self.declare_parameter("land_after_mission", True)
         self.declare_parameter("hold_after_mission", False)
         self.declare_parameter("min_segment_duration_s", 0.8)
 
         self.plan_topic = str(self.get_parameter("plan_topic").value)
+        self.mission_state_topic = str(self.get_parameter("mission_state_topic").value)
         self.pose_topic = str(self.get_parameter("pose_topic").value)
 
         self.offboard_pub = self.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
         self.setpoint_pub = self.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
         self.command_pub = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", 10)
+        self.mission_state_pub = self.create_publisher(String, self.mission_state_topic, 10)
         self.odom_sub = self.create_subscription(VehicleOdometry, self.pose_topic, self.odom_callback, ODOM_QOS)
         self.plan_sub = self.create_subscription(String, self.plan_topic, self.plan_callback, 10)
 
         self.position = None
+        self.yaw = math.nan
         self.last_odom_s = 0.0
         self.state = "WAIT_POSE"
         self.state_start_s = time.time()
@@ -99,7 +106,14 @@ class TrajectoryFollower(Node):
         if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
             return
         self.position = [float(msg.position[0]), float(msg.position[1]), float(msg.position[2])]
+        self.yaw = self.quat_to_yaw(msg.q[1], msg.q[2], msg.q[3], msg.q[0])
         self.last_odom_s = time.time()
+
+    @staticmethod
+    def quat_to_yaw(x, y, z, w):
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        return math.atan2(siny_cosp, cosy_cosp)
 
     def plan_callback(self, msg):
         if self.state != "WAIT_PLAN":
@@ -142,19 +156,22 @@ class TrajectoryFollower(Node):
     def tick(self):
         if not self.odom_fresh():
             self.get_logger().warn(f"waiting for fresh PX4 odometry on {self.pose_topic}", throttle_duration_sec=2.0)
+            self.publish_mission_state("WAITING_FOR_POSE")
             return
 
         position_setpoint = self.hold_setpoint or self.position
         velocity_setpoint = [math.nan, math.nan, math.nan]
 
         if self.state == "WAIT_POSE":
-            self.hold_setpoint = list(self.position)
             self.transition("PRIME")
 
         elif self.state == "PRIME" and self.elapsed() >= float(self.get_parameter("prime_s").value):
             if bool(self.get_parameter("auto_arm").value):
                 self.command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
                 self.command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
+            self.transition("TAKEOFF")
+
+        elif self.state == "TAKEOFF" and self.takeoff_settled():
             self.transition("WAIT_PLAN")
             self.get_logger().info(f"waiting for passed=true trajectory on {self.plan_topic}")
 
@@ -165,6 +182,18 @@ class TrajectoryFollower(Node):
             position_setpoint = self.waypoints[-1]
 
         self.publish_setpoint(position_setpoint, velocity_setpoint)
+        self.publish_mission_state(self.public_state())
+
+    def public_state(self):
+        if self.state == "WAIT_PLAN":
+            return "HOLDING_FOR_PLAN"
+        if self.state == "TRACK":
+            return "TRACKING"
+        if self.state == "TAKEOFF":
+            return "TAKING_OFF"
+        if self.state == "LAND":
+            return "LANDING"
+        return self.state
 
     def segment_setpoint(self):
         if self.segment_index >= len(self.waypoints) - 1:
@@ -218,6 +247,15 @@ class TrajectoryFollower(Node):
             self.get_logger().info("final waypoint reached; landing")
         return final, [0.0, 0.0, 0.0]
 
+    def takeoff_settled(self):
+        if self.hold_setpoint is None:
+            return False
+        z_error = abs(self.position[2] - self.hold_setpoint[2])
+        return (
+            z_error <= float(self.get_parameter("takeoff_accept_m").value)
+            and self.elapsed() >= float(self.get_parameter("takeoff_settle_s").value)
+        )
+
     def odom_fresh(self):
         return self.position is not None and time.time() - self.last_odom_s <= float(self.get_parameter("pose_timeout_s").value)
 
@@ -238,6 +276,22 @@ class TrajectoryFollower(Node):
         setpoint.yaw = math.nan
         self.setpoint_pub.publish(setpoint)
 
+    def publish_mission_state(self, state):
+        msg = String()
+        msg.data = json.dumps(
+            {
+                "state": state,
+                "position": {
+                    "x": self.position[0] if self.position else None,
+                    "y": self.position[1] if self.position else None,
+                    "z": self.position[2] if self.position else None,
+                },
+                "heading_deg": math.degrees(self.yaw) if math.isfinite(self.yaw) else None,
+                "timestamp": time.time(),
+            }
+        )
+        self.mission_state_pub.publish(msg)
+
     def command(self, command, p1=0.0, p2=0.0):
         msg = VehicleCommand()
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
@@ -252,6 +306,12 @@ class TrajectoryFollower(Node):
         self.command_pub.publish(msg)
 
     def transition(self, state):
+        if state == "PRIME" and self.position is not None:
+            self.hold_setpoint = [
+                self.position[0],
+                self.position[1],
+                float(self.get_parameter("takeoff_z").value),
+            ]
         self.state = state
         self.state_start_s = time.time()
         self.get_logger().info(f"state -> {state}")

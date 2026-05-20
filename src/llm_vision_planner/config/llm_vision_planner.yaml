@@ -43,6 +43,12 @@ prompt_generator:
     normal_obstacle_topic: /llm_vision/obstacles
     prompt_topic: /llm_vision/prompt
     verified_plan_topic: /llm_vision/plan_verified
+    mission_state_topic: /llm_vision/mission_state
+    required_mission_state: HOLDING_FOR_PLAN
+    require_mission_state: true
+    snapshot_after_hover_s: 1.0
+    start_drift_replan_m: 0.25
+    feedback_enabled: true
     pose_topic: /qvio
     fresh_data_timeout_s: 2.0
 
@@ -93,12 +99,16 @@ planner_visualizer:
 llm_vision_trajectory_follower:
   ros__parameters:
     plan_topic: /llm_vision/plan_verified
+    mission_state_topic: /llm_vision/mission_state
     pose_topic: /fmu/out/vehicle_odometry
     speed: 0.5
     accept_m: 0.1
     start_accept_m: 0.75
     pose_timeout_s: 0.5
     prime_s: 1.5
+    takeoff_z: -0.45
+    takeoff_accept_m: 0.10
+    takeoff_settle_s: 1.0
     auto_arm: true
     land_after_mission: true
     hold_after_mission: false

@@ -1,20 +1,19 @@
-# Starling VOXL Testing Workspace
+# Starling LLM Vision Planning Workspace
 
-ROS 2 Humble workspace for testing VOXL/PX4 control paths and running the LLM verified trajectory follower.
+ROS 2 Humble workspace for a Python-only PX4 Offboard UAV planning pipeline on the ModalAI Starling platform.
 
-The workspace is intentionally minimal. A normal build discovers only:
+The active packages are:
 
-- `px4_msgs`
-- `px4_ros2_cpp`
-- `voxl_msgs`
-- `starling_testing`
-- `llm_vision_planner`
+- `px4_msgs`: PX4 ROS message definitions.
+- `voxl_msgs`: semantic detector message definitions from VOXL.
+- `starling_testing`: three minimal Python flight smoke tests.
+- `llm_vision_planner`: perception, prompt generation, LLM planning, refinement, verification, visualization, and Python Offboard trajectory following.
 
-The PX4 ROS 2 interface library is patched during setup so it uses VOXL's unversioned PX4 topic names by default, for example `/fmu/out/vehicle_status` instead of `/fmu/out/vehicle_status_v1`.
+## Environment
 
-## Fresh Ubuntu Setup
+Tested with Ubuntu 22.04, ROS 2 Humble, PX4/VOXL topics, and Python 3.
 
-Use Ubuntu 22.04 with ROS 2 Humble. After installing ROS Humble, install the workspace tools and system dependencies:
+Install workspace tools:
 
 ```bash
 sudo apt update
@@ -23,122 +22,147 @@ sudo apt install -y \
   python3-colcon-common-extensions \
   python3-rosdep \
   python3-vcstool \
-  libjsoncpp-dev
+  python3-pip
 ```
 
-Initialize `rosdep` if it has not already been initialized on the machine:
+Initialize `rosdep` once if needed:
 
 ```bash
 sudo rosdep init
 rosdep update
 ```
 
-Then clone this repository and import the pinned dependencies:
+Clone and prepare dependencies:
 
 ```bash
 git clone https://github.com/prachitgupta/starling_testing_ws.git
 cd starling_testing_ws
 source /opt/ros/humble/setup.bash
 bash scripts/setup_workspace.sh
+rosdep install --from-paths src --ignore-src -r -y
 ```
 
-The setup script imports pinned dependency revisions from `dependencies.repos`, applies the VOXL topic-name patch to `px4_ros2_cpp`, and ignores packages that are not needed by this workspace.
-
-Install any remaining ROS package dependencies:
+The LLM planner uses the OpenAI Python SDK and Instructor. Install them in the Python environment used by ROS:
 
 ```bash
-rosdep install --from-paths src --ignore-src -r -y
+python3 -m pip install openai instructor pydantic
+```
+
+Set the API key only as an environment variable:
+
+```bash
+export OPENAI_API_KEY=...
 ```
 
 ## Build
 
-After setup, build normally:
-
 ```bash
-cd starling_testing_ws
+cd ~/Desktop/starling_testing_ws
 source /opt/ros/humble/setup.bash
-colcon build
+colcon build --packages-select px4_msgs voxl_msgs starling_testing llm_vision_planner
 source install/setup.bash
 ```
 
-If your shell previously sourced another PX4 workspace, start a clean terminal before building or running. Source this workspace last:
+## Starling Smoke Tests
+
+All positions are local NED: `x` north, `y` east, and negative `z` is altitude above the local origin.
 
 ```bash
-source /opt/ros/humble/setup.bash
-source ~/starling_testing_ws/install/setup.bash
+ros2 run starling_testing 01_takeoff_land.py --ros-args \
+  -p takeoff_alt_m:=0.45 -p hold_s:=5.0
 ```
-
-## Required VOXL/PX4 Topics
-
-The C++ px4_ros2 mode/executor path requires VOXL to bridge the external-mode registration and status topics. At minimum, the follower expects unversioned topics such as:
-
-```text
-/fmu/out/vehicle_status
-/fmu/out/register_ext_component_reply
-/fmu/out/arming_check_request
-/fmu/out/vehicle_command_ack
-/fmu/out/mode_completed
-/fmu/out/vehicle_odometry
-```
-
-It publishes/uses inputs such as:
-
-```text
-/fmu/in/register_ext_component_request
-/fmu/in/unregister_ext_component
-/fmu/in/vehicle_command_mode_executor
-/fmu/in/arming_check_reply
-/fmu/in/goto_setpoint
-/fmu/in/mode_completed
-/fmu/in/config_control_setpoints
-```
-
-## Run Trajectory Follower
-
-The target node tracks verified high-level plans on `/llm_vision/plan_verified`.
 
 ```bash
-source /opt/ros/humble/setup.bash
+ros2 run starling_testing 02_offboard_waypoint.py --ros-args \
+  -p x:=0.5 -p y:=0.0 -p z:=-0.45
+```
+
+```bash
+ros2 run starling_testing 03_bezier_offboard_waypoint.py --ros-args \
+  -p x:=0.5 -p y:=0.0 -p z:=-0.45 -p duration_s:=4.0
+```
+
+Expected output: the node logs state transitions, publishes PX4 Offboard setpoints, reaches the target within per-axis epsilon, and sends a land command.
+
+## LLM Planning Pipeline
+
+Start the planner stack:
+
+```bash
+cd ~/Desktop/starling_testing_ws
 source install/setup.bash
-ros2 run llm_vision_planner trajectory_follower_cpp
+ros2 launch llm_vision_planner full_plot.launch.py mode:=semantic
 ```
 
-No topic-version environment variable is needed. This workspace defaults to plain VOXL/PX4 topic names.
-
-## Run Starling Smoke Tests
-
-All positions are local NED: `x` north, `y` east, `z` down. For example, `z=-1.5` means 1.5 m above the local origin.
+Start the Python Offboard follower:
 
 ```bash
-ros2 run starling_testing 01_takeoff_land.py --ros-args -p takeoff_alt_m:=1.5 -p hold_s:=5.0
-ros2 run starling_testing 02_fmu_trajectory_waypoint.py --ros-args -p x:=0.0 -p y:=2.0 -p z:=-1.5 -p arm_and_offboard:=true
-ros2 run starling_testing 03_px4_ros2_goto_waypoint.py --ros-args -p x:=0.0 -p y:=2.0 -p z:=-1.5 -p speed:=1.0
-ros2 run starling_testing voxl_px4_ros2_goto_waypoint_cpp --ros-args -p x:=0.0 -p y:=2.0 -p z:=-1.5 -p speed:=1.0
-ros2 run starling_testing voxl_px4_ros2_goto_mission_cpp --ros-args -p x:=0.0 -p y:=2.0 -p z:=-1.5 -p speed:=1.0 -p accept_m:=0.4
+ros2 run llm_vision_planner trajectory_follower.py --ros-args \
+  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
 
-The full interactive sequence is:
+Mission behavior:
+
+1. `trajectory_follower.py` primes PX4 Offboard setpoints.
+2. The vehicle arms and climbs to `takeoff_z`.
+3. The follower publishes `/llm_vision/mission_state` as `HOLDING_FOR_PLAN`.
+4. `prompt_generator.py` latches the hover pose and current obstacle snapshot.
+5. `llm_planner.py` generates sparse waypoints.
+6. `refinment.py` interpolates and nudges the path.
+7. `verifier.py` publishes `passed`, metrics, failed constraints, thresholds, and a feedback table.
+8. Failed verification results are appended into the next prompt using the same latched hover context.
+9. The first `passed=true` trajectory is latched and tracked with Bezier position/velocity setpoints.
+
+Monitor:
 
 ```bash
-ros2 run starling_testing run_voxl_sequence.sh
+ros2 topic echo /llm_vision/mission_state
+ros2 topic echo /llm_vision/prompt
+ros2 topic echo /llm_vision/plan_verified
 ```
 
-Override target and timing with environment variables:
+## Software-Only Reproduction
+
+Without hardware, run the planning nodes and publish fake mission/perception inputs:
 
 ```bash
-TAKEOFF_ALT_M=1.5 HOLD_S=5.0 X=0.0 Y=2.0 Z=-1.5 SPEED=1.0 ACCEPT_M=0.4 \
-TRAJECTORY_S=20 GOTO_PY_S=20 GOTO_CPP_S=20 \
-  ros2 run starling_testing run_voxl_sequence.sh
+source install/setup.bash
+ros2 run llm_vision_planner prompt_generator.py --ros-args --params-file src/llm_vision_planner/config/llm_vision_planner.yaml &
+ros2 run llm_vision_planner llm_planner.py --ros-args --params-file src/llm_vision_planner/config/llm_vision_planner.yaml &
+ros2 run llm_vision_planner refinment.py --ros-args --params-file src/llm_vision_planner/config/llm_vision_planner.yaml &
+ros2 run llm_vision_planner verifier.py --ros-args --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
 
-## Dependency Notes
-
-Only `voxl_msgs` is built from `voxl-mpa-to-ros2`; the bridge package and example figure-eight package are ignored.
-
-Only `px4_ros2_cpp` is built from Auterion's PX4 ROS 2 interface library; examples and the Python binding package are ignored.
-
-To run against a bridge that publishes versioned PX4 topics, set this before running nodes:
+Fake hover state:
 
 ```bash
-export PX4_ROS2_ENABLE_TOPIC_VERSION=1
+ros2 topic pub /llm_vision/mission_state std_msgs/msg/String \
+  "{data: '{\"state\":\"HOLDING_FOR_PLAN\",\"position\":{\"x\":0.0,\"y\":0.0,\"z\":-0.45},\"heading_deg\":0.0}'}" -r 2
 ```
+
+Fake obstacle snapshot:
+
+```bash
+ros2 topic pub /llm_vision/semantic_obstacles std_msgs/msg/String \
+  "{data: '{\"obstacles\":[{\"label\":\"chair\",\"min_corner\":[1.2,-0.3,-0.8],\"max_corner\":[1.7,0.3,0.0],\"size\":[0.5,0.6,0.8],\"distance_m\":1.3}],\"timestamp\":0.0}'}" -r 2
+```
+
+Expected output: `/llm_vision/prompt` is generated only after `HOLDING_FOR_PLAN`; `/llm_vision/plan_verified` contains metrics and either `passed=true` or a feedback table for retry.
+
+## Project Artifacts
+
+Final-project artifacts are in `src/papers/`:
+
+- `report.pdf`
+- `predictions.md`
+- `results_artifact.csv`
+- `per_trial_logs.jsonl`
+- `submission_checklist.md`
+
+## Known Failure Modes
+
+- PX4 may reject Offboard if setpoints are not streamed continuously.
+- The prompt generator will not query the LLM until `/llm_vision/mission_state` is `HOLDING_FOR_PLAN`.
+- Perception can fluctuate; the planner intentionally latches one hover-time obstacle snapshot and reuses it for verifier-feedback retries.
+- If hover drift exceeds `start_drift_replan_m`, the prompt generator relatches context.
+- `OPENAI_API_KEY` must be set in the environment and must not be committed.

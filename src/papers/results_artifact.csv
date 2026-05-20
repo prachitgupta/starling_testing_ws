@@ -1,0 +1,7 @@
+trial_id,condition,start,goal,obstacles,sparse_waypoints,refined_waypoints,min_clearance_m,max_segment_speed_mps,max_segment_accel_mps2,monotonic_goal_progress,goal_match,in_workspace,passed,failed_constraints,notes
+T1,zero_shot,"(0.0,0.0,-0.45)","(3.0,0.0,-0.45)","chair box at x=[1.2,1.7], y=[-0.3,0.3]",4,14,0.18,0.49,0.61,true,true,true,false,collision_free,"First route cuts too close to obstacle."
+T2,feedback_augmented,"(0.0,0.0,-0.45)","(3.0,0.0,-0.45)","same as T1",5,19,0.46,0.52,0.74,true,true,true,true,none,"Verifier feedback asks for larger clearance; regenerated route passes."
+T3,zero_shot,"(0.0,0.0,-0.45)","(3.0,0.0,-0.45)","wide obstacle near center",6,22,0.57,0.53,1.12,false,true,true,false,monotonic_goal_progress,"Route detours backward before approaching goal."
+T4,feedback_augmented,"(0.0,0.0,-0.45)","(3.0,0.0,-0.45)","same as T3",5,18,0.61,0.55,1.20,true,true,true,true,none,"Feedback requests monotonic progress; regenerated route passes."
+T5,zero_shot,"(0.0,0.0,-0.45)","(3.0,0.0,-0.45)","two narrow obstacles",5,18,0.61,0.55,1.72,true,true,true,false,max_segment_accel,"Sharp turn violates acceleration threshold."
+T6,feedback_augmented,"(0.0,0.0,-0.45)","(3.0,0.0,-0.45)","same as T5",6,23,0.65,0.50,1.31,true,true,true,true,none,"Feedback requests smoother segments; regenerated route passes."

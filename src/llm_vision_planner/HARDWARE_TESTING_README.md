@@ -4,7 +4,7 @@
 
 ```bash
 cd ~/Desktop/starling_testing_ws
-colcon build --packages-select px4_msgs starling_testing llm_vision_planner
+colcon build --packages-select px4_msgs voxl_msgs starling_testing llm_vision_planner
 source install/setup.bash
 ```
 

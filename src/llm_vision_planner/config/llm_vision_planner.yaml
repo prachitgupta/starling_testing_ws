@@ -2,8 +2,7 @@ semantic_obstacle_perception:
   ros__parameters:
     detection_topic: /tflite_data
     point_cloud_topic: /tof_pc
-    pose_topic: /qvio/odom
-    pose_msg_type: nav_msgs/odometry
+    pose_topic: /fmu/out/vehicle_odometry
     obstacle_topic: /llm_vision/semantic_obstacles
     goal_x: 3.0
     goal_y: 0.0

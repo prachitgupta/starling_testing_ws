@@ -43,15 +43,19 @@ def bezier_velocity(p0, p3, t, duration_s):
 class BezierOffboardWaypoint(Node):
     def __init__(self):
         super().__init__("starling_bezier_offboard_waypoint")
-        self.declare_parameter("x", 0.5)
+        self.declare_parameter("x", 0.7)
         self.declare_parameter("y", 0.0)
-        self.declare_parameter("z", -0.45)
-        self.declare_parameter("epsilon_x", 0.08)
-        self.declare_parameter("epsilon_y", 0.08)
-        self.declare_parameter("epsilon_z", 0.08)
+        self.declare_parameter("x2", 0.7)
+        self.declare_parameter("y2", -0.3)
+        self.declare_parameter("z", -0.25)
+        self.declare_parameter("epsilon_x", 0.1)
+        self.declare_parameter("epsilon_y", 0.1)
+        self.declare_parameter("epsilon_z", 0.1)
         self.declare_parameter("prime_s", 1.5)
         self.declare_parameter("takeoff_settle_s", 2.0)
-        self.declare_parameter("duration_s", 4.0)
+        self.declare_parameter("takeoff_accept_m", 0.08)
+        self.declare_parameter("duration_s", 8.0)
+        self.declare_parameter("track_timeout_s", 5.0)
         self.declare_parameter("pose_timeout_s", 0.5)
 
         self.offboard_pub = self.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
@@ -66,8 +70,11 @@ class BezierOffboardWaypoint(Node):
         self.state = "WAIT_POSE"
         self.state_start_s = time.time()
         self.takeoff_target = None
+        self.hold_setpoint = None
         self.start = None
         self.goal = None
+        self.goals = []
+        self.goal_index = 0
         self.timer = self.create_timer(0.05, self.tick)
 
     def odom_callback(self, msg):
@@ -80,8 +87,10 @@ class BezierOffboardWaypoint(Node):
         if not self.odom_fresh():
             self.get_logger().warn("waiting for fresh /fmu/out/vehicle_odometry", throttle_duration_sec=2.0)
             return
+        if self.state == "LAND":
+            return
 
-        position_setpoint = self.takeoff_target or self.position
+        position_setpoint = self.hold_setpoint or self.takeoff_target or self.position
         velocity_setpoint = [math.nan, math.nan, math.nan]
 
         if self.state == "WAIT_POSE":
@@ -93,13 +102,22 @@ class BezierOffboardWaypoint(Node):
             self.command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
             self.transition("TAKEOFF")
 
-        elif self.state == "TAKEOFF" and self.elapsed() >= float(self.get_parameter("takeoff_settle_s").value):
+        elif self.state == "TAKEOFF" and self.takeoff_settled():
             self.start = list(self.position)
             self.goal = [
                 float(self.get_parameter("x").value),
                 float(self.get_parameter("y").value),
                 float(self.get_parameter("z").value),
             ]
+            self.goals = [
+                self.goal,
+                [
+                    float(self.get_parameter("x2").value),
+                    float(self.get_parameter("y2").value),
+                    float(self.get_parameter("z").value),
+                ],
+            ]
+            self.goal_index = 0
             self.transition("TRACK")
 
         elif self.state == "TRACK":
@@ -108,9 +126,21 @@ class BezierOffboardWaypoint(Node):
             position_setpoint = bezier(self.start, self.goal, t)
             velocity_setpoint = bezier_velocity(self.start, self.goal, t, duration_s)
             if t >= 1.0 and self.at_target(self.goal):
-                self.get_logger().info("Bezier target reached; landing")
-                self.command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
-                self.transition("LAND")
+                if self.goal_index + 1 < len(self.goals):
+                    self.goal_index += 1
+                    self.start = list(self.position)
+                    self.goal = self.goals[self.goal_index]
+                    self.transition("TRACK")
+                else:
+                    position_setpoint, velocity_setpoint = self.finish_mission()
+            if self.elapsed() >= duration_s + float(self.get_parameter("track_timeout_s").value):
+                self.get_logger().warn("Bezier target was not reached before timeout; landing")
+                self.land()
+                return
+
+        elif self.state == "HOLD":
+            position_setpoint = self.hold_setpoint
+            velocity_setpoint = [0.0, 0.0, 0.0]
 
         self.publish_setpoint(position_setpoint, velocity_setpoint)
 
@@ -123,6 +153,21 @@ class BezierOffboardWaypoint(Node):
             and abs(self.position[1] - target[1]) <= float(self.get_parameter("epsilon_y").value)
             and abs(self.position[2] - target[2]) <= float(self.get_parameter("epsilon_z").value)
         )
+
+    def takeoff_settled(self):
+        if self.takeoff_target is None:
+            return False
+        z_error = abs(self.position[2] - self.takeoff_target[2])
+        return (
+            z_error <= float(self.get_parameter("takeoff_accept_m").value)
+            and self.elapsed() >= float(self.get_parameter("takeoff_settle_s").value)
+        )
+
+    def finish_mission(self):
+        self.hold_setpoint = list(self.position) if self.position is not None else list(self.goal)
+        self.get_logger().info("final waypoint reached; holding position for RC landing")
+        self.transition("HOLD")
+        return self.hold_setpoint, [0.0, 0.0, 0.0]
 
     def publish_setpoint(self, position, velocity):
         stamp = int(self.get_clock().now().nanoseconds / 1000)
@@ -153,6 +198,10 @@ class BezierOffboardWaypoint(Node):
         msg.source_component = 1
         msg.from_external = True
         self.command_pub.publish(msg)
+
+    def land(self):
+        self.command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+        self.transition("LAND")
 
     def transition(self, state):
         self.state = state

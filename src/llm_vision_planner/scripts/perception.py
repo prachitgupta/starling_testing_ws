@@ -5,14 +5,14 @@ import time
 import numpy as np
 import rclpy
 import sensor_msgs_py.point_cloud2 as pc2
-from nav_msgs.msg import Odometry
+from px4_msgs.msg import VehicleOdometry
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
 from sklearn.cluster import DBSCAN
 from std_msgs.msg import String
 
-QVIO_QOS = QoSProfile(
+ODOM_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.BEST_EFFORT,
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=10,
@@ -29,15 +29,20 @@ class ObstaclePerception(Node):
         super().__init__("obstacle_perception")
 
         self.declare_parameter("point_cloud_topic", "/voa_pc_out")
-        self.declare_parameter("pose_topic", "/qvio")
+        self.declare_parameter("point_cloud_frame", "auto")
+        self.declare_parameter("pose_topic", "/fmu/out/vehicle_odometry")
         self.declare_parameter("obstacle_topic", "/llm_vision/obstacles")
-        self.declare_parameter("goal_x", 3.0)
-        self.declare_parameter("goal_y", 1.0)
-        self.declare_parameter("goal_z", -0.2)
-        self.declare_parameter("min_range_m", 0.3)
-        self.declare_parameter("max_range_m", 6.0)
-        self.declare_parameter("dbscan_eps", 0.4)
+        self.declare_parameter("goal_x", 2.5)
+        self.declare_parameter("goal_y", 0.0)
+        self.declare_parameter("goal_z", -0.25)
+        self.declare_parameter("min_range_m", 0.20)
+        self.declare_parameter("max_range_m", 4.5)
+        self.declare_parameter("min_z_m", -2.0)
+        self.declare_parameter("max_z_m", 1.0)
+        self.declare_parameter("ego_exclusion_radius_m", 0.25)
+        self.declare_parameter("dbscan_eps", 0.5)
         self.declare_parameter("dbscan_min_samples", 8)
+        self.declare_parameter("debug", False)
 
         self.current_pose = None
         self.obstacles = []
@@ -54,10 +59,10 @@ class ObstaclePerception(Node):
             POINT_CLOUD_QOS,
         )
         self.pose_sub = self.create_subscription(
-            Odometry,
+            VehicleOdometry,
             str(self.get_parameter("pose_topic").value),
             self.pose_callback,
-            QVIO_QOS,
+            ODOM_QOS,
         )
         self.obstacle_pub = self.create_publisher(
             String,
@@ -66,14 +71,19 @@ class ObstaclePerception(Node):
         )
         self.timer = self.create_timer(0.5, self.publish_obstacles)
 
+    def log_warning(self, *args, **kwargs):
+        if bool(self.get_parameter("debug").value):
+            self.get_logger().warning(*args)
+
     def pose_callback(self, msg):
-        p = msg.pose.pose.position
-        q = msg.pose.pose.orientation
-        yaw = self.quat_to_yaw(q.x, q.y, q.z, q.w)
+        if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
+            self.log_warning("Ignoring VehicleOdometry that is not in NED pose frame.", throttle_duration_sec=5.0)
+            return
+        yaw = self.quat_to_yaw(msg.q[1], msg.q[2], msg.q[3], msg.q[0])
         self.current_pose = (
-            round(p.x, 2),
-            round(p.y, 2),
-            round(p.z, 2),
+            round(float(msg.position[0]), 2),
+            round(float(msg.position[1]), 2),
+            round(float(msg.position[2]), 2),
             round(np.degrees(yaw), 1),
         )
 
@@ -85,7 +95,7 @@ class ObstaclePerception(Node):
         if self.current_pose is None:
             return
 
-        pts = np.array(
+        raw_pts = np.array(
             [
                 [p[0], p[1], p[2]]
                 for p in pc2.read_points(
@@ -96,15 +106,31 @@ class ObstaclePerception(Node):
             ],
             dtype=float,
         )
-        if len(pts) < 10:
+        if len(raw_pts) < 10:
             self.obstacles = []
             return
 
         drone = np.array(self.current_pose[:3], dtype=float)
+        yaw = np.radians(float(self.current_pose[3]))
+        pts = self.points_to_local_ned(raw_pts, drone, yaw, msg.header.frame_id)
+        pts = pts[np.all(np.isfinite(pts), axis=1)]
+        if len(pts) < 10:
+            self.obstacles = []
+            return
+
         dists = np.linalg.norm(pts - drone, axis=1)
         min_range = float(self.get_parameter("min_range_m").value)
         max_range = float(self.get_parameter("max_range_m").value)
-        pts = pts[(dists > min_range) & (dists < max_range)]
+        min_z = float(self.get_parameter("min_z_m").value)
+        max_z = float(self.get_parameter("max_z_m").value)
+        ego_radius = float(self.get_parameter("ego_exclusion_radius_m").value)
+        keep = (
+            (dists > max(min_range, ego_radius))
+            & (dists < max_range)
+            & (pts[:, 2] >= min_z)
+            & (pts[:, 2] <= max_z)
+        )
+        pts = pts[keep]
         if len(pts) < 10:
             self.obstacles = []
             return
@@ -123,6 +149,32 @@ class ObstaclePerception(Node):
             obstacles.append(self.describe_obstacle(cluster, drone))
 
         self.obstacles = sorted(obstacles, key=lambda obstacle: obstacle["distance_m"])
+
+    def points_to_local_ned(self, points, drone_pos, yaw, frame_id):
+        source_frame = str(self.get_parameter("point_cloud_frame").value).lower()
+        if source_frame == "auto":
+            source_frame = self.infer_point_cloud_frame(frame_id)
+        if source_frame == "local_ned":
+            return points
+        if source_frame == "body_ned":
+            return drone_pos + (self.yaw_matrix(yaw) @ points.T).T
+        self.log_warning(
+            f"Unknown point_cloud_frame '{source_frame}', treating points as local_ned.",
+            throttle_duration_sec=5.0,
+        )
+        return points
+
+    @staticmethod
+    def infer_point_cloud_frame(frame_id):
+        frame = (frame_id or "").lower()
+        if any(token in frame for token in ("body", "base_link", "stereo", "tof", "camera")):
+            return "body_ned"
+        return "local_ned"
+
+    @staticmethod
+    def yaw_matrix(yaw):
+        c, s = np.cos(yaw), np.sin(yaw)
+        return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=float)
 
     def describe_obstacle(self, cluster, drone_pos):
         centroid = np.round(cluster.mean(axis=0), 2)

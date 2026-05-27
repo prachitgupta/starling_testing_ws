@@ -5,14 +5,21 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import String
 
 RAW_PLAN_TOPIC = "/llm_vision/plan_raw"
 REFINED_PLAN_TOPIC = "/llm_vision/plan_refined"
-INTERPOLATION_SPACING_M = 0.5
-SAFETY_MARGIN_M = 0.30
+INTERPOLATION_SPACING_M = 1.0
+SAFETY_MARGIN_M = 0.40
 NUDGE_EPSILON_M = 0.02
-FIXED_Z = -0.2
+FIXED_Z = -0.25
+PLAN_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+)
 
 
 class PathRefinement(Node):
@@ -24,6 +31,7 @@ class PathRefinement(Node):
         self.declare_parameter("safety_margin_m", SAFETY_MARGIN_M)
         self.declare_parameter("nudge_epsilon_m", NUDGE_EPSILON_M)
         self.declare_parameter("fixed_z", FIXED_Z)
+        self.declare_parameter("debug", False)
 
         self.raw_plan_topic = str(self.get_parameter("raw_plan_topic").value)
         self.refined_plan_topic = str(self.get_parameter("refined_plan_topic").value)
@@ -32,8 +40,12 @@ class PathRefinement(Node):
         self.nudge_epsilon_m = float(self.get_parameter("nudge_epsilon_m").value)
         self.fixed_z = float(self.get_parameter("fixed_z").value)
 
-        self.plan_sub = self.create_subscription(String, self.raw_plan_topic, self.plan_callback, 10)
-        self.refined_pub = self.create_publisher(String, self.refined_plan_topic, 10)
+        self.plan_sub = self.create_subscription(String, self.raw_plan_topic, self.plan_callback, PLAN_QOS)
+        self.refined_pub = self.create_publisher(String, self.refined_plan_topic, PLAN_QOS)
+
+    def log_info(self, *args, **kwargs):
+        if bool(self.get_parameter("debug").value):
+            self.get_logger().info(*args)
 
     def plan_callback(self, msg):
         try:
@@ -63,7 +75,7 @@ class PathRefinement(Node):
         out = String()
         out.data = json.dumps(output)
         self.refined_pub.publish(out)
-        self.get_logger().info(f"Published refined plan with {len(refined)} waypoints.")
+        self.log_info(f"Published refined plan with {len(refined)} waypoints.")
 
     def interpolate_waypoints(self, waypoints, workspace, obstacles):
         refined = [self.sanitize_waypoint(waypoints[0], workspace, obstacles, preserve_goal=False)]

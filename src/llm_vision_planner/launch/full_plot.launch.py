@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import PathJoinSubstitution
 from launch.substitutions import LaunchConfiguration, PythonExpression
@@ -89,8 +89,8 @@ def generate_launch_description():
             params_file_arg,
             semantic_perception,
             normal_perception,
-            prompt_generator,
             llm_planner,
+            TimerAction(period=2.0, actions=[prompt_generator]),
             refinement,
             verifier,
             visualizer,

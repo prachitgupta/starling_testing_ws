@@ -194,20 +194,7 @@ ros2 topic pub /llm_vision/semantic_obstacles std_msgs/msg/String \
 
 Expected output: `/llm_vision/prompt` is generated only after `HOLDING_FOR_PLAN`; `/llm_vision/plan_verified` contains metrics and either `passed=true` or a feedback table for retry.
 
-## Project Artifacts
-
-Final-project artifacts are in `src/papers/`:
-
-- `report.pdf`
-- `predictions.md`
-- `results_artifact.csv`
-- `per_trial_logs.jsonl`
-- `submission_checklist.md`
-
 ## Known Failure Modes
 
-- PX4 may reject Offboard if setpoints are not streamed continuously.
-- The prompt generator will not query the LLM until `/llm_vision/mission_state` is `HOLDING_FOR_PLAN`.
-- Perception can fluctuate; the planner intentionally latches one hover-time obstacle snapshot and reuses it for verifier-feedback retries.
-- If hover drift exceeds `start_drift_replan_m`, the prompt generator relatches context.
-- `OPENAI_API_KEY` must be set in the environment and must not be committed.
+- Takeoff to an arbitrary height indefinitely and randomly in identical experimental conditions, possibly due to bad EKF fused estimates interference and poor QVIO height estimation: https://discuss.px4.io/t/unexpected-and-sudden-ascend-in-offboard-mode/35103
+- Transition to land from Offboard tracking causes jitters and the drone diagonally moves to takeoff location while landing: https://forum.modalai.com/topic/2533/failsafe-landing-bug-in-px4-1-14

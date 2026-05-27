@@ -34,7 +34,7 @@ Prachit Gupta\\
 
 \begin{abstract}
 This report presents an LLM-augmented high-level route-planning framework for autonomous UAV navigation on the ModalAI Starling 2 platform. The system uses perception-derived obstacle descriptions, structured prompting, sparse waypoint generation, waypoint interpolation, verification-based safety filtering, and PX4 trajectory execution. The LLM is not used as a real-time motion planner. Instead, it acts as a semantic mission planner that converts natural language objectives and scene context into sparse NED-frame waypoints. Classical refinement and verification modules then enforce geometric and kinematic constraints before the verified trajectory is latched by the low-level controller. The implementation is available in the project repository:
-\url{https://github.com/prachitgupta/starling_testing_ws}.
+\href{https://github.com/prachitgupta/starling_testing_ws}{starling\_testing\_ws}.
 \end{abstract}
 
 \section{Introduction and Motivation}
@@ -84,7 +84,7 @@ Unlike approaches that attempt to use LLMs directly for real-time motion plannin
 The implementation is organized in the ROS 2 package \texttt{llm\_vision\_planner}. The main pipeline is launched through:
 
 \begin{center}
-\url{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/launch/full_plot.launch.py}
+\href{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/launch/full_plot.launch.py}{full\_plot.launch.py}
 \end{center}
 
 The launch file starts the following nodes:
@@ -102,12 +102,13 @@ The launch file starts the following nodes:
 The key implementation files are:
 
 \begin{itemize}
-  \item Prompt generation: \url{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/scripts/prompt_generator.py}
-  \item LLM planner: \url{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/scripts/llm_planner.py}
-  \item Refinement: \url{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/scripts/refinment.py}
-  \item Verification: \url{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/scripts/verifier.py}
-  \item PX4 trajectory follower: \url{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/scripts/trajectory_follower.py}
-  \item Hardware test README: \url{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/HARDWARE_TESTING_README.md}
+  \item Prompt generation: \href{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/scripts/prompt_generator.py}{prompt\_generator.py}
+  \item LLM planner: \href{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/scripts/llm_planner.py}{llm\_planner.py}
+  \item Refinement: \href{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/scripts/refinment.py}{refinment.py}
+  \item Verification: \href{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/scripts/verifier.py}{verifier.py}
+  \item PX4 trajectory follower: \href{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/scripts/trajectory_follower.py}{trajectory\_follower.py}
+  \item Hardware test README: \href{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/HARDWARE_TESTING_README.md}{HARDWARE\_TESTING\_README.md}
+  \item Hardware setup guide: \href{https://github.com/prachitgupta/starling_testing_ws/blob/main/setup_guide.md}{setup\_guide.md}
 \end{itemize}
 
 \section{Proposed Framework}
@@ -439,7 +440,7 @@ At each control tick, PX4 receives a \texttt{TrajectorySetpoint} containing the 
 
 \begin{center}
 \textbf{Hardware demonstration videos:} 
-\href{https://drive.google.com/drive/folders/1vDcm3zaMby3Nt6GOFLc4i5cJWCul16sC?usp=sharing}{Google Drive link containing screen recording and videos}
+\href{https://github.com/prachitgupta/starling_testing_ws/tree/main/src/starling_testing/flight_logs/test_run_videos}{GitHub folder containing screen recordings and hardware/simulation videos}
 \end{center}
 
 \section{Predictions before results based on Homeworks Learnings}
@@ -465,9 +466,9 @@ Raw depth-based point-cloud representations were predicted to perform poorly in 
 The final report package includes sparse waypoint visualizations, refined trajectory plots, verification metrics, hardware flight demonstrations, and execution logs. In addition to the live visualizer output at \texttt{/tmp/llm\_vision\_plot.png}, the visualizer can save static simulation artifacts in \texttt{src/llm\_vision\_planner/plots}:
 
 \begin{itemize}
-  \item \texttt{simulated\_test\_sparse\_waypoint\_predictions.png}
-  \item \texttt{simulated\_test\_refined\_trajectory\_waiting\_for\_verification.png}
-  \item \texttt{simulated\_test\_latched\_verified\_trajectory.png}
+  \item Sparse waypoint predictions: \href{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/plots/simulated_test_sparse_waypoint_predictions.png}{static sparse plot}
+  \item Refined trajectory waiting for verification: \href{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/plots/simulated_test_refined_trajectory_waiting_for_verification.png}{static refined plot}
+  \item Latched verified trajectory: \href{https://github.com/prachitgupta/starling_testing_ws/blob/main/src/llm_vision_planner/plots/simulated_test_latched_verified_trajectory.png}{static verified plot}
 \end{itemize}
 
 \begin{figure}[H]

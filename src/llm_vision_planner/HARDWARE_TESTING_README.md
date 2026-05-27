@@ -84,6 +84,15 @@ ros2 topic hz /tflite_data
 ros2 topic hz /tof_pc
 ```
 
+DDS agent note: if MPA topics such as `/tflite_data` or `/tof_pc` are visible on the remote machine but `/fmu/...` topics are not, reconfigure the VOXL microDDS agent on the vehicle and disable/re-enable it:
+
+```bash
+ssh root@192.168.8.1
+voxl-configure-microdds
+```
+
+Follow the prompts to disable, then run `voxl-configure-microdds` again to enable the DDS agent. Afterward, restart the relevant services or reboot the vehicle and re-check `/fmu/out/vehicle_odometry`.
+
 In semantic mode, `perception_detection.py` fuses `/tflite_data` detections with metric XYZ samples from the organized `/tof_pc` point cloud, then places obstacles in the same PX4 local NED frame used by `/fmu/out/vehicle_odometry`.
 
 ModalAI calibration notes: camera extrinsics are stored in `/etc/modalai/extrinsics.conf`, and tracking-front intrinsics can be inspected with:

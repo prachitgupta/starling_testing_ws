@@ -29,7 +29,19 @@ DETECTION_QOS = QoSProfile(
     depth=50,
 )
 
-DYNAMIC_LABELS = {"person", "dog", "cat", "bicycle", "motorcycle", "car", "truck", "bus"}
+DYNAMIC_LABELS = {"person", "dog", "suitcase", "cat", "bicycle", "motorcycle", "car", "truck", "bus"}
+HARDCODED_DEPTH_M = {
+    "chair": 1.0,
+    "person": 1.5,
+    "dog": 1.5,
+    "suitcase": 1.5,
+    "cat": 1.0,
+    "bicycle": 2.0,
+    "motorcycle": 2.0,
+    "car": 3.0,
+    "truck": 3.0,
+    "bus": 3.0,
+}
 
 
 class SemanticObstaclePerception(Node):
@@ -45,23 +57,24 @@ class SemanticObstaclePerception(Node):
                 ("point_cloud_topic", "/tof_pc"),
                 ("pose_topic", "/fmu/out/vehicle_odometry"),
                 ("obstacle_topic", "/llm_vision/semantic_obstacles"),
-                ("goal_x", 3.0),
+                ("goal_x", 2.5),
                 ("goal_y", 0.0),
-                ("goal_z", -0.45),
-                ("hires_fx", 459.25),
-                ("hires_fy", 459.77),
-                ("hires_cx", 640.0),
-                ("hires_cy", 400.0),
+                ("goal_z", -0.25),
+                ("hires_fx", 459.25277454251415),
+                ("hires_fy", 459.77659154648927),
+                ("hires_cx", 656.1383163463607),
+                ("hires_cy", 424.58097964738005),
                 ("hires_width", 1280),
-                ("hires_height", 800),
-                ("cam_body_x_m", 0.066),
-                ("cam_body_y_m", 0.009),
-                ("cam_body_z_m", -0.012),
+                ("hires_height", 768),
+                ("cam_body_x_m", 0.0665),
+                ("cam_body_y_m", -0.0065),
+                ("cam_body_z_m", -0.0154),
                 ("cam_roll_deg", 0.0),
-                ("cam_pitch_deg", 90.0),
-                ("cam_yaw_deg", 180.0),
+                ("cam_pitch_deg", -90.0),
+                ("cam_yaw_deg", -90.0),
                 ("min_confidence", 0.60),
                 ("detection_timeout_s", 1.0),
+                ("z_estimation_mode", "hardcoded"),
                 ("min_tof_depth_m", 0.20),
                 ("max_tof_depth_m", 6.0),
                 ("frustum_margin_deg", 5.0),
@@ -94,7 +107,7 @@ class SemanticObstaclePerception(Node):
             dtype=float,
         )
 
-        self.rotation_body_to_camera = self.rpy_matrix(
+        self.rotation_camera_to_body = self.modalai_intrinsic_xyz_matrix(
             math.radians(float(self.get_parameter("cam_roll_deg").value)),
             math.radians(float(self.get_parameter("cam_pitch_deg").value)),
             math.radians(float(self.get_parameter("cam_yaw_deg").value)),
@@ -192,7 +205,7 @@ class SemanticObstaclePerception(Node):
             "low_conf": low_confidence,
             "goal": self.goal,
             "timestamp": time.time(),
-            "source": "yolo_tof_frustum",
+            "source": self.perception_source(),
         }
         self.obstacle_pub.publish(String(data=json.dumps(payload)))
         self.log_summary(obstacles, len(no_depth), len(low_confidence))
@@ -259,6 +272,10 @@ class SemanticObstaclePerception(Node):
         if x2 <= x1 or y2 <= y1:
             return None, "empty bbox"
 
+        label = str(detection.class_name)
+        if self.z_estimation_mode() == "hardcoded":
+            return self.build_hardcoded_obstacle(x1, y1, x2, y2, label, confidence), None
+
         u1, u2 = x1 * self.image_width, x2 * self.image_width
         v1, v2 = y1 * self.image_height, y2 * self.image_height
         margin = math.radians(float(self.get_parameter("frustum_margin_deg").value))
@@ -273,10 +290,9 @@ class SemanticObstaclePerception(Node):
             dtype=float,
         )
         ray_cam /= np.linalg.norm(ray_cam)
-        ray_body = self.rotation_body_to_camera.T @ ray_cam
+        ray_body = self.rotation_camera_to_body @ ray_cam
         ray_world = self.yaw_matrix(self.pose["yaw"]) @ ray_body
 
-        label = str(detection.class_name)
         depth, point_count = self.depth_from_frustum(az_left, az_right, el_top, el_bottom)
         if depth is None:
             return None, f"tof_frustum_points={point_count}"
@@ -303,6 +319,54 @@ class SemanticObstaclePerception(Node):
             "depth_source": f"tof_{point_count}pts",
             "source": "yolo_tof_frustum",
         }, None
+
+    def build_hardcoded_obstacle(self, x1, y1, x2, y2, label, confidence):
+        depth = self.hardcoded_depth(label)
+        x_thickness = max(0.2, 0.25 * depth)
+        y_left = (x1 - 0.5) * depth
+        y_right = (x2 - 0.5) * depth
+        z_top = (y1 - 0.5) * depth
+        z_bottom = (y2 - 0.5) * depth
+
+        min_body = np.array([depth - 0.5 * x_thickness, min(y_left, y_right), min(z_top, z_bottom)], dtype=float)
+        max_body = np.array([depth + 0.5 * x_thickness, max(y_left, y_right), max(z_top, z_bottom)], dtype=float)
+        centroid_body = 0.5 * (min_body + max_body)
+
+        drone_pos = self.pose["position"]
+        centroid = drone_pos + centroid_body
+        corners_body = np.array(
+            [
+                [x, y, z]
+                for x in (min_body[0], max_body[0])
+                for y in (min_body[1], max_body[1])
+                for z in (min_body[2], max_body[2])
+            ],
+            dtype=float,
+        )
+        corners_world = drone_pos + corners_body
+        min_corner = corners_world.min(axis=0)
+        max_corner = corners_world.max(axis=0)
+        size = max_corner - min_corner
+        delta = centroid - drone_pos
+
+        return {
+            "centroid": np.round(centroid, 2).tolist(),
+            "min_corner": np.round(min_corner, 2).tolist(),
+            "max_corner": np.round(max_corner, 2).tolist(),
+            "size": np.round(size, 2).tolist(),
+            "distance_m": round(depth, 2),
+            "bearing_deg": round(float(np.degrees(math.atan2(delta[1], delta[0]))), 1),
+            "label": label,
+            "shape": label,
+            "confidence": round(confidence, 2),
+            "is_dynamic": label in DYNAMIC_LABELS,
+            "depth_source": "hardcoded_bbox",
+            "source": "yolo_hardcoded_bbox",
+        }
+
+    @staticmethod
+    def hardcoded_depth(label):
+        return HARDCODED_DEPTH_M.get(str(label).lower(), 1.0)
 
     def depth_from_frustum(self, az_left, az_right, el_top, el_bottom):
         if self.point_cloud_msg is None or self.pose is None:
@@ -335,7 +399,7 @@ class SemanticObstaclePerception(Node):
             return None, 0
 
         v_body = (self.yaw_matrix(-self.pose["yaw"]) @ v_world.T).T
-        v_cam = (self.rotation_body_to_camera @ v_body.T).T
+        v_cam = (self.rotation_camera_to_body.T @ v_body.T).T
         front_mask = v_cam[:, 2] > 0.01
         v_cam = v_cam[front_mask]
         distances = distances[front_mask]
@@ -386,18 +450,59 @@ class SemanticObstaclePerception(Node):
             return
         self.last_log_stamp = now
 
+        z_estimation_mode = self.z_estimation_mode()
         pc_status = "missing" if self.point_cloud_msg is None else f"{self.point_cloud_msg.width}x{self.point_cloud_msg.height}"
         lines = [
             f"semantic_obstacles={len(obstacles)} no_depth={no_depth_count} low_conf={low_conf_count} "
-            f"pc={pc_status} pose={'ok' if self.pose is not None else 'missing'}"
+            f"z_mode={z_estimation_mode} pc={pc_status} pose={'ok' if self.pose is not None else 'missing'}"
         ]
         for obstacle in obstacles:
+            min_corner = obstacle.get("min_corner", [0.0, 0.0, 0.0])
+            max_corner = obstacle.get("max_corner", [0.0, 0.0, 0.0])
             lines.append(
-                f"{obstacle['label']} conf={obstacle['confidence']:.2f} "
-                f"dist={obstacle['distance_m']:.2f}m pos={obstacle['centroid']} "
-                f"box={obstacle['min_corner']}..{obstacle['max_corner']} src={obstacle['depth_source']}"
+                f"{obstacle['label']} pos={obstacle['centroid']} "
+                f"x=[{min_corner[0]:.2f},{max_corner[0]:.2f}] "
+                f"y=[{min_corner[1]:.2f},{max_corner[1]:.2f}] "
+                f"z=[{min_corner[2]:.2f},{max_corner[2]:.2f}] "
+                f"size={obstacle['size']} distance={obstacle['distance_m']:.2f}m "
+                f"prompt='{self.prompt_obstacle_text(obstacle)}'"
             )
         self.get_logger().info("\n".join(lines))
+
+    def z_estimation_mode(self):
+        mode = str(self.get_parameter("z_estimation_mode").value).strip().lower()
+        return "depth" if mode == "depth" else "hardcoded"
+
+    def perception_source(self):
+        if self.z_estimation_mode() == "depth":
+            return "yolo_tof_frustum"
+        return "yolo_hardcoded_z"
+
+    def prompt_obstacle_text(self, obstacle):
+        min_corner = obstacle.get("min_corner", [0.0, 0.0, 0.0])
+        max_corner = obstacle.get("max_corner", [0.0, 0.0, 0.0])
+        label = obstacle.get("label") or obstacle.get("shape") or "unknown"
+        return (
+            f"{label}: x=[{min_corner[0]:.2f},{max_corner[0]:.2f}], "
+            f"y=[{min_corner[1]:.2f},{max_corner[1]:.2f}], size {self.size_phrase(obstacle)}."
+        )
+
+    @staticmethod
+    def size_phrase(obstacle):
+        size = obstacle.get("size", [0.0, 0.0, 0.0])
+        width = float(size[0]) if len(size) > 0 else 0.0
+        depth = float(size[1]) if len(size) > 1 else 0.0
+        height = float(size[2]) if len(size) > 2 else 0.0
+
+        if height > 1.2 and max(width, depth) < 0.7:
+            return "tall/narrow"
+        if height > 1.0 and max(width, depth) >= 0.7:
+            return "tall/wide"
+        if max(width, depth) < 0.8:
+            return "small/narrow"
+        if max(width, depth) < 1.5:
+            return "medium/narrow"
+        return "wide"
 
     def pose_tuple(self):
         if self.pose is None:
@@ -422,18 +527,14 @@ class SemanticObstaclePerception(Node):
         return -1.0
 
     @staticmethod
-    def rpy_matrix(roll, pitch, yaw):
+    def modalai_intrinsic_xyz_matrix(roll, pitch, yaw):
         cr, sr = math.cos(roll), math.sin(roll)
         cp, sp = math.cos(pitch), math.sin(pitch)
         cy, sy = math.cos(yaw), math.sin(yaw)
-        return np.array(
-            [
-                [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-                [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-                [-sp, cp * sr, cp * cr],
-            ],
-            dtype=float,
-        )
+        rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]], dtype=float)
+        ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]], dtype=float)
+        rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+        return rx @ ry @ rz
 
     @staticmethod
     def yaw_matrix(yaw):
@@ -448,7 +549,8 @@ def main():
         rclpy.spin(node)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

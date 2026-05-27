@@ -1,0 +1,145 @@
+################################################################################
+# Custom indoor VIO param file - Starling 2, PX4 1.14, qvio, no GPS/mag
+# Based on ModalAI indoor_vio_missing_gps + forum-confirmed fixes for
+# takeoff overshoot and EV timeout issues on VOXL2
+################################################################################
+
+################################################################################
+# attached hardware (not present/used)
+################################################################################
+1	1	SYS_HAS_MAG	0	6
+1	1	SYS_HAS_GPS	0	6
+1	1	COM_ARM_WO_GPS	1	9
+
+################################################################################
+# enabled sensors in EKF2
+################################################################################
+1	1	EKF2_MAG_TYPE	5	6
+1	1	EKF2_BARO_CTRL	1	6
+1	1	EKF2_EV_CTRL	15	6
+1	1	EKF2_OF_CTRL	0	6
+
+# Rangefinder enabled as secondary altitude aid (voxl-rangefinder-server running)
+# PX4 ignores qvio timestamp so delay compensation is needed
+1	1	EKF2_RNG_CTRL	1	6
+1	1	EKF2_RNG_DELAY	50.0	9
+
+# 0=baro 1=GPS 2=rangefinder 3=Vision
+# Vision (qvio) is primary height source
+1	1	EKF2_HGT_REF	3	6
+
+# Must be set AFTER EKF2_HGT_REF otherwise PX4 auto-resets it to 7
+1	1	EKF2_GPS_CTRL	0	6
+
+################################################################################
+# VIO-specific EKF2 tuning
+################################################################################
+
+# PX4 1.14 minimum quality gate for EV input
+# 1 = accept dead-reckoning from qvio temporarily (quality can dip at takeoff)
+# qvio drops to -1 on hard failure or its own timeout - that will still reject
+1	1	EKF2_EV_QMIN	1	6
+
+# Use covariance reported by qvio rather than fixed noise values
+# Required for qvio to have proper influence on EKF2 fusion weight
+1	1	EKF2_EV_NOISE_MD	0	6
+
+# Position/velocity/angle noise - tuned for qvio on Starling 2 indoors
+# If z instability persists at takeoff, increase EVP_NOISE to 0.2 first
+1	1	EKF2_EVA_NOISE	0.1	9
+1	1	EKF2_EVP_GATE	5.0	9
+1	1	EKF2_EVP_NOISE	0.1	9
+1	1	EKF2_EVV_GATE	3.0	9
+1	1	EKF2_EVV_NOISE	0.1	9
+
+# VOXL handles timestamping properly via voxl-time-sync
+# Setting delay to 0 prevents EKF2 adding extra latency on top
+1	1	EKF2_EV_DELAY	0.00	9
+
+################################################################################
+# EV timeout - CRITICAL for qvio stability
+# Forum-confirmed fix: added latency on some VOXL2 setups triggers PX4's
+# default EV timeout causing estimator to drop qvio mid-flight, leading to
+# uncontrolled altitude. 8000000 us = 8 seconds gives enough headroom.
+# Default is 1000000 (1 second) which is too tight for qvio over DDS.
+################################################################################
+1	1	EKF2_NOAID_TOUT	8000000	6
+
+################################################################################
+# Arming and safety
+################################################################################
+
+# Allow arming without valid GPS (required for indoor VIO-only flight)
+# Already set above via COM_ARM_WO_GPS but kept here for clarity
+
+# Disable magnetometer-based pre-arm checks since no mag present indoors
+1	1	COM_ARM_MAG_ANG	-1	9
+
+################################################################################
+# Position controller - indoor velocity limits
+# Conservative limits reduce overshoot during takeoff and waypoint tracking
+# Increase gradually once takeoff is stable
+################################################################################
+
+# Max horizontal velocity (m/s) - keep low indoors
+1	1	MPC_XY_VEL_MAX	2.0	9
+
+# Max vertical up/down velocity (m/s)
+# Reducing MPC_Z_VEL_MAX_UP directly limits takeoff ascent rate
+# This is the most direct software limiter for the ascending overshoot issue
+1	1	MPC_Z_VEL_MAX_UP	1.0	9
+1	1	MPC_Z_VEL_MAX_DN	0.5	9
+
+# Takeoff climb rate (m/s) - governs how fast drone ascends to takeoff altitude
+# Reducing this gives EKF2 more time to stabilise z estimate before reaching target
+1	1	MPC_TKO_SPEED	0.5	9
+
+# Takeoff ramp time - time in seconds to ramp up thrust at launch
+# Slightly longer ramp reduces prop-wash spike on qvio at motor spinup
+1	1	MPC_TKO_RAMP_T	0.4	9
+
+################################################################################
+# Offboard control
+################################################################################
+
+# RC override behaviour in offboard mode
+# Bit 1 = allow RC override in offboard (kill switch still works)
+1	1	COM_RC_OVERRIDE	1	6
+
+################################################################################
+# Barometer
+# Baro is kept active as a sanity reference but not used as height source
+# Calibrate with: voxl-calibrate-barometer
+################################################################################
+# EKF2_BARO_CTRL already set to 1 above - baro fused but not primary
+
+# Default: 12.0 m/s — way too fast indoors
+1	1	MPC_XY_VEL_MAX	1.5	9
+
+# Target cruise speed for position-only setpoints (no velocity feedforward)
+# Relevant during your TAKEOFF state where node sends position only
+# Must be <= MPC_XY_VEL_MAX
+# Default: 5.0 m/s
+1	1	MPC_XY_CRUISE	1.0	9
+
+# Horizontal acceleration limit - controls ramp up to target speed
+# Lower values = smoother acceleration, less VIO disturbance during wp approach
+# Default: 3.0 m/s²
+1	1	MPC_ACC_HOR	1.0	9
+
+
+
+# Jerk limit during auto/offboard tracking - smoothness of accel changes
+# Lower values = more gradual velocity changes, less mechanical stress on VIO
+# Default: 8.0 m/s³
+1	1	MPC_JERK_AUTO	2.0	9
+
+# Auto trajectory mode - 0=jerk limited, 1=smooth
+# 1 gives smoother motion profile for Bezier tracking indoors
+1	1	MPC_AUTO_MODE	1	6
+
+# Action when offboard connection is lost (COM_OBL = Offboard Loss)
+# 0=land 1=hold 2=return 3=terminate 4=lockdown 5=disarm 6=loiter
+# Set to 0 (land) instead of default 2 (RTL) since indoors RTL is dangerous
+# with VIO-only — no GPS means RTL home position is unreliable
+1	1	COM_OBL_RC_ACT	0	6

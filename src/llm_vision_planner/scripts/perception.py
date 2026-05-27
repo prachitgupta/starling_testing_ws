@@ -32,9 +32,9 @@ class ObstaclePerception(Node):
         self.declare_parameter("point_cloud_frame", "auto")
         self.declare_parameter("pose_topic", "/fmu/out/vehicle_odometry")
         self.declare_parameter("obstacle_topic", "/llm_vision/obstacles")
-        self.declare_parameter("goal_x", 3.0)
+        self.declare_parameter("goal_x", 2.5)
         self.declare_parameter("goal_y", 0.0)
-        self.declare_parameter("goal_z", -0.45)
+        self.declare_parameter("goal_z", -0.25)
         self.declare_parameter("min_range_m", 0.20)
         self.declare_parameter("max_range_m", 4.5)
         self.declare_parameter("min_z_m", -2.0)
@@ -42,6 +42,7 @@ class ObstaclePerception(Node):
         self.declare_parameter("ego_exclusion_radius_m", 0.25)
         self.declare_parameter("dbscan_eps", 0.5)
         self.declare_parameter("dbscan_min_samples", 8)
+        self.declare_parameter("debug", False)
 
         self.current_pose = None
         self.obstacles = []
@@ -70,9 +71,13 @@ class ObstaclePerception(Node):
         )
         self.timer = self.create_timer(0.5, self.publish_obstacles)
 
+    def log_warning(self, *args, **kwargs):
+        if bool(self.get_parameter("debug").value):
+            self.get_logger().warning(*args)
+
     def pose_callback(self, msg):
         if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
-            self.get_logger().warning("Ignoring VehicleOdometry that is not in NED pose frame.", throttle_duration_sec=5.0)
+            self.log_warning("Ignoring VehicleOdometry that is not in NED pose frame.", throttle_duration_sec=5.0)
             return
         yaw = self.quat_to_yaw(msg.q[1], msg.q[2], msg.q[3], msg.q[0])
         self.current_pose = (
@@ -153,7 +158,7 @@ class ObstaclePerception(Node):
             return points
         if source_frame == "body_ned":
             return drone_pos + (self.yaw_matrix(yaw) @ points.T).T
-        self.get_logger().warning(
+        self.log_warning(
             f"Unknown point_cloud_frame '{source_frame}', treating points as local_ned.",
             throttle_duration_sec=5.0,
         )

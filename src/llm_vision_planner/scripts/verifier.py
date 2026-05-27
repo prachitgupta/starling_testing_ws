@@ -5,18 +5,31 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import String
 
 REFINED_PLAN_TOPIC = "/llm_vision/plan_refined"
 VERIFIED_PLAN_TOPIC = "/llm_vision/plan_verified"
 SAFETY_MARGIN_M = 0.40
-INTERPOLATION_SPACING_M = 0.3
+INTERPOLATION_SPACING_M = 1.0
 CRUISE_SPEED_MPS = 0.5
 NOMINAL_DT_S = INTERPOLATION_SPACING_M / CRUISE_SPEED_MPS
 MAX_VELOCITY_MPS = 1.5
 MAX_ACCELERATION_MPS2 = 1.5
 GOAL_TOLERANCE_M = 0.05
 PROGRESS_TOLERANCE_M = 1e-3
+VERIFIED_PLAN_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+)
+REFINED_PLAN_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+)
 
 
 class PathVerifier(Node):
@@ -31,6 +44,7 @@ class PathVerifier(Node):
         self.declare_parameter("max_acceleration_mps2", MAX_ACCELERATION_MPS2)
         self.declare_parameter("goal_tolerance_m", GOAL_TOLERANCE_M)
         self.declare_parameter("progress_tolerance_m", PROGRESS_TOLERANCE_M)
+        self.declare_parameter("debug", False)
 
         self.refined_plan_topic = str(self.get_parameter("refined_plan_topic").value)
         self.verified_plan_topic = str(self.get_parameter("verified_plan_topic").value)
@@ -43,8 +57,12 @@ class PathVerifier(Node):
         self.progress_tolerance_m = float(self.get_parameter("progress_tolerance_m").value)
         self.nominal_dt_s = self.interpolation_spacing_m / self.cruise_speed_mps
 
-        self.plan_sub = self.create_subscription(String, self.refined_plan_topic, self.plan_callback, 10)
-        self.verified_pub = self.create_publisher(String, self.verified_plan_topic, 10)
+        self.plan_sub = self.create_subscription(String, self.refined_plan_topic, self.plan_callback, REFINED_PLAN_QOS)
+        self.verified_pub = self.create_publisher(String, self.verified_plan_topic, VERIFIED_PLAN_QOS)
+
+    def log_info(self, *args, **kwargs):
+        if bool(self.get_parameter("debug").value):
+            self.get_logger().info(*args)
 
     def plan_callback(self, msg):
         try:
@@ -65,7 +83,7 @@ class PathVerifier(Node):
         out = String()
         out.data = json.dumps(output)
         self.verified_pub.publish(out)
-        self.get_logger().info(
+        self.log_info(
             "Verification %s: clearance=%.2f m, max_vel=%.2f m/s, max_accel=%.2f m/s^2"
             % (
                 "passed" if metrics["passed"] else "failed",
@@ -84,6 +102,8 @@ class PathVerifier(Node):
         in_workspace = all(self.point_in_workspace(point, workspace) for point in waypoints)
         clearance_values = [self.clearance_to_obstacles(point, obstacles) for point in waypoints]
         min_clearance = min(clearance_values) if clearance_values else 0.0
+        goal_clearance = self.clearance_to_obstacles(goal, obstacles) if goal else 0.0
+        goal_clearance_ok = bool(goal) and goal_clearance >= self.safety_margin_m
         collision_free = bool(waypoints) and min_clearance >= self.safety_margin_m
         goal_match = self.goal_matches(waypoints[-1], goal) if waypoints else False
         monotonic_progress = self.is_monotonic_progress(waypoints, goal)
@@ -93,6 +113,7 @@ class PathVerifier(Node):
         checks = {
             "has_waypoints": bool(waypoints),
             "in_workspace": in_workspace,
+            "goal_clearance": goal_clearance_ok,
             "collision_free": collision_free,
             "goal_match": goal_match,
             "monotonic_goal_progress": monotonic_progress,
@@ -112,6 +133,8 @@ class PathVerifier(Node):
             max_speed,
             max_accel,
             in_workspace,
+            goal_clearance,
+            goal_clearance_ok,
             collision_free,
             goal_match,
             monotonic_progress,
@@ -121,6 +144,7 @@ class PathVerifier(Node):
         return {
             "collision_free": collision_free,
             "min_clearance_m": round(min_clearance, 3),
+            "goal_clearance_m": round(goal_clearance, 3),
             "max_segment_speed": round(max_speed, 3),
             "max_segment_accel": round(max_accel, 3),
             "monotonic_goal_progress": monotonic_progress,
@@ -134,9 +158,21 @@ class PathVerifier(Node):
             "feedback_table": feedback_table,
         }
 
-    def feedback_table(self, min_clearance, max_speed, max_accel, in_workspace, collision_free, goal_match, monotonic_progress):
+    def feedback_table(
+        self,
+        min_clearance,
+        max_speed,
+        max_accel,
+        in_workspace,
+        goal_clearance,
+        goal_clearance_ok,
+        collision_free,
+        goal_match,
+        monotonic_progress,
+    ):
         rows = [
             ("in_workspace", str(in_workspace), "true", in_workspace),
+            ("goal_clearance", f"{goal_clearance:.3f}", f">= {self.safety_margin_m:.3f}", goal_clearance_ok),
             ("collision_free", str(collision_free), "true", collision_free),
             ("min_clearance_m", f"{min_clearance:.3f}", f">= {self.safety_margin_m:.3f}", min_clearance >= self.safety_margin_m),
             ("goal_match", str(goal_match), "true", goal_match),

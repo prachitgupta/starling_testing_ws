@@ -18,14 +18,15 @@ ODOM_QOS = QoSProfile(
 class OffboardWaypoint(Node):
     def __init__(self):
         super().__init__("starling_offboard_waypoint")
-        self.declare_parameter("x", 0.5)
-        self.declare_parameter("y", 0.0)
+        self.declare_parameter("x", 0.0)
+        self.declare_parameter("y", 0.5)
         self.declare_parameter("z", -0.45)
         self.declare_parameter("epsilon_x", 0.08)
         self.declare_parameter("epsilon_y", 0.08)
         self.declare_parameter("epsilon_z", 0.08)
         self.declare_parameter("prime_s", 1.5)
         self.declare_parameter("takeoff_settle_s", 2.0)
+        self.declare_parameter("track_timeout_s", 5.0)
         self.declare_parameter("pose_timeout_s", 0.5)
 
         self.offboard_pub = self.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
@@ -52,6 +53,8 @@ class OffboardWaypoint(Node):
         if not self.odom_fresh():
             self.get_logger().warn("waiting for fresh /fmu/out/vehicle_odometry", throttle_duration_sec=2.0)
             return
+        if self.state == "LAND":
+            return
 
         if self.state == "WAIT_POSE":
             self.target = [self.position[0], self.position[1], float(self.get_parameter("z").value)]
@@ -77,8 +80,11 @@ class OffboardWaypoint(Node):
 
         elif self.state == "TRACK" and self.at_target(self.target):
             self.get_logger().info("target reached; landing")
-            self.command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
-            self.transition("LAND")
+            self.land()
+
+        elif self.state == "TRACK" and self.elapsed() >= float(self.get_parameter("track_timeout_s").value):
+            self.get_logger().warn("target was not reached before timeout; landing")
+            self.land()
 
     def odom_fresh(self):
         return self.position is not None and time.time() - self.last_odom_s <= float(self.get_parameter("pose_timeout_s").value)
@@ -118,6 +124,10 @@ class OffboardWaypoint(Node):
         msg.source_component = 1
         msg.from_external = True
         self.command_pub.publish(msg)
+
+    def land(self):
+        self.command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+        self.transition("LAND")
 
     def transition(self, state):
         self.state = state

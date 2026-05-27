@@ -113,32 +113,47 @@ ros2 pkg executables voxl_mpa_to_ros2
 ros2 run voxl_mpa_to_ros2 voxl_mpa_to_ros2
 ```
 
-Start the planner stack:
+Terminal 1: run takeoff and hold:
 
 ```bash
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
-ros2 launch llm_vision_planner full_plot.launch.py mode:=semantic
+ros2 run llm_vision_planner mission_takeoff.py --ros-args \
+  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
 
-Start the Python Offboard follower:
+Wait until the vehicle is holding pose and publishing `HOLDING_FOR_PLAN`.
+
+Terminal 2: start the planner stack:
 
 ```bash
+cd ~/Desktop/starling_testing_ws
+source install/setup.bash
+ros2 launch llm_vision_planner full_plot.launch.py \
+  params_file:=src/llm_vision_planner/config/llm_vision_planner.yaml \
+  mode:=semantic
+```
+
+Terminal 3: after a verified plan is received, start the Python Offboard follower:
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source install/setup.bash
 ros2 run llm_vision_planner trajectory_follower.py --ros-args \
   --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
 
 Mission behavior:
 
-1. `trajectory_follower.py` primes PX4 Offboard setpoints.
-2. The vehicle arms and climbs to `takeoff_z`.
-3. The follower publishes `/llm_vision/mission_state` as `HOLDING_FOR_PLAN`.
-4. `prompt_generator.py` latches the hover pose and current obstacle snapshot.
-5. `llm_planner.py` generates sparse waypoints.
-6. `refinment.py` interpolates and nudges the path.
-7. `verifier.py` publishes `passed`, metrics, failed constraints, thresholds, and a feedback table.
-8. Failed verification results are appended into the next prompt using the same latched hover context.
-9. The first `passed=true` trajectory is latched and tracked with Bezier position/velocity setpoints.
+1. `mission_takeoff.py` waits for PX4 NED odometry, primes Offboard setpoints, arms, climbs to `takeoff_z`, and holds the reached pose.
+2. `mission_takeoff.py` publishes `/llm_vision/mission_state` as `HOLDING_FOR_PLAN`.
+3. `prompt_generator.py` latches the hover pose and current obstacle snapshot.
+4. `llm_planner.py` generates sparse waypoints.
+5. `refinment.py` interpolates and nudges the path.
+6. `verifier.py` publishes `passed`, metrics, failed constraints, thresholds, and a feedback table.
+7. Failed verification results are appended into the next prompt using the same latched hover context.
+8. The first `passed=true` trajectory is latched by `trajectory_follower.py`.
+9. `trajectory_follower.py` takes Offboard ownership from `mission_takeoff.py` and tracks the verified path with Bezier position/velocity setpoints.
 
 Monitor:
 

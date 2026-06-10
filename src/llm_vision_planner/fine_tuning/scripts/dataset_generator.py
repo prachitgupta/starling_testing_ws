@@ -35,7 +35,8 @@ def prompt_from_current_generator(prompt_module, start, goal, workspace, obstacl
     formatter.workspace_y = tuple(workspace["y"])
     formatter.fixed_z = float(workspace["z"])
     formatter.clearance_m = DEFAULT_CLEARANCE_M
-    nl_env = prompt_module.PromptGenerator.build_nl_env(formatter, start, goal, obstacles)
+    prompt_obstacles = [dict(obstacle, label="obstacle", shape="obstacle") for obstacle in obstacles]
+    nl_env = prompt_module.PromptGenerator.build_nl_env(formatter, start, goal, prompt_obstacles)
     prompt = "\n".join([prompt_module.INSTRUCTIONS, nl_env, prompt_module.PromptGenerator.constraints(formatter)])
     return prompt, nl_env
 

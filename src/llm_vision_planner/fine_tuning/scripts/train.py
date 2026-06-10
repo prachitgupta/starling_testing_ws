@@ -2,6 +2,7 @@
 import argparse
 import csv
 import inspect
+import json
 from pathlib import Path
 
 from datasets import load_dataset
@@ -18,14 +19,14 @@ DEFAULT_MODEL = "unsloth/Meta-Llama-3.1-8B-Instruct"
 TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 
-def format_examples(examples, tokenizer):
+def build_text_dataset(dataset, tokenizer):
     texts = []
-    for messages_json in examples["messages"]:
-        import json
-
+    for messages_json in dataset["messages"]:
         messages = json.loads(messages_json)
         texts.append(tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False))
-    return {"text": texts}
+    if "text" in dataset.column_names:
+        dataset = dataset.remove_columns("text")
+    return dataset.add_column("text", texts)
 
 
 def training_arguments(**kwargs):
@@ -133,7 +134,7 @@ def main():
     )
 
     dataset = load_dataset("csv", data_files=str(args.dataset), split="train")
-    dataset = dataset.map(lambda examples: format_examples(examples, tokenizer), batched=True)
+    dataset = build_text_dataset(dataset, tokenizer)
     split = dataset.train_test_split(test_size=args.val_split_ratio, seed=args.seed)
 
     trainer = sft_trainer(

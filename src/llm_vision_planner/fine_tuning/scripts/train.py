@@ -36,6 +36,13 @@ def training_arguments(**kwargs):
     return TrainingArguments(**kwargs)
 
 
+def sft_trainer(**kwargs):
+    signature = inspect.signature(SFTTrainer.__init__).parameters
+    if "processing_class" in signature and "tokenizer" in kwargs:
+        kwargs["processing_class"] = kwargs.pop("tokenizer")
+    return SFTTrainer(**{key: value for key, value in kwargs.items() if key in signature})
+
+
 def save_loss_artifacts(log_history, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "loss_history.csv"
@@ -129,7 +136,7 @@ def main():
     dataset = dataset.map(lambda examples: format_examples(examples, tokenizer), batched=True)
     split = dataset.train_test_split(test_size=args.val_split_ratio, seed=args.seed)
 
-    trainer = SFTTrainer(
+    trainer = sft_trainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=split["train"],

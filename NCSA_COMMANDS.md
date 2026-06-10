@@ -1,6 +1,14 @@
 # NCSA DeltaAI Commands
 
-Replace `YOUR_ACCOUNT` with the account shown by `accounts`.
+Your discovered storage paths:
+
+```text
+/projects/bhkj/pgupta12
+/work/hdd/bhkj/pgupta12
+/work/nvme/bhkj/pgupta12
+```
+
+This guide uses `/projects/bhkj/$USER` as the main repo and output location.
 
 ## Login And Account
 
@@ -22,27 +30,36 @@ Show storage quota and usage.
 ```bash
 find /work -maxdepth 3 -type d -name "$USER" 2>/dev/null
 ```
+Find existing work storage directories for your username.
+
+```bash
+find /projects -maxdepth 3 -type d -name "$USER" 2>/dev/null
+```
 Find existing project storage directories for your username.
 
 ```bash
-ls /work/hdd
-ls /work/nvme
+ls /projects/bhkj
+ls /work/hdd/bhkj
+ls /work/nvme/bhkj
 ```
-List available HDD and NVMe project storage roots.
+Check available project, HDD, and NVMe storage roots.
 
 ## Workspace Setup On DeltaAI
 
 ```bash
-mkdir -p /work/hdd/YOUR_ACCOUNT/$USER
-cd /work/hdd/YOUR_ACCOUNT/$USER
+cd /projects/bhkj/$USER
 ```
-Create and enter project HDD storage.
+Enter project storage.
 
 ```bash
-mkdir -p /work/nvme/YOUR_ACCOUNT/$USER
-cd /work/nvme/YOUR_ACCOUNT/$USER
+cd /work/hdd/bhkj/$USER
 ```
-Create and enter project NVMe storage if your account has it.
+Enter HDD work storage.
+
+```bash
+cd /work/nvme/bhkj/$USER
+```
+Enter NVMe work storage.
 
 ```bash
 git clone https://github.com/prachitgupta/starling_testing_ws.git
@@ -51,7 +68,7 @@ cd starling_testing_ws
 Clone the workspace.
 
 ```bash
-cd /work/hdd/YOUR_ACCOUNT/$USER/starling_testing_ws
+cd /projects/bhkj/$USER/starling_testing_ws
 git pull
 ```
 Update an existing clone.
@@ -66,23 +83,23 @@ Generate the RRT expert dataset locally.
 
 ```bash
 scp ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv \
-  pgupta12@dtai-login.delta.ncsa.illinois.edu:/work/hdd/YOUR_ACCOUNT/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/
+  pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/
 ```
 Upload the dataset to DeltaAI.
 
 ```bash
-scp pgupta12@dtai-login.delta.ncsa.illinois.edu:/work/hdd/YOUR_ACCOUNT/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora.tar.gz .
+scp pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora.tar.gz .
 ```
 Download trained adapter archive.
 
 ## Create Training Job
 
 ```bash
-cd /work/hdd/YOUR_ACCOUNT/$USER/starling_testing_ws
+cd /projects/bhkj/$USER/starling_testing_ws
 mkdir -p logs
 cat > train_rrt_lora.sbatch <<'EOF'
 #!/bin/bash
-#SBATCH --account=YOUR_ACCOUNT
+#SBATCH --account=bhkj
 #SBATCH --partition=ghx4
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -95,14 +112,14 @@ cat > train_rrt_lora.sbatch <<'EOF'
 
 set -euo pipefail
 
-cd /work/hdd/YOUR_ACCOUNT/$USER/starling_testing_ws
+cd /projects/bhkj/$USER/starling_testing_ws
 
-export HF_HOME=/work/hdd/YOUR_ACCOUNT/$USER/hf_cache
-export TRANSFORMERS_CACHE=/work/hdd/YOUR_ACCOUNT/$USER/hf_cache
+export HF_HOME=/projects/bhkj/$USER/hf_cache
+export TRANSFORMERS_CACHE=/projects/bhkj/$USER/hf_cache
 export WANDB_DISABLED=true
 
-python3 -m venv /work/hdd/YOUR_ACCOUNT/$USER/unsloth_env || true
-source /work/hdd/YOUR_ACCOUNT/$USER/unsloth_env/bin/activate
+python3 -m venv /projects/bhkj/$USER/unsloth_env || true
+source /projects/bhkj/$USER/unsloth_env/bin/activate
 
 python -m pip install --upgrade pip
 python -m pip install unsloth datasets trl transformers accelerate peft bitsandbytes
@@ -124,11 +141,6 @@ tar -czf src/llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora.tar.gz \
 EOF
 ```
 Create a Slurm batch script for LoRA training.
-
-```bash
-sed -i "s/YOUR_ACCOUNT/ACTUAL_ACCOUNT/g" train_rrt_lora.sbatch
-```
-Replace the placeholder account after creating the script.
 
 ## Submit And Monitor
 
@@ -165,7 +177,7 @@ Cancel a job.
 ## Interactive GPU Test
 
 ```bash
-srun --account=YOUR_ACCOUNT --partition=ghx4 --nodes=1 --ntasks-per-node=1 --cpus-per-task=16 --gpus-per-node=1 --mem=128g --time=01:00:00 --pty bash
+srun --account=bhkj --partition=ghx4 --nodes=1 --ntasks-per-node=1 --cpus-per-task=16 --gpus-per-node=1 --mem=128g --time=01:00:00 --pty bash
 ```
 Start an interactive GPU shell.
 

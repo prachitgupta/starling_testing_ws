@@ -35,8 +35,25 @@ def prompt_from_current_generator(prompt_module, start, goal, workspace, obstacl
     formatter.workspace_y = tuple(workspace["y"])
     formatter.fixed_z = float(workspace["z"])
     formatter.clearance_m = DEFAULT_CLEARANCE_M
-    prompt_obstacles = [dict(obstacle, label="obstacle", shape="obstacle") for obstacle in obstacles]
-    nl_env = prompt_module.PromptGenerator.build_nl_env(formatter, start, goal, prompt_obstacles)
+    obstacle_lines = []
+    for index, obstacle in enumerate(obstacles, start=1):
+        min_corner = obstacle["min_corner"]
+        max_corner = obstacle["max_corner"]
+        obstacle_lines.append(
+            f"{index} obstacle: x=[{min_corner[0]:.2f},{max_corner[0]:.2f}], "
+            f"y=[{min_corner[1]:.2f},{max_corner[1]:.2f}]."
+        )
+    obstacle_text = " ".join(obstacle_lines) if obstacle_lines else "No obstacles currently detected."
+    distance = math.hypot(goal["x"] - start["x"], goal["y"] - start["y"])
+    nl_env = (
+        "Mission state: the UAV has already taken off and is holding hover at the start position. "
+        "Use this hover position as the first waypoint/reference for planning. "
+        f"Workspace: x=[{workspace['x'][0]:.2f},{workspace['x'][1]:.2f}]m, "
+        f"y=[{workspace['y'][0]:.2f},{workspace['y'][1]:.2f}]m, z={workspace['z']:.2f} fixed. "
+        f"Start: ({start['x']:.2f},{start['y']:.2f},{workspace['z']:.2f}), "
+        f"Goal: ({goal['x']:.2f},{goal['y']:.2f},{goal['z']:.2f}), "
+        f"distance≈{distance:.2f}m. Obstacles with x-y spans: {obstacle_text}"
+    )
     prompt = "\n".join([prompt_module.INSTRUCTIONS, nl_env, prompt_module.PromptGenerator.constraints(formatter)])
     return prompt, nl_env
 

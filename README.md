@@ -152,7 +152,7 @@ Fake hover state:
 
 ```bash
 ros2 topic pub /llm_vision/mission_state std_msgs/msg/String \
-  "{data: '{\"state\":\"HOLDING_FOR_PLAN\",\"position\":{\"x\":0.0,\"y\":0.0,\"z\":-0.45},\"heading_deg\":0.0}'}" -r 2
+  "{data: '{\"state\":\"HOLDING_FOR_PLAN\",\"position\":{\"x\":0.0,\"y\":0.0,\"z\":-0.45}}'}" -r 2
 ```
 
 Fake obstacle snapshot:
@@ -163,6 +163,74 @@ ros2 topic pub /llm_vision/semantic_obstacles std_msgs/msg/String \
 ```
 
 Expected output: `/llm_vision/prompt` is generated only after `HOLDING_FOR_PLAN`; `/llm_vision/plan_verified` contains metrics and either `passed=true` or a feedback table for retry.
+
+## RRT Expert Fine-Tuning
+
+The fine-tuning utilities live in `src/llm_vision_planner/fine_tuning`. They generate synthetic environment vectors, reuse the current `prompt_generator.py` natural-language prompt, label each sample with an RRT expert path, and fine-tune Llama-3.1-8B-Instruct with Unsloth LoRA.
+
+Generate a dataset:
+
+```bash
+cd ~/Desktop/starling_testing_ws/src
+python3 llm_vision_planner/fine_tuning/scripts/dataset_generator.py \
+  --samples 1000 \
+  --random-goal \
+  --seed 7
+```
+
+Dataset generator args:
+
+- `--samples`: number of successful RRT-labeled rows to write.
+- `--seed`: random seed for repeatable environments and RRT paths.
+- `--output`: output CSV path; defaults to `llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv`.
+- `--random-goal`: sample random goals; without it, all rows use the package default goal.
+
+Quick smoke test:
+
+```bash
+python3 llm_vision_planner/fine_tuning/scripts/dataset_generator.py --samples 20 --seed 7
+```
+
+Install GPU training dependencies in a separate Python environment:
+
+```bash
+python3 -m venv ~/unsloth_env
+source ~/unsloth_env/bin/activate
+pip install --upgrade pip
+pip install unsloth
+```
+
+Check CUDA:
+
+```bash
+python3 - <<'PY'
+import torch
+print(torch.cuda.is_available())
+print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "no cuda")
+PY
+```
+
+Run a small training plumbing test:
+
+```bash
+python3 llm_vision_planner/fine_tuning/scripts/train.py \
+  --dataset llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv \
+  --epochs 0.05 \
+  --batch-size 1 \
+  --grad-accum 2
+```
+
+Run normal LoRA training:
+
+```bash
+python3 llm_vision_planner/fine_tuning/scripts/train.py \
+  --dataset llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv \
+  --epochs 1 \
+  --batch-size 2 \
+  --grad-accum 4
+```
+
+The default adapter output is `llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora`.
 
 ## Known Failure Modes
 

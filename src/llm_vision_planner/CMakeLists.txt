@@ -20,6 +20,7 @@ install(PROGRAMS
 install(DIRECTORY
   launch
   config
+  fine_tuning
   DESTINATION share/${PROJECT_NAME}
 )
 

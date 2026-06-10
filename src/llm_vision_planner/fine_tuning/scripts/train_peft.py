@@ -6,10 +6,9 @@ import json
 from pathlib import Path
 
 import torch
-from datasets import load_dataset
-from peft import LoraConfig
-from trl import SFTTrainer
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
+from datasets import Dataset, load_dataset
+from peft import LoraConfig, get_peft_model
+from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling, Trainer, TrainingArguments
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -20,14 +19,13 @@ DEFAULT_MODEL = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 
-def build_text_dataset(dataset, tokenizer):
+def build_tokenized_dataset(dataset, tokenizer, max_seq_length):
     texts = []
     for messages_json in dataset["messages"]:
         messages = json.loads(messages_json)
         texts.append(tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False))
-    if "text" in dataset.column_names:
-        dataset = dataset.remove_columns("text")
-    return dataset.add_column("text", texts)
+    encoded = tokenizer(texts, truncation=True, max_length=max_seq_length, padding=False)
+    return Dataset.from_dict({"input_ids": encoded["input_ids"], "attention_mask": encoded["attention_mask"]})
 
 
 def training_arguments(**kwargs):
@@ -36,13 +34,6 @@ def training_arguments(**kwargs):
         strategy_key = "evaluation_strategy"
     kwargs[strategy_key] = "steps"
     return TrainingArguments(**kwargs)
-
-
-def sft_trainer(**kwargs):
-    signature = inspect.signature(SFTTrainer.__init__).parameters
-    if "processing_class" in signature and "tokenizer" in kwargs:
-        kwargs["processing_class"] = kwargs.pop("tokenizer")
-    return SFTTrainer(**{key: value for key, value in kwargs.items() if key in signature})
 
 
 def save_loss_artifacts(log_history, output_dir):
@@ -128,7 +119,7 @@ def main():
     model.gradient_checkpointing_enable()
 
     dataset = load_dataset("csv", data_files=str(args.dataset), split="train")
-    dataset = build_text_dataset(dataset, tokenizer)
+    dataset = build_tokenized_dataset(dataset, tokenizer, args.max_seq_length)
     split = dataset.train_test_split(test_size=args.val_split_ratio, seed=args.seed)
 
     peft_config = LoraConfig(
@@ -139,15 +130,13 @@ def main():
         task_type="CAUSAL_LM",
         target_modules=TARGET_MODULES,
     )
+    model = get_peft_model(model, peft_config)
 
-    trainer = sft_trainer(
+    trainer = Trainer(
         model=model,
-        tokenizer=tokenizer,
         train_dataset=split["train"],
         eval_dataset=split["test"],
-        dataset_text_field="text",
-        max_seq_length=args.max_seq_length,
-        peft_config=peft_config,
+        data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         args=training_arguments(
             per_device_train_batch_size=args.batch_size,
             gradient_accumulation_steps=args.grad_accum,

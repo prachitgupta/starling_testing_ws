@@ -92,6 +92,27 @@ scp pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling
 ```
 Download trained adapter archive.
 
+## Hugging Face Auth
+
+```bash
+cd /projects/bhkj/$USER/starling_testing_ws
+module purge
+module load cray-python
+source /projects/bhkj/$USER/peft_env/bin/activate
+python -m pip install -U huggingface_hub
+export HF_HOME=/projects/bhkj/$USER/hf_cache
+huggingface-cli login
+```
+Save a Hugging Face read token for gated Llama model access.
+
+```bash
+python - <<'PY'
+from huggingface_hub import HfApi
+print(HfApi().model_info("meta-llama/Meta-Llama-3.1-8B-Instruct").modelId)
+PY
+```
+Check that the saved token can access Llama 3.1 8B Instruct.
+
 ## PEFT Training Job
 
 ```bash
@@ -118,6 +139,13 @@ sed -i 's/--grad-accum 2/--grad-accum 4/' train_peft_full.sbatch
 sbatch train_peft_full.sbatch
 ```
 Submit a full training job with the current 20k-sample defaults.
+
+## Unsloth Training Job
+
+```bash
+sbatch src/llm_vision_planner/fine_tuning/scripts/train_rrt_lora.sbatch
+```
+Submit the Unsloth LoRA job.
 
 ## Submit And Monitor
 

@@ -23,12 +23,12 @@ def generate_launch_description():
     )
     llm_provider_arg = DeclareLaunchArgument(
         "llm_provider",
-        default_value="chatgpt",
+        default_value="llama",
         description="Planner LLM provider: chatgpt or llama",
     )
     show_rrt_arg = DeclareLaunchArgument(
         "show_rrt",
-        default_value="false",
+        default_value="true",
         description="Overlay an RRT expert trajectory on the final verified plot",
     )
     params_file = LaunchConfiguration("params_file")

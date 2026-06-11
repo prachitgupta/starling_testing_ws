@@ -60,7 +60,7 @@ class PromptGenerator(Node):
         self.declare_parameter("semantic_obstacle_topic", DEFAULT_SEMANTIC_OBSTACLE_TOPIC)
         self.declare_parameter("normal_obstacle_topic", DEFAULT_NORMAL_OBSTACLE_TOPIC)
         self.declare_parameter("prompt_topic", DEFAULT_PROMPT_TOPIC)
-        self.declare_parameter("llm_provider", "chatgpt")
+        self.declare_parameter("llm_provider", "llama")
         self.declare_parameter("chatgpt_model_name", "gpt-5-mini")
         self.declare_parameter("llama_model_name", "rrt_planner")
         self.declare_parameter("verified_plan_topic", DEFAULT_VERIFIED_PLAN_TOPIC)

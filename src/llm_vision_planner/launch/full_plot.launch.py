@@ -5,6 +5,7 @@ from launch.substitutions import PathJoinSubstitution
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -19,6 +20,16 @@ def generate_launch_description():
             [FindPackageShare("llm_vision_planner"), "config", "llm_vision_planner.yaml"]
         ),
         description="YAML file containing llm_vision_planner node parameters",
+    )
+    llm_provider_arg = DeclareLaunchArgument(
+        "llm_provider",
+        default_value="chatgpt",
+        description="Planner LLM provider: chatgpt or llama",
+    )
+    show_rrt_arg = DeclareLaunchArgument(
+        "show_rrt",
+        default_value="false",
+        description="Overlay an RRT expert trajectory on the final verified plot",
     )
     params_file = LaunchConfiguration("params_file")
 
@@ -48,7 +59,7 @@ def generate_launch_description():
         executable="prompt_generator.py",
         name="prompt_generator",
         output="screen",
-        parameters=[params_file, {"mode": LaunchConfiguration("mode")}],
+        parameters=[params_file, {"mode": LaunchConfiguration("mode"), "llm_provider": LaunchConfiguration("llm_provider")}],
     )
 
     llm_planner = Node(
@@ -56,7 +67,7 @@ def generate_launch_description():
         executable="llm_planner.py",
         name="llm_planner",
         output="screen",
-        parameters=[params_file],
+        parameters=[params_file, {"llm_provider": LaunchConfiguration("llm_provider")}],
     )
 
     refinement = Node(
@@ -80,13 +91,15 @@ def generate_launch_description():
         executable="visualize.py",
         name="planner_visualizer",
         output="screen",
-        parameters=[params_file],
+        parameters=[params_file, {"show_rrt": ParameterValue(LaunchConfiguration("show_rrt"), value_type=bool)}],
     )
 
     return LaunchDescription(
         [
             mode_arg,
             params_file_arg,
+            llm_provider_arg,
+            show_rrt_arg,
             semantic_perception,
             normal_perception,
             llm_planner,

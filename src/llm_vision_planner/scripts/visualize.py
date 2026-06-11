@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import importlib.util
 import json
 import math
 import os
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -19,6 +21,7 @@ SEMANTIC_OBSTACLE_TOPIC = "/llm_vision/semantic_obstacles"
 POSE_TOPIC = "/fmu/out/vehicle_odometry"
 DEFAULT_OUTPUT_PNG = "/tmp/llm_vision_plot.png"
 DEFAULT_Z = -0.25
+DEFAULT_RRT_CLEARANCE_M = 0.40
 
 ODOM_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.BEST_EFFORT,
@@ -37,6 +40,23 @@ PLAN_QOS = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1,
 )
+
+
+def load_rrt_planner():
+    candidates = [Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts" / "rrt.py"]
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        candidates.append(Path(get_package_share_directory("llm_vision_planner")) / "fine_tuning" / "scripts" / "rrt.py")
+    except Exception:
+        pass
+    for path in candidates:
+        if path.exists():
+            spec = importlib.util.spec_from_file_location("llm_vision_rrt", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module.plan_rrt
+    return None
 
 
 class PlannerVisualizer(Node):
@@ -59,6 +79,9 @@ class PlannerVisualizer(Node):
         self.declare_parameter("workspace_x_max", 4.0)
         self.declare_parameter("workspace_y_min", 0.0)
         self.declare_parameter("workspace_y_max", 4.0)
+        self.declare_parameter("show_rrt", False)
+        self.declare_parameter("rrt_clearance_m", DEFAULT_RRT_CLEARANCE_M)
+        self.declare_parameter("rrt_seed", 7)
         self.declare_parameter("debug", False)
         self.raw_plan_topic = str(self.get_parameter("raw_plan_topic").value)
         self.refined_plan_topic = str(self.get_parameter("refined_plan_topic").value)
@@ -73,6 +96,12 @@ class PlannerVisualizer(Node):
         self.static_plot_dpi = int(self.get_parameter("static_plot_dpi").value)
         self.static_plot_prefix = str(self.get_parameter("static_plot_prefix").value)
         self.fixed_z = float(self.get_parameter("fixed_z").value)
+        self.show_rrt = bool(self.get_parameter("show_rrt").value)
+        self.rrt_clearance_m = float(self.get_parameter("rrt_clearance_m").value)
+        self.rrt_seed = int(self.get_parameter("rrt_seed").value)
+        self.plan_rrt = load_rrt_planner() if self.show_rrt else None
+        if self.show_rrt and self.plan_rrt is None:
+            self.log_warning("show_rrt is true, but fine_tuning/scripts/rrt.py could not be loaded.")
         self.default_workspace = {
             "x": [
                 float(self.get_parameter("workspace_x_min").value),
@@ -189,11 +218,13 @@ class PlannerVisualizer(Node):
         obstacles = self.obstacles(payload)
         goal = self.goal(payload)
         workspace = payload.get("workspace") or self.workspace_from_scene(obstacles, goal)
+        rrt_waypoints = self.rrt_waypoints(payload, sparse_waypoints, obstacles, goal, workspace, verified_latched)
 
         signature = json.dumps(
             {
                 "sparse": sparse_waypoints,
                 "refined": refined_waypoints,
+                "rrt": rrt_waypoints,
                 "obstacles": obstacles,
                 "goal": goal,
                 "pose": self.current_pose,
@@ -212,6 +243,7 @@ class PlannerVisualizer(Node):
             self.axis,
             sparse_waypoints,
             refined_waypoints,
+            rrt_waypoints,
             obstacles,
             goal,
             workspace,
@@ -238,6 +270,7 @@ class PlannerVisualizer(Node):
         obstacles = self.obstacles(payload)
         goal = self.goal(payload)
         workspace = payload.get("workspace") or self.workspace_from_scene(obstacles, goal)
+        rrt_waypoints = self.rrt_waypoints(payload, sparse_waypoints, obstacles, goal, workspace, verified_latched)
 
         os.makedirs(self.static_plot_dir, exist_ok=True)
         output_path = os.path.join(self.static_plot_dir, f"{self.static_plot_prefix}_{name}.png")
@@ -246,6 +279,7 @@ class PlannerVisualizer(Node):
             axis,
             sparse_waypoints,
             refined_waypoints,
+            rrt_waypoints,
             obstacles,
             goal,
             workspace,
@@ -257,7 +291,7 @@ class PlannerVisualizer(Node):
         plt.close(figure)
         self.get_logger().info(f"Saved static plot: {output_path}")
 
-    def draw_scene(self, axis, sparse_waypoints, refined_waypoints, obstacles, goal, workspace, verified_latched, include_drone):
+    def draw_scene(self, axis, sparse_waypoints, refined_waypoints, rrt_waypoints, obstacles, goal, workspace, verified_latched, include_drone):
         self.draw_obstacles(obstacles, axis)
         if verified_latched:
             self.draw_path(
@@ -274,6 +308,14 @@ class PlannerVisualizer(Node):
                 color="#10b981",
                 marker=".",
                 linestyle="-",
+                axis=axis,
+            )
+            self.draw_path(
+                rrt_waypoints,
+                "RRT expert trajectory",
+                color="#7c3aed",
+                marker="x",
+                linestyle="-.",
                 axis=axis,
             )
         else:
@@ -304,6 +346,27 @@ class PlannerVisualizer(Node):
         if self.latest_refined is None:
             return []
         return self.latest_refined.get("waypoints", [])
+
+    def rrt_waypoints(self, payload, sparse_waypoints, obstacles, goal, workspace, verified_latched):
+        if not self.show_rrt or not verified_latched or self.plan_rrt is None or not goal:
+            return []
+        start = payload.get("start") or (sparse_waypoints[0] if sparse_waypoints else None)
+        if start is None and self.current_pose is not None:
+            start = self.current_pose
+        if start is None:
+            return []
+        try:
+            return self.plan_rrt(
+                start,
+                goal,
+                obstacles,
+                workspace={**workspace, "z": self.fixed_z},
+                clearance_m=self.rrt_clearance_m,
+                seed=self.rrt_seed,
+            )
+        except Exception as exc:
+            self.log_warning(f"RRT overlay failed: {exc}", throttle_duration_sec=5.0)
+            return []
 
     def static_sparse_waypoints(self, payload, verified_latched):
         if verified_latched:

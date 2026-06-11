@@ -60,6 +60,9 @@ class PromptGenerator(Node):
         self.declare_parameter("semantic_obstacle_topic", DEFAULT_SEMANTIC_OBSTACLE_TOPIC)
         self.declare_parameter("normal_obstacle_topic", DEFAULT_NORMAL_OBSTACLE_TOPIC)
         self.declare_parameter("prompt_topic", DEFAULT_PROMPT_TOPIC)
+        self.declare_parameter("llm_provider", "chatgpt")
+        self.declare_parameter("chatgpt_model_name", "gpt-5-mini")
+        self.declare_parameter("llama_model_name", "rrt_planner")
         self.declare_parameter("verified_plan_topic", DEFAULT_VERIFIED_PLAN_TOPIC)
         self.declare_parameter("mission_state_topic", DEFAULT_MISSION_STATE_TOPIC)
         self.declare_parameter("required_mission_state", "HOLDING_FOR_PLAN")
@@ -104,6 +107,9 @@ class PromptGenerator(Node):
         self.clearance_m = float(self.get_parameter("clearance_m").value)
         self.goal_clearance_m = float(self.get_parameter("goal_clearance_m").value)
         self.prompt_topic = str(self.get_parameter("prompt_topic").value)
+        self.llm_provider = str(self.get_parameter("llm_provider").value).strip().lower()
+        self.chatgpt_model_name = str(self.get_parameter("chatgpt_model_name").value)
+        self.llama_model_name = str(self.get_parameter("llama_model_name").value)
         self.verified_plan_topic = str(self.get_parameter("verified_plan_topic").value)
         self.mission_state_topic = str(self.get_parameter("mission_state_topic").value)
         self.required_mission_state = str(self.get_parameter("required_mission_state").value)
@@ -271,6 +277,8 @@ class PromptGenerator(Node):
             "attempt": context["attempt"],
             "latched_context_timestamp": context["timestamp"],
             "timestamp": time.time(),
+            "llm_provider": self.llm_provider,
+            "requested_model": self.llama_model_name if self.llm_provider in ("llama", "vllm") else self.chatgpt_model_name,
         }
 
         self.active_plan_id = self.next_plan_id

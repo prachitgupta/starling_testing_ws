@@ -16,6 +16,8 @@ from std_msgs.msg import String
 PROMPT_TOPIC = "/llm_vision/prompt"
 PLAN_TOPIC = "/llm_vision/plan_raw"
 MODEL_NAME = "gpt-5-mini"
+LLAMA_MODEL_NAME = "rrt_planner"
+VLLM_BASE_URL = "http://172.22.224.93:8000/v1"
 GOAL_TOLERANCE_M = 0.05
 PROMPT_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
@@ -55,21 +57,46 @@ class LLMPlanner(Node):
         super().__init__("llm_planner")
         self.declare_parameter("prompt_topic", PROMPT_TOPIC)
         self.declare_parameter("plan_topic", PLAN_TOPIC)
+        self.declare_parameter("llm_provider", "chatgpt")
         self.declare_parameter("model_name", MODEL_NAME)
+        self.declare_parameter("chatgpt_model_name", MODEL_NAME)
+        self.declare_parameter("llama_model_name", LLAMA_MODEL_NAME)
+        self.declare_parameter("vllm_base_url", VLLM_BASE_URL)
+        self.declare_parameter("vllm_api_key", "EMPTY")
         self.declare_parameter("goal_tolerance_m", GOAL_TOLERANCE_M)
         self.declare_parameter("debug", True)
 
         self.prompt_topic = str(self.get_parameter("prompt_topic").value)
         self.plan_topic = str(self.get_parameter("plan_topic").value)
-        self.model_name = str(self.get_parameter("model_name").value)
+        self.llm_provider = str(self.get_parameter("llm_provider").value).strip().lower()
+        self.chatgpt_model_name = str(self.get_parameter("chatgpt_model_name").value)
+        self.llama_model_name = str(self.get_parameter("llama_model_name").value)
+        self.vllm_base_url = str(self.get_parameter("vllm_base_url").value)
+        self.vllm_api_key = str(self.get_parameter("vllm_api_key").value)
+        self.model_name = self.resolve_model_name()
         self.goal_tolerance_m = float(self.get_parameter("goal_tolerance_m").value)
 
         self.prompt_sub = self.create_subscription(String, self.prompt_topic, self.prompt_callback, PROMPT_QOS)
         self.plan_pub = self.create_publisher(String, self.plan_topic, PLAN_QOS)
-        self.client = instructor.from_openai(OpenAI())
+        self.openai_raw_client = self.openai_client()
+        self.client = instructor.from_openai(self.openai_raw_client) if self.llm_provider == "chatgpt" else None
 
-        if not os.getenv("OPENAI_API_KEY"):
+        if self.llm_provider == "chatgpt" and not os.getenv("OPENAI_API_KEY"):
             self.log_warning("OPENAI_API_KEY is not set; planner requests will fail until it is provided.")
+
+    def resolve_model_name(self):
+        if self.llm_provider in ("llama", "vllm"):
+            return self.llama_model_name
+        if self.llm_provider != "chatgpt":
+            self.log_warning(f"Unsupported llm_provider '{self.llm_provider}'. Defaulting to chatgpt.")
+            self.llm_provider = "chatgpt"
+        legacy_model = str(self.get_parameter("model_name").value)
+        return self.chatgpt_model_name or legacy_model
+
+    def openai_client(self):
+        if self.llm_provider in ("llama", "vllm"):
+            return OpenAI(base_url=self.vllm_base_url, api_key=self.vllm_api_key)
+        return OpenAI()
 
     def log_info(self, *args, **kwargs):
         if bool(self.get_parameter("debug").value):
@@ -93,18 +120,14 @@ class LLMPlanner(Node):
 
         plan_id = payload.get("plan_id")
         self.log_info(
-            f"Received prompt for plan_id={plan_id}; sending request to {self.model_name} "
+            f"Received prompt for plan_id={plan_id}; sending request to {self.llm_provider}:{self.model_name} "
             f"({len(prompt)} chars)."
         )
         start_time = time.time()
         try:
-            plan = self.client.chat.completions.create(
-                model=self.model_name,
-                response_model=WaypointPlan,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            plan = self.request_plan(prompt)
         except Exception as exc:
-            self.get_logger().error(f"OpenAI planner request failed: {exc}")
+            self.get_logger().error(f"{self.llm_provider} planner request failed: {exc}")
             return
         duration_s = time.time() - start_time
         self.log_info(
@@ -132,6 +155,7 @@ class LLMPlanner(Node):
             "obstacles": payload.get("obstacles", []),
             "timestamp": time.time(),
             "model": self.model_name,
+            "llm_provider": self.llm_provider,
         }
 
         out = String()
@@ -146,6 +170,34 @@ class LLMPlanner(Node):
             return float(workspace["z"])
         goal = payload.get("goal", {})
         return float(goal.get("z", -0.2))
+
+    def request_plan(self, prompt):
+        if self.llm_provider == "chatgpt":
+            return self.client.chat.completions.create(
+                model=self.model_name,
+                response_model=WaypointPlan,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        response = self.openai_raw_client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+        )
+        content = response.choices[0].message.content
+        return WaypointPlan.model_validate_json(self.extract_json_object(content))
+
+    @staticmethod
+    def extract_json_object(text):
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.startswith("json"):
+                text = text[4:].strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end >= start:
+            return text[start : end + 1]
+        return text
 
     def z_matches(self, fixed_z, waypoint):
         return abs(float(waypoint.z) - fixed_z) <= self.goal_tolerance_m

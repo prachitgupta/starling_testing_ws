@@ -79,7 +79,7 @@ class LLMPlanner(Node):
         self.prompt_sub = self.create_subscription(String, self.prompt_topic, self.prompt_callback, PROMPT_QOS)
         self.plan_pub = self.create_publisher(String, self.plan_topic, PLAN_QOS)
         self.openai_raw_client = self.openai_client()
-        self.client = instructor.from_openai(self.openai_raw_client) if self.llm_provider == "chatgpt" else None
+        self.client = instructor.from_openai(self.openai_raw_client, mode=instructor.Mode.JSON)
 
         if self.llm_provider == "chatgpt" and not os.getenv("OPENAI_API_KEY"):
             self.log_warning("OPENAI_API_KEY is not set; planner requests will fail until it is provided.")
@@ -172,32 +172,12 @@ class LLMPlanner(Node):
         return float(goal.get("z", -0.2))
 
     def request_plan(self, prompt):
-        if self.llm_provider == "chatgpt":
-            return self.client.chat.completions.create(
-                model=self.model_name,
-                response_model=WaypointPlan,
-                messages=[{"role": "user", "content": prompt}],
-            )
-        response = self.openai_raw_client.chat.completions.create(
+        return self.client.chat.completions.create(
             model=self.model_name,
+            response_model=WaypointPlan,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
         )
-        content = response.choices[0].message.content
-        return WaypointPlan.model_validate_json(self.extract_json_object(content))
-
-    @staticmethod
-    def extract_json_object(text):
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text.startswith("json"):
-                text = text[4:].strip()
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end >= start:
-            return text[start : end + 1]
-        return text
 
     def z_matches(self, fixed_z, waypoint):
         return abs(float(waypoint.z) - fixed_z) <= self.goal_tolerance_m

@@ -101,7 +101,7 @@ module load cray-python
 source /projects/bhkj/$USER/peft_env/bin/activate
 python -m pip install -U huggingface_hub
 export HF_HOME=/projects/bhkj/$USER/hf_cache
-huggingface-cli login
+hf auth login
 ```
 Save a Hugging Face read token for gated Llama model access.
 

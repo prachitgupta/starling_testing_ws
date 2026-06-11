@@ -203,14 +203,14 @@ pip install unsloth huggingface_hub
 Authenticate Hugging Face for gated Llama access:
 
 ```bash
-huggingface-cli login
+hf auth login
 ```
 
 On DeltaAI, keep the token in project storage:
 
 ```bash
 export HF_HOME=/projects/bhkj/$USER/hf_cache
-huggingface-cli login
+hf auth login
 ```
 
 For a one-shell token instead:

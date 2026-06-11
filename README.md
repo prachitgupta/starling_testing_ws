@@ -197,7 +197,35 @@ Install GPU training dependencies in a separate Python environment:
 python3 -m venv ~/unsloth_env
 source ~/unsloth_env/bin/activate
 pip install --upgrade pip
-pip install unsloth
+pip install unsloth huggingface_hub
+```
+
+Authenticate Hugging Face for gated Llama access:
+
+```bash
+huggingface-cli login
+```
+
+On DeltaAI, keep the token in project storage:
+
+```bash
+export HF_HOME=/projects/bhkj/$USER/hf_cache
+huggingface-cli login
+```
+
+For a one-shell token instead:
+
+```bash
+export HF_TOKEN=hf_your_token_here
+```
+
+Check access:
+
+```bash
+python3 - <<'PY'
+from huggingface_hub import HfApi
+print(HfApi().model_info("meta-llama/Meta-Llama-3.1-8B-Instruct").modelId)
+PY
 ```
 
 Check CUDA:

@@ -57,7 +57,7 @@ class LLMPlanner(Node):
         super().__init__("llm_planner")
         self.declare_parameter("prompt_topic", PROMPT_TOPIC)
         self.declare_parameter("plan_topic", PLAN_TOPIC)
-        self.declare_parameter("llm_provider", "chatgpt")
+        self.declare_parameter("llm_provider", "llama")
         self.declare_parameter("model_name", MODEL_NAME)
         self.declare_parameter("chatgpt_model_name", MODEL_NAME)
         self.declare_parameter("llama_model_name", LLAMA_MODEL_NAME)

@@ -79,7 +79,7 @@ class PlannerVisualizer(Node):
         self.declare_parameter("workspace_x_max", 4.0)
         self.declare_parameter("workspace_y_min", 0.0)
         self.declare_parameter("workspace_y_max", 4.0)
-        self.declare_parameter("show_rrt", False)
+        self.declare_parameter("show_rrt", True)
         self.declare_parameter("rrt_clearance_m", DEFAULT_RRT_CLEARANCE_M)
         self.declare_parameter("rrt_seed", 7)
         self.declare_parameter("debug", False)

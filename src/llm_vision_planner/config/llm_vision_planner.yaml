@@ -53,7 +53,7 @@ obstacle_perception:
 prompt_generator:
   ros__parameters:
     mode: semantic
-    llm_provider: chatgpt
+    llm_provider: llama
     chatgpt_model_name: gpt-5.4-nano
     llama_model_name: rrt_planner
     single_shot: True
@@ -89,7 +89,7 @@ llm_planner:
     prompt_topic: /llm_vision/prompt
     plan_topic: /llm_vision/plan_raw
     model_name: gpt-5.4-nano
-    llm_provider: chatgpt
+    llm_provider: llama
     chatgpt_model_name: gpt-5.4-nano
     llama_model_name: rrt_planner
     vllm_base_url: http://172.22.224.93:8000/v1
@@ -139,7 +139,7 @@ planner_visualizer:
     workspace_x_max: 4.0
     workspace_y_min: 0.0
     workspace_y_max: 4.0
-    show_rrt: False
+    show_rrt: True
     rrt_clearance_m: 0.40
     rrt_seed: 7
     debug: False

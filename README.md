@@ -107,6 +107,18 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   mode:=semantic
 ```
 
+To use the remote vLLM/Llama planner configured in `src/llm_vision_planner/config/llm_vision_planner.yaml` and enable the RRT overlay:
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source install/setup.bash
+ros2 launch llm_vision_planner full_plot.launch.py \
+  params_file:=src/llm_vision_planner/config/llm_vision_planner.yaml \
+  mode:=semantic \
+  llm_provider:=llama \
+  show_rrt:=true
+```
+
 Terminal 3: after a verified plan is received, start the Python Offboard follower:
 
 ```bash

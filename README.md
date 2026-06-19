@@ -331,6 +331,32 @@ python3 llm_vision_planner/fine_tuning/scripts/conformal_contraction_verify.py \
   --output-png llm_vision_planner/fine_tuning/plots/my_contraction_tube.png
 ```
 
+To visualize actual live LLM predictions from ROS 2, subscribe to a `std_msgs/String` topic whose JSON payload is either a raw waypoint list or an object with a `waypoints` list. The default topic is `/llm_vision/plan_raw`, which matches the sparse LLM planner output.
+
+```bash
+cd ~/Desktop/starling_testing_ws/src
+source /opt/ros/humble/setup.bash
+source ../install/setup.bash
+python3 llm_vision_planner/fine_tuning/scripts/conformal_contraction_verify.py \
+  --sample-id 1 \
+  --llm-waypoints-mode live \
+  --llm-waypoints-topic /llm_vision/plan_raw \
+  --live-timeout-s 20 \
+  --output-png llm_vision_planner/fine_tuning/plots/live_llm_contraction_tube.png
+```
+
+The live topic payload can be the full planner message:
+
+```json
+{"waypoints":[{"x":0.0,"y":0.0,"z":-0.25},{"x":2.5,"y":0.0,"z":-0.25}]}
+```
+
+or just the waypoint list:
+
+```json
+[{"x":0.0,"y":0.0,"z":-0.25},{"x":2.5,"y":0.0,"z":-0.25}]
+```
+
 The script reports `s_dyn`, `s_con`, `q_dyn`, `q_con`, `alpha_bar`, the steady-state energy bound, and the corresponding tube radius. A candidate passes this offline formulation check when `s_dyn <= q_dyn` and `s_con <= q_con`.
 
 ## Known Failure Modes

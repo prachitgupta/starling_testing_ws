@@ -8,6 +8,8 @@ import random
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ.setdefault("ROS_LOG_DIR", "/tmp/roslog")
+Path(os.environ["ROS_LOG_DIR"]).mkdir(parents=True, exist_ok=True)
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
@@ -20,6 +22,7 @@ DATASET_DIR = SCRIPT_DIR.parent / "datasets"
 DEFAULT_CALIBRATION_CSV = DATASET_DIR / "conformal_rrt_calibration_dataset.csv"
 DEFAULT_OUTPUT_PNG = SCRIPT_DIR.parent / "plots" / "conformal_contraction_verification.png"
 DEFAULT_REPORT_JSON = SCRIPT_DIR.parent / "plots" / "conformal_contraction_verification.json"
+DEFAULT_LLM_WAYPOINTS_TOPIC = "/llm_vision/plan_raw"
 
 
 def parse_json_field(value):
@@ -121,6 +124,51 @@ def load_waypoints(value):
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
     return json.loads(value)
+
+
+def extract_waypoints(payload):
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        raise ValueError("Waypoint payload must be a JSON list or object containing a 'waypoints' list.")
+    waypoints = payload.get("waypoints")
+    if not isinstance(waypoints, list):
+        raise ValueError("Live waypoint payload does not contain a 'waypoints' list.")
+    return waypoints
+
+
+def wait_for_live_waypoints(topic, timeout_s):
+    import rclpy
+    from rclpy.node import Node
+    from std_msgs.msg import String
+
+    class WaypointSubscriber(Node):
+        def __init__(self):
+            super().__init__("conformal_contraction_live_waypoints")
+            self.payload = None
+            self.error = None
+            self.subscription = self.create_subscription(String, topic, self.callback, 10)
+
+        def callback(self, msg):
+            try:
+                self.payload = extract_waypoints(json.loads(msg.data))
+            except (json.JSONDecodeError, ValueError, TypeError) as exc:
+                self.error = str(exc)
+
+    rclpy.init()
+    node = WaypointSubscriber()
+    deadline = node.get_clock().now().nanoseconds / 1e9 + timeout_s
+    try:
+        while rclpy.ok() and node.payload is None:
+            rclpy.spin_once(node, timeout_sec=0.1)
+            if node.error:
+                raise ValueError(f"Failed to parse live waypoint message on {topic}: {node.error}")
+            if node.get_clock().now().nanoseconds / 1e9 >= deadline:
+                raise TimeoutError(f"Timed out waiting {timeout_s:.1f}s for LLM waypoints on {topic}")
+        return node.payload
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 def score_conformal_contraction(candidate_path, nominal_path, m_diag, alpha, dt):
@@ -238,7 +286,10 @@ def main():
     parser = argparse.ArgumentParser(description="Verify and visualize the conformal contraction bound from the VLM-MPC notes.")
     parser.add_argument("--calibration-csv", type=Path, default=DEFAULT_CALIBRATION_CSV)
     parser.add_argument("--sample-id", type=int, default=0)
+    parser.add_argument("--llm-waypoints-mode", choices=["static", "live"], default="static")
     parser.add_argument("--llm-waypoints", default=None, help="JSON list or path to JSON list of candidate/LLM waypoints.")
+    parser.add_argument("--llm-waypoints-topic", default=DEFAULT_LLM_WAYPOINTS_TOPIC)
+    parser.add_argument("--live-timeout-s", type=float, default=20.0)
     parser.add_argument("--output-png", type=Path, default=DEFAULT_OUTPUT_PNG)
     parser.add_argument("--report-json", type=Path, default=DEFAULT_REPORT_JSON)
     parser.add_argument("--m-diag", default=None, help="Override metric as comma-separated diagonal values, e.g. 1.0,1.0.")
@@ -270,7 +321,10 @@ def main():
     q_dyn = conformal_quantile([float(item["s_dyn"]) for item in rows], args.delta_dyn)
     q_con = conformal_quantile([float(item["s_con"]) for item in rows], args.delta_con)
     nominal = plan_rrt(start, goal, obstacles, workspace=workspace, clearance_m=args.rrt_clearance_m, seed=args.rrt_seed)
-    candidate = load_waypoints(args.llm_waypoints)
+    if args.llm_waypoints_mode == "live":
+        candidate = wait_for_live_waypoints(args.llm_waypoints_topic, args.live_timeout_s)
+    else:
+        candidate = load_waypoints(args.llm_waypoints)
     if candidate is None:
         candidate = perturb_path(nominal, workspace, obstacles, args.rrt_clearance_m, args.demo_perturb_m, args.rrt_seed + args.sample_id)
 

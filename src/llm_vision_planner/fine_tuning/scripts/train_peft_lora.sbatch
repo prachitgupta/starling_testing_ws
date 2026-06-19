@@ -55,6 +55,3 @@ PY
 
 python -u src/llm_vision_planner/fine_tuning/scripts/train_peft.py \
   --dataset src/llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv \
-  --epochs 0.05 \
-  --batch-size 1 \
-  --grad-accum 2

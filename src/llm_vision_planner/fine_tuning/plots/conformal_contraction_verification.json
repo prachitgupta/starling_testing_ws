@@ -1,0 +1,14 @@
+{
+  "sample_id": 1,
+  "accepted": true,
+  "s_dyn": 0.052282,
+  "s_con": 0.00984,
+  "q_dyn": 0.05537,
+  "q_con": 0.009975,
+  "initial_energy": 0.0,
+  "max_energy": 0.002733,
+  "steady_energy_bound": 0.0147,
+  "steady_radius_m": 0.121242,
+  "alpha_bar": 0.6,
+  "output_png": "/home/prachit/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/plots/conformal_contraction_verification.png"
+}

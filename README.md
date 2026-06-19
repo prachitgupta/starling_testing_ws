@@ -272,6 +272,67 @@ python3 llm_vision_planner/fine_tuning/scripts/train.py \
 
 The default adapter output is `llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora`.
 
+## Conformal Contraction Calibration
+
+The conformal contraction utilities are offline analysis tools under `src/llm_vision_planner/fine_tuning/scripts`. They do not modify the runtime ROS verifier. The calibration dataset is stored as structured environment vectors so each row remains exchangeable with the inputs used by `prompt_generator.py`: `start`, `goal`, `workspace`, and `obstacles`. Natural-language prompts are intentionally not stored in the calibration CSV; the prompt can be reconstructed from those vectors using the same hardcoded conversion in `prompt_generator.py`.
+
+Generate a prompt-compatible calibration dataset with RRT labels and conformal scores:
+
+```bash
+cd ~/Desktop/starling_testing_ws/src
+python3 llm_vision_planner/fine_tuning/scripts/conformal_rrt_dataset.py \
+  --samples 5000 \
+  --output llm_vision_planner/fine_tuning/datasets/conformal_rrt_calibration_dataset.csv
+```
+
+The generated CSV contains only structured inputs, RRT labels, and conformal quantities:
+
+- `start`, `goal`, `workspace`, `obstacles`: prompt-compatible environment vector fields.
+- `rrt_waypoints`: nominal expert trajectory from `rrt.py`.
+- `m_diag`, `alpha`, `epsilon`, `alpha_bar`: contraction metric and rate parameters.
+- `s_dyn`, `s_con`: finite-sample dynamics mismatch and contraction residual scores.
+- `q_dyn`, `q_con`, `bound_offset`, `safety_buffer_m`, `accepted`: conformal quantiles and bound acceptance result.
+
+The implemented score approximation follows the notes using a constant diagonal metric `M = diag(m_x, m_y)`, straight-line interpolation between waypoints, and finite-difference velocities. The RRT trajectory is treated as the nominal trajectory, and an LLM or perturbed candidate trajectory is compared against it.
+
+## Contraction Tube Visualization
+
+Use `conformal_contraction_verify.py` to verify the conformal contraction bound for one calibration environment and save a 2D visualization. The plot shows the nominal RRT path, candidate LLM path, obstacles, and the probabilistic tube induced by the conformal bound.
+
+Run the default visualization using a demo candidate trajectory:
+
+```bash
+cd ~/Desktop/starling_testing_ws/src
+python3 llm_vision_planner/fine_tuning/scripts/conformal_contraction_verify.py \
+  --sample-id 1
+```
+
+The default outputs are:
+
+```text
+llm_vision_planner/fine_tuning/plots/conformal_contraction_verification.png
+llm_vision_planner/fine_tuning/plots/conformal_contraction_verification.json
+```
+
+Verify a specific LLM trajectory by passing JSON directly:
+
+```bash
+python3 llm_vision_planner/fine_tuning/scripts/conformal_contraction_verify.py \
+  --sample-id 1 \
+  --llm-waypoints '[{"x":0.1,"y":0.2,"z":-0.25},{"x":2.5,"y":0.0,"z":-0.25}]'
+```
+
+Or pass a JSON file containing a waypoint list:
+
+```bash
+python3 llm_vision_planner/fine_tuning/scripts/conformal_contraction_verify.py \
+  --sample-id 1 \
+  --llm-waypoints /tmp/llm_waypoints.json \
+  --output-png llm_vision_planner/fine_tuning/plots/my_contraction_tube.png
+```
+
+The script reports `s_dyn`, `s_con`, `q_dyn`, `q_con`, `alpha_bar`, the steady-state energy bound, and the corresponding tube radius. A candidate passes this offline formulation check when `s_dyn <= q_dyn` and `s_con <= q_con`.
+
 ## Known Failure Modes
 
 - Takeoff to an arbitrary height indefinitely and randomly in identical experimental conditions, possibly due to bad EKF fused estimates interference and poor QVIO height estimation: https://discuss.px4.io/t/unexpected-and-sudden-ascend-in-offboard-mode/35103

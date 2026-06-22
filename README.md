@@ -274,38 +274,51 @@ The default adapter output is `llm_vision_planner/fine_tuning/outputs/llama31_8b
 
 ## Conformal Contraction Calibration
 
-The conformal contraction utilities are offline analysis tools under `src/llm_vision_planner/fine_tuning/scripts`. They do not modify the runtime ROS verifier. The calibration dataset is stored as structured environment vectors so each row remains exchangeable with the inputs used by `prompt_generator.py`: `start`, `goal`, `workspace`, and `obstacles`. Natural-language prompts are intentionally not stored in the calibration CSV; the prompt can be reconstructed from those vectors using the same hardcoded conversion in `prompt_generator.py`.
+The conformal contraction utilities are offline analysis tools under `src/llm_vision_planner/fine_tuning/scripts`. They do not modify the runtime ROS verifier. The calibration dataset is generated from fresh sampled environment vectors, not from `rrt_expert_dataset.csv`, so it is not reused training data. Each row remains exchangeable with the inputs used by `prompt_generator.py`: `start`, `goal`, `workspace`, and `obstacles`. The dataset script calls the local remote Llama/vLLM endpoint, stores its waypoint prediction, and scores that LLM trajectory against the RRT nominal trajectory.
 
-Generate a prompt-compatible calibration dataset with RRT labels and conformal scores:
+Generate a prompt-compatible calibration dataset with RRT labels, Llama predictions, and conformal scores:
 
 ```bash
 cd ~/Desktop/starling_testing_ws/src
 python3 llm_vision_planner/fine_tuning/scripts/conformal_rrt_dataset.py \
-  --samples 5000 \
+  --samples 101 \
+  --seed 20260618 \
+  --llama-model-name rrt_planner \
+  --vllm-base-url http://172.22.224.93:8000/v1 \
   --output llm_vision_planner/fine_tuning/datasets/conformal_rrt_calibration_dataset.csv
 ```
 
-The generated CSV contains only structured inputs, RRT labels, and conformal quantities:
+Use a larger sample count, for example `--samples 5000`, when you want a more stable quantile estimate.
+
+The generated CSV contains structured inputs, RRT labels, Llama outputs, and conformal quantities:
 
 - `start`, `goal`, `workspace`, `obstacles`: prompt-compatible environment vector fields.
 - `rrt_waypoints`: nominal expert trajectory from `rrt.py`.
+- `llm_waypoints`: sparse trajectory returned by the local Llama/vLLM server.
 - `m_diag`, `alpha`, `epsilon`, `alpha_bar`: contraction metric and rate parameters.
 - `s_dyn`, `s_con`: finite-sample dynamics mismatch and contraction residual scores.
 - `q_dyn`, `q_con`, `bound_offset`, `safety_buffer_m`, `accepted`: conformal quantiles and bound acceptance result.
+- `prompt`, `llama_model_name`, `vllm_base_url`: local LLM request context.
 
-The implemented score approximation follows the notes using a constant diagonal metric `M = diag(m_x, m_y)`, straight-line interpolation between waypoints, and finite-difference velocities. The RRT trajectory is treated as the nominal trajectory, and an LLM or perturbed candidate trajectory is compared against it.
+The implemented score approximation follows the notes using a constant diagonal metric `M = diag(m_x, m_y)`, straight-line interpolation between waypoints, and finite-difference velocities. The RRT trajectory is treated as the nominal trajectory, and the local Llama trajectory is compared against it.
 
 ## Contraction Tube Visualization
 
 Use `conformal_contraction_verify.py` to verify the conformal contraction bound for one calibration environment and save a 2D visualization. The plot shows the nominal RRT path, candidate LLM path, obstacles, and the probabilistic tube induced by the conformal bound.
 
-Run the default visualization using a demo candidate trajectory:
+Plot a held-out 101st sample using the first 100 rows as the calibration set:
 
 ```bash
 cd ~/Desktop/starling_testing_ws/src
 python3 llm_vision_planner/fine_tuning/scripts/conformal_contraction_verify.py \
-  --sample-id 1
+  --calibration-csv llm_vision_planner/fine_tuning/datasets/conformal_rrt_calibration_dataset.csv \
+  --calibration-samples 100 \
+  --sample-id 100 \
+  --delta-dyn 0.05 \
+  --delta-con 0.05
 ```
+
+Here `--sample-id 100` is the 101st CSV row because sample IDs are zero-indexed. The plot annotates `s_dyn`, `s_con`, `q_dyn`, `q_con`, the tube radius, and the joint lower bound `1 - delta_dyn - delta_con`.
 
 The default outputs are:
 

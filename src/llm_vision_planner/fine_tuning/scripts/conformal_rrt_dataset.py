@@ -6,20 +6,20 @@ import math
 import random
 from pathlib import Path
 
-from dataset_generator import DEFAULT_CLEARANCE_M, DEFAULT_DATASET_DIR, DEFAULT_WORKSPACE, sample_environment
-from rrt import plan_rrt, segment_clear
+from dataset_generator import (
+    DEFAULT_CLEARANCE_M,
+    DEFAULT_DATASET_DIR,
+    DEFAULT_WORKSPACE,
+    load_prompt_generator,
+    prompt_from_current_generator,
+    sample_environment,
+)
+from rrt import plan_rrt
 
 
-DEFAULT_INPUT = DEFAULT_DATASET_DIR / "rrt_expert_dataset.csv"
 DEFAULT_OUTPUT = DEFAULT_DATASET_DIR / "conformal_rrt_calibration_dataset.csv"
-
-
-def parse_json(value):
-    return json.loads(value) if isinstance(value, str) else value
-
-
-def point_xy(point):
-    return float(point["x"]), float(point["y"])
+DEFAULT_VLLM_BASE_URL = "http://172.22.224.93:8000/v1"
+DEFAULT_LLAMA_MODEL_NAME = "rrt_planner"
 
 
 def path_length(path):
@@ -73,25 +73,6 @@ def energy(delta_xy, m_diag):
     return m_diag[0] * delta_xy[0] * delta_xy[0] + m_diag[1] * delta_xy[1] * delta_xy[1]
 
 
-def perturb_path(path, workspace, obstacles, clearance_m, scale_m, seed):
-    rng = random.Random(seed)
-    candidate = [dict(path[0])]
-    for point in path[1:-1]:
-        best = dict(point)
-        for _ in range(20):
-            trial = {
-                "x": round(point["x"] + rng.uniform(-scale_m, scale_m), 4),
-                "y": round(point["y"] + rng.uniform(-scale_m, scale_m), 4),
-                "z": point.get("z", workspace.get("z", -0.25)),
-            }
-            if segment_clear(candidate[-1], trial, obstacles, workspace, clearance_m):
-                best = trial
-                break
-        candidate.append(best)
-    candidate.append(dict(path[-1]))
-    return candidate
-
-
 def score_formulation(label_path, candidate_path, m_diag, alpha, dt, epsilon):
     count = max(len(label_path), len(candidate_path), 2)
     label = interpolate_path(label_path, count)
@@ -135,26 +116,6 @@ def metric_is_acceptable(m_diag, alpha, epsilon, m_min, m_max):
     return all(m_min <= value <= m_max for value in m_diag) and alpha > 0.0 and 0.0 < epsilon < 2.0 * alpha
 
 
-def load_rrt_rows(input_csv, limit):
-    if not input_csv.exists():
-        return []
-    rows = []
-    with input_csv.open(newline="", encoding="utf-8") as stream:
-        for row in csv.DictReader(stream):
-            rows.append(
-                {
-                    "start": parse_json(row["start"]),
-                    "goal": parse_json(row["goal"]),
-                    "workspace": parse_json(row["workspace"]),
-                    "obstacles": parse_json(row["obstacles"]),
-                    "rrt_label": parse_json(row["waypoints"]),
-                }
-            )
-            if len(rows) >= limit:
-                break
-    return rows
-
-
 def sample_rrt_rows(count, seed):
     random.seed(seed)
     rows = []
@@ -171,6 +132,41 @@ def sample_rrt_rows(count, seed):
     return rows
 
 
+def extract_json_object(text):
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("Llama response did not contain a JSON object.")
+    return json.loads(text[start : end + 1])
+
+
+def request_llama_waypoints(client, model_name, prompt, temperature, max_retries):
+    last_error = None
+    for _ in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature,
+            )
+            content = response.choices[0].message.content
+            payload = extract_json_object(content)
+            waypoints = payload.get("waypoints")
+            if not isinstance(waypoints, list) or len(waypoints) < 2:
+                raise ValueError("Llama response JSON did not include at least two waypoints.")
+            parsed = [
+                {"x": float(point["x"]), "y": float(point["y"]), "z": float(point["z"])}
+                for point in waypoints
+                if all(key in point for key in ("x", "y", "z"))
+            ]
+            if len(parsed) < 2:
+                raise ValueError("Llama response waypoints were missing x, y, or z fields.")
+            return parsed
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"Llama waypoint request failed after {max_retries} attempts: {last_error}")
+
+
 def build_dataset(args):
     m_diag = [float(value) for value in args.m_diag.split(",")]
     if len(m_diag) != 2:
@@ -179,24 +175,33 @@ def build_dataset(args):
     if not acceptable_m:
         raise ValueError("Contraction metric values are outside the accepted range or epsilon >= 2 * alpha.")
 
-    rows = load_rrt_rows(args.input, args.samples)
-    if len(rows) < args.samples:
-        rows.extend(sample_rrt_rows(args.samples - len(rows), args.seed + len(rows)))
+    rows = sample_rrt_rows(args.samples, args.seed)
     if len(rows) < args.samples:
         raise RuntimeError(f"Only built {len(rows)} rows; requested {args.samples}.")
 
+    from openai import OpenAI
+
+    client = OpenAI(base_url=args.vllm_base_url, api_key=args.vllm_api_key)
+    prompt_module = load_prompt_generator()
     scored = []
     for index, row in enumerate(rows[: args.samples]):
-        candidate = perturb_path(
-            row["rrt_label"],
+        prompt, _ = prompt_from_current_generator(
+            prompt_module,
+            row["start"],
+            row["goal"],
             row["workspace"],
             row["obstacles"],
-            DEFAULT_CLEARANCE_M,
-            args.perturb_m,
-            args.seed + index,
+        )
+        candidate = request_llama_waypoints(
+            client,
+            args.llama_model_name,
+            prompt,
+            args.temperature,
+            args.llm_retries,
         )
         scores = score_formulation(row["rrt_label"], candidate, m_diag, args.alpha, args.dt, args.epsilon)
-        scored.append((row, candidate, scores))
+        scored.append((row, candidate, scores, prompt))
+        print(f"Scored sample {index + 1}/{args.samples}: s_dyn={scores['dyn']}, s_con={scores['con']}")
 
     split = max(1, int(len(scored) * args.calibration_fraction))
     q_dyn = conformal_quantile([item[2]["dyn"] for item in scored[:split]], args.delta_dyn)
@@ -211,6 +216,7 @@ def build_dataset(args):
         "workspace",
         "obstacles",
         "rrt_waypoints",
+        "llm_waypoints",
         "m_diag",
         "alpha",
         "epsilon",
@@ -224,12 +230,15 @@ def build_dataset(args):
         "safety_buffer_m",
         "acceptable_M",
         "accepted",
+        "llama_model_name",
+        "vllm_base_url",
+        "prompt",
     ]
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=fieldnames)
         writer.writeheader()
-        for index, (row, candidate, scores) in enumerate(scored):
+        for index, (row, candidate, scores, prompt) in enumerate(scored):
             writer.writerow(
                 {
                     "sample_id": index,
@@ -238,6 +247,7 @@ def build_dataset(args):
                     "workspace": json.dumps(row["workspace"], separators=(",", ":")),
                     "obstacles": json.dumps(row["obstacles"], separators=(",", ":")),
                     "rrt_waypoints": json.dumps(row["rrt_label"], separators=(",", ":")),
+                    "llm_waypoints": json.dumps(candidate, separators=(",", ":")),
                     "m_diag": json.dumps(m_diag, separators=(",", ":")),
                     "alpha": args.alpha,
                     "epsilon": args.epsilon,
@@ -251,17 +261,21 @@ def build_dataset(args):
                     "safety_buffer_m": args.safety_buffer_m,
                     "acceptable_M": acceptable_m,
                     "accepted": scores["dyn"] <= q_dyn and scores["con"] <= q_con and bound_offset <= args.safety_buffer_m,
+                    "llama_model_name": args.llama_model_name,
+                    "vllm_base_url": args.vllm_base_url,
+                    "prompt": prompt,
                 }
             )
     return args.output
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build prompt-compatible conformal calibration CSV data with RRT labels.")
-    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
+    parser = argparse.ArgumentParser(
+        description="Build fresh prompt-compatible conformal calibration CSV data with RRT labels and Llama predictions."
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--samples", type=int, default=5000)
-    parser.add_argument("--seed", type=int, default=19)
+    parser.add_argument("--seed", type=int, default=20260618)
     parser.add_argument("--m-diag", default="1.0,1.0", help="Diagonal contraction metric values for M.")
     parser.add_argument("--m-min", type=float, default=0.25)
     parser.add_argument("--m-max", type=float, default=4.0)
@@ -271,8 +285,12 @@ def main():
     parser.add_argument("--delta-dyn", type=float, default=0.1)
     parser.add_argument("--delta-con", type=float, default=0.1)
     parser.add_argument("--calibration-fraction", type=float, default=0.8)
-    parser.add_argument("--perturb-m", type=float, default=0.08)
     parser.add_argument("--safety-buffer-m", type=float, default=DEFAULT_CLEARANCE_M)
+    parser.add_argument("--llama-model-name", default=DEFAULT_LLAMA_MODEL_NAME)
+    parser.add_argument("--vllm-base-url", default=DEFAULT_VLLM_BASE_URL)
+    parser.add_argument("--vllm-api-key", default="EMPTY")
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--llm-retries", type=int, default=2)
     args = parser.parse_args()
 
     output = build_dataset(args)

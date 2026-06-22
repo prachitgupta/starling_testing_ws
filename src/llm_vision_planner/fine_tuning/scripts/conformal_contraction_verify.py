@@ -4,7 +4,6 @@ import csv
 import json
 import math
 import os
-import random
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
@@ -14,7 +13,7 @@ Path(os.environ["ROS_LOG_DIR"]).mkdir(parents=True, exist_ok=True)
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
 
-from rrt import plan_rrt, segment_clear
+from rrt import plan_rrt
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -96,25 +95,6 @@ def velocities(path, dt):
 
 def contraction_energy(delta_xy, m_diag):
     return m_diag[0] * delta_xy[0] * delta_xy[0] + m_diag[1] * delta_xy[1] * delta_xy[1]
-
-
-def perturb_path(path, workspace, obstacles, clearance_m, scale_m, seed):
-    rng = random.Random(seed)
-    candidate = [dict(path[0])]
-    for point in path[1:-1]:
-        best = dict(point)
-        for _ in range(25):
-            trial = {
-                "x": round(float(point["x"]) + rng.uniform(-scale_m, scale_m), 4),
-                "y": round(float(point["y"]) + rng.uniform(-scale_m, scale_m), 4),
-                "z": float(point.get("z", workspace.get("z", -0.25))),
-            }
-            if segment_clear(candidate[-1], trial, obstacles, workspace, clearance_m):
-                best = trial
-                break
-        candidate.append(best)
-    candidate.append(dict(path[-1]))
-    return candidate
 
 
 def load_waypoints(value):
@@ -269,10 +249,17 @@ def draw_scene(output_png, candidate, nominal, tube, obstacles, workspace, resul
     axis.scatter([nominal[0]["x"]], [nominal[0]["y"]], color="#16a34a", s=80, marker="s", label="start")
     axis.scatter([nominal[-1]["x"]], [nominal[-1]["y"]], color="#7c3aed", s=100, marker="*", label="goal")
     status = "PASS" if result["accepted"] else "FAIL"
+    joint_probability = 1.0 - result["delta_dyn"] - result["delta_con"]
+    summary = (
+        f"{status}: s_dyn={result['s_dyn']:.4f} <= q_dyn={result['q_dyn']:.4f}\n"
+        f"s_con={result['s_con']:.4f} <= q_con={result['q_con']:.4f}\n"
+        f"tube radius={result['steady_radius_m']:.3f} m, "
+        f"P >= {joint_probability:.2f}"
+    )
     axis.text(
         0.02,
         0.02,
-        f"{status}: s_dyn={result['s_dyn']:.4f}, s_con={result['s_con']:.4f}, bound={result['steady_radius_m']:.3f} m",
+        summary,
         transform=axis.transAxes,
         bbox={"facecolor": "white", "edgecolor": "#d1d5db", "alpha": 0.9},
     )
@@ -286,6 +273,7 @@ def main():
     parser = argparse.ArgumentParser(description="Verify and visualize the conformal contraction bound from the VLM-MPC notes.")
     parser.add_argument("--calibration-csv", type=Path, default=DEFAULT_CALIBRATION_CSV)
     parser.add_argument("--sample-id", type=int, default=0)
+    parser.add_argument("--calibration-samples", type=int, default=None)
     parser.add_argument("--llm-waypoints-mode", choices=["static", "live"], default="static")
     parser.add_argument("--llm-waypoints", default=None, help="JSON list or path to JSON list of candidate/LLM waypoints.")
     parser.add_argument("--llm-waypoints-topic", default=DEFAULT_LLM_WAYPOINTS_TOPIC)
@@ -300,12 +288,22 @@ def main():
     parser.add_argument("--dt", type=float, default=1.0)
     parser.add_argument("--rrt-clearance-m", type=float, default=0.40)
     parser.add_argument("--rrt-seed", type=int, default=7)
-    parser.add_argument("--demo-perturb-m", type=float, default=0.10)
     args = parser.parse_args()
 
     rows = load_calibration_rows(args.calibration_csv)
     if not rows:
         raise RuntimeError(f"No calibration rows found in {args.calibration_csv}")
+    if args.sample_id < 0 or args.sample_id >= len(rows):
+        raise ValueError(f"--sample-id must be between 0 and {len(rows) - 1}.")
+    calibration_rows = rows
+    if args.calibration_samples is not None:
+        if args.calibration_samples <= 0:
+            raise ValueError("--calibration-samples must be positive.")
+        if args.calibration_samples > len(rows):
+            raise ValueError("--calibration-samples cannot exceed the number of CSV rows.")
+        if args.sample_id < args.calibration_samples:
+            raise ValueError("--sample-id must be outside the first --calibration-samples rows for held-out evaluation.")
+        calibration_rows = rows[: args.calibration_samples]
     row = rows[args.sample_id]
     start = parse_json_field(row["start"])
     goal = parse_json_field(row["goal"])
@@ -318,15 +316,20 @@ def main():
     if len(m_diag) != 2 or min(m_diag) <= 0.0 or alpha <= 0.0 or not (0.0 < epsilon < 2.0 * alpha):
         raise ValueError("Require positive 2D diagonal M, alpha > 0, and 0 < epsilon < 2 * alpha.")
 
-    q_dyn = conformal_quantile([float(item["s_dyn"]) for item in rows], args.delta_dyn)
-    q_con = conformal_quantile([float(item["s_con"]) for item in rows], args.delta_con)
-    nominal = plan_rrt(start, goal, obstacles, workspace=workspace, clearance_m=args.rrt_clearance_m, seed=args.rrt_seed)
+    q_dyn = conformal_quantile([float(item["s_dyn"]) for item in calibration_rows], args.delta_dyn)
+    q_con = conformal_quantile([float(item["s_con"]) for item in calibration_rows], args.delta_con)
+    if row.get("rrt_waypoints"):
+        nominal = parse_json_field(row["rrt_waypoints"])
+    else:
+        nominal = plan_rrt(start, goal, obstacles, workspace=workspace, clearance_m=args.rrt_clearance_m, seed=args.rrt_seed)
     if args.llm_waypoints_mode == "live":
         candidate = wait_for_live_waypoints(args.llm_waypoints_topic, args.live_timeout_s)
     else:
         candidate = load_waypoints(args.llm_waypoints)
     if candidate is None:
-        candidate = perturb_path(nominal, workspace, obstacles, args.rrt_clearance_m, args.demo_perturb_m, args.rrt_seed + args.sample_id)
+        if not row.get("llm_waypoints"):
+            raise ValueError("No --llm-waypoints provided and selected CSV row has no llm_waypoints column.")
+        candidate = parse_json_field(row["llm_waypoints"])
 
     scores = score_conformal_contraction(candidate, nominal, m_diag, alpha, args.dt)
     steady_energy, tube = tube_profile(scores["nominal"], scores["initial_energy"], q_dyn, q_con, m_diag, alpha, epsilon, args.dt)
@@ -334,11 +337,15 @@ def main():
     accepted = scores["s_dyn"] <= q_dyn and scores["s_con"] <= q_con
     result = {
         "sample_id": args.sample_id,
+        "calibration_samples": len(calibration_rows),
         "accepted": accepted,
         "s_dyn": round(scores["s_dyn"], 6),
         "s_con": round(scores["s_con"], 6),
         "q_dyn": round(q_dyn, 6),
         "q_con": round(q_con, 6),
+        "delta_dyn": args.delta_dyn,
+        "delta_con": args.delta_con,
+        "joint_probability_lower_bound": round(1.0 - args.delta_dyn - args.delta_con, 6),
         "initial_energy": round(scores["initial_energy"], 6),
         "max_energy": round(scores["max_energy"], 6),
         "steady_energy_bound": round(steady_energy, 6),

@@ -47,6 +47,29 @@ ros2 topic echo /llm_vision/prompt
 ros2 topic echo /llm_vision/plan_verified
 ```
 
+## Double-Integrator Conformal Calibration Smoke Test
+
+Generate a small calibration CSV with RRT labels, Llama 8B waypoint predictions, min-snap trajectories, and the PDF scores `s_u` and `s_x`:
+
+```bash
+cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
+python3 fine_tuning/scripts/conformal_rrt_dataset.py \
+  --samples 2 \
+  --output fine_tuning/datasets/conformal_rrt_calibration_smoke.csv \
+  --vllm-base-url http://172.22.224.93:8000/v1 \
+  --llama-model-name rrt_planner
+```
+
+Run the double-integrator controller verification and plot the RRT reference, LLM reference, controlled trajectory, and conformal tube:
+
+```bash
+python3 fine_tuning/scripts/dconformal_contraction_verify.py \
+  --calibration-csv fine_tuning/datasets/conformal_rrt_calibration_smoke.csv \
+  --sample-id 0 \
+  --output-png fine_tuning/plots/dconformal_contraction_verification_smoke.png \
+  --report-json fine_tuning/plots/dconformal_contraction_verification_smoke.json
+```
+
 ## Hardware Mission
 
 Connect to the Starling/VOXL over USB-C/Wi-Fi and start the ModalAI MPA-to-ROS 2 bridge on the vehicle:

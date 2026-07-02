@@ -419,6 +419,11 @@ def main():
     calibration_rows = rows[: args.calibration_samples] if args.calibration_samples else rows
     q_u = conformal_quantile([item["s_u"] for item in calibration_rows], args.delta_u)
     q_x = conformal_quantile([item["s_x"] for item in calibration_rows], args.delta_x)
+    print(
+        f"[calibration] rows={len(calibration_rows)}, delta_u={args.delta_u}, q_u={round(q_u, 6)}, "
+        f"delta_x={args.delta_x}, q_x={round(q_x, 6)}",
+        flush=True,
+    )
 
     if args.live:
         if not args.start or not args.goal:

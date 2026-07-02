@@ -215,7 +215,7 @@ class ControlLawExecuter(Node):
 
     def log_debug(self, message, **kwargs):
         if bool(self.get_parameter("debug").value):
-            self.get_logger().info(message, **kwargs)
+            self.get_logger().info(message)
 
 
 def main():

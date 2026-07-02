@@ -29,6 +29,31 @@ DEFAULT_LLAMA_MODEL_NAME = "rrt_planner"
 PACKAGE_DIR = Path(__file__).resolve().parents[2]
 REFINEMENT_PATH = PACKAGE_DIR / "scripts" / "refinment.py"
 VERIFIER_PATH = PACKAGE_DIR / "scripts" / "verifier.py"
+FIELDNAMES = [
+    "sample_id",
+    "start",
+    "goal",
+    "workspace",
+    "obstacles",
+    "rrt_waypoints",
+    "llm_waypoints",
+    "rrt_verified_waypoints",
+    "llm_verified_waypoints",
+    "rrt_verification_metrics",
+    "llm_verification_metrics",
+    "rrt_trajectory",
+    "llm_trajectory",
+    "s_u",
+    "s_x",
+    "q_u",
+    "q_x",
+    "delta_u",
+    "delta_x",
+    "accepted",
+    "llama_model_name",
+    "vllm_base_url",
+    "prompt",
+]
 
 
 class Waypoint(BaseModel):
@@ -153,6 +178,47 @@ def request_llama_waypoints(client, model_name, prompt, temperature, max_retries
     raise RuntimeError(f"Llama waypoint request failed after {max_retries} attempts: {last_error}")
 
 
+def write_dataset(scored, args):
+    split = max(1, int(len(scored) * args.calibration_fraction))
+    q_u = conformal_quantile([item[8]["s_u"] for item in scored[:split]], args.delta_u)
+    q_x = conformal_quantile([item[8]["s_x"] for item in scored[:split]], args.delta_x)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    tmp_output = args.output.with_suffix(args.output.suffix + ".tmp")
+    with tmp_output.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=FIELDNAMES)
+        writer.writeheader()
+        for index, (row, candidate, rrt_verified, llm_verified, rrt_metrics, llm_metrics, rrt_trajectory, llm_trajectory, scores, prompt) in enumerate(scored):
+            writer.writerow(
+                {
+                    "sample_id": index,
+                    "start": json.dumps(row["start"], separators=(",", ":")),
+                    "goal": json.dumps(row["goal"], separators=(",", ":")),
+                    "workspace": json.dumps(row["workspace"], separators=(",", ":")),
+                    "obstacles": json.dumps(row["obstacles"], separators=(",", ":")),
+                    "rrt_waypoints": json.dumps(row["rrt_label"], separators=(",", ":")),
+                    "llm_waypoints": json.dumps(candidate, separators=(",", ":")),
+                    "rrt_verified_waypoints": json.dumps(rrt_verified, separators=(",", ":")),
+                    "llm_verified_waypoints": json.dumps(llm_verified, separators=(",", ":")),
+                    "rrt_verification_metrics": json.dumps(rrt_metrics, separators=(",", ":")),
+                    "llm_verification_metrics": json.dumps(llm_metrics, separators=(",", ":")),
+                    "rrt_trajectory": json.dumps(rrt_trajectory, separators=(",", ":")),
+                    "llm_trajectory": json.dumps(llm_trajectory, separators=(",", ":")),
+                    "s_u": scores["s_u"],
+                    "s_x": scores["s_x"],
+                    "q_u": round(q_u, 6),
+                    "q_x": round(q_x, 6),
+                    "delta_u": args.delta_u,
+                    "delta_x": args.delta_x,
+                    "accepted": scores["s_u"] <= q_u and scores["s_x"] <= q_x,
+                    "llama_model_name": args.llama_model_name,
+                    "vllm_base_url": args.vllm_base_url,
+                    "prompt": prompt,
+                }
+            )
+    tmp_output.replace(args.output)
+    return q_u, q_x
+
+
 def build_dataset(args):
     from openai import OpenAI
 
@@ -224,6 +290,12 @@ def build_dataset(args):
         scores = score_trajectories(rrt_trajectory, llm_trajectory, args.dt)
         scored.append((row, candidate, rrt_verified, llm_verified, rrt_metrics, llm_metrics, rrt_trajectory, llm_trajectory, scores, prompt))
         print(f"[accepted {len(scored)}/{args.samples}] s_u={scores['s_u']}, s_x={scores['s_x']}", flush=True)
+        q_u, q_x = write_dataset(scored, args)
+        print(
+            f"[checkpoint] wrote {len(scored)} rows to {args.output}; "
+            f"q_u={round(q_u, 6)}, q_x={round(q_x, 6)}",
+            flush=True,
+        )
 
     if len(scored) < args.samples:
         raise RuntimeError(f"Only built {len(scored)} verified rows after {attempts} attempts; requested {args.samples}.")
@@ -236,64 +308,6 @@ def build_dataset(args):
         flush=True,
     )
 
-    fieldnames = [
-        "sample_id",
-        "start",
-        "goal",
-        "workspace",
-        "obstacles",
-        "rrt_waypoints",
-        "llm_waypoints",
-        "rrt_verified_waypoints",
-        "llm_verified_waypoints",
-        "rrt_verification_metrics",
-        "llm_verification_metrics",
-        "rrt_trajectory",
-        "llm_trajectory",
-        "s_u",
-        "s_x",
-        "q_u",
-        "q_x",
-        "delta_u",
-        "delta_x",
-        "accepted",
-        "llama_model_name",
-        "vllm_base_url",
-        "prompt",
-    ]
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Writing {len(scored)} rows to {args.output}", flush=True)
-    with args.output.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fieldnames)
-        writer.writeheader()
-        for index, (row, candidate, rrt_verified, llm_verified, rrt_metrics, llm_metrics, rrt_trajectory, llm_trajectory, scores, prompt) in enumerate(scored):
-            writer.writerow(
-                {
-                    "sample_id": index,
-                    "start": json.dumps(row["start"], separators=(",", ":")),
-                    "goal": json.dumps(row["goal"], separators=(",", ":")),
-                    "workspace": json.dumps(row["workspace"], separators=(",", ":")),
-                    "obstacles": json.dumps(row["obstacles"], separators=(",", ":")),
-                    "rrt_waypoints": json.dumps(row["rrt_label"], separators=(",", ":")),
-                    "llm_waypoints": json.dumps(candidate, separators=(",", ":")),
-                    "rrt_verified_waypoints": json.dumps(rrt_verified, separators=(",", ":")),
-                    "llm_verified_waypoints": json.dumps(llm_verified, separators=(",", ":")),
-                    "rrt_verification_metrics": json.dumps(rrt_metrics, separators=(",", ":")),
-                    "llm_verification_metrics": json.dumps(llm_metrics, separators=(",", ":")),
-                    "rrt_trajectory": json.dumps(rrt_trajectory, separators=(",", ":")),
-                    "llm_trajectory": json.dumps(llm_trajectory, separators=(",", ":")),
-                    "s_u": scores["s_u"],
-                    "s_x": scores["s_x"],
-                    "q_u": round(q_u, 6),
-                    "q_x": round(q_x, 6),
-                    "delta_u": args.delta_u,
-                    "delta_x": args.delta_x,
-                    "accepted": scores["s_u"] <= q_u and scores["s_x"] <= q_x,
-                    "llama_model_name": args.llama_model_name,
-                    "vllm_base_url": args.vllm_base_url,
-                    "prompt": prompt,
-                }
-            )
     return args.output
 
 

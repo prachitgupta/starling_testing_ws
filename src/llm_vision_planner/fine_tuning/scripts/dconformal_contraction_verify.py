@@ -45,9 +45,14 @@ def trajectory_from_row(row, prefix):
     trajectory_key = f"{prefix}_trajectory"
     if row.get(trajectory_key):
         return parse_json_field(row[trajectory_key])
+    verified_key = f"{prefix}_verified_waypoints"
+    if row.get(verified_key):
+        waypoints = parse_json_field(row[verified_key])
+    else:
+        waypoints = parse_json_field(row[f"{prefix}_waypoints"])
     workspace = parse_json_field(row["workspace"])
     obstacles = parse_json_field(row["obstacles"])
-    return generate_trajectory(parse_json_field(row[f"{prefix}_waypoints"]), workspace, obstacles)
+    return generate_trajectory(waypoints, workspace, obstacles)
 
 
 def interpolate_sample(samples, t):

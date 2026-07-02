@@ -4,6 +4,7 @@ import csv
 import json
 import math
 import os
+import time
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
@@ -14,6 +15,18 @@ from matplotlib.patches import Circle, Rectangle
 
 from lqr import A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, DAMPING, solve_care
 from min_snap import generate_trajectory
+from rrt import plan_rrt
+
+from conformal_rrt_dataset import (
+    DEFAULT_LLAMA_MODEL_NAME,
+    DEFAULT_VLLM_BASE_URL,
+    make_refiner,
+    make_verifier,
+    prompt_from_current_generator,
+    refine_and_verify,
+    request_llama_waypoints,
+)
+from dataset_generator import DEFAULT_CLEARANCE_M, DEFAULT_WORKSPACE, load_prompt_generator
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -22,6 +35,8 @@ PLOTS_DIR = SCRIPT_DIR.parent / "plots"
 DEFAULT_CALIBRATION_CSV = DATASET_DIR / "conformal_rrt_calibration_dataset.csv"
 DEFAULT_OUTPUT_PNG = PLOTS_DIR / "dconformal_contraction_verification.png"
 DEFAULT_REPORT_JSON = PLOTS_DIR / "dconformal_contraction_verification.json"
+DEFAULT_CONTROL_LAW_TOPIC = "/llm_vision/dconformal_control_law"
+DEFAULT_POSE_TOPIC = "/fmu/out/vehicle_odometry"
 
 
 def parse_json_field(value):
@@ -31,6 +46,13 @@ def parse_json_field(value):
 def load_rows(path):
     with path.open(newline="", encoding="utf-8") as stream:
         return list(csv.DictReader(stream))
+
+
+def load_json(value):
+    path = Path(value)
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(value)
 
 
 def conformal_quantile(values, delta):
@@ -76,6 +98,60 @@ def dynamics(state, control):
     return A_DOUBLE_INTEGRATOR @ state + B_DOUBLE_INTEGRATOR @ control
 
 
+def feedback_prompt(base_prompt, metrics):
+    failed = metrics.get("failed_constraints", [])
+    table = metrics.get("feedback_table", "")
+    return (
+        base_prompt
+        + "\nPrevious plan failed verification. Regenerate waypoints for the same start, goal, workspace, and obstacles.\n"
+        + f"Failed constraints: {', '.join(failed) if failed else 'unknown'}\n"
+        + table
+    )
+
+
+def query_live_llm(args, row):
+    from openai import OpenAI
+    import instructor
+
+    raw_client = OpenAI(base_url=args.vllm_base_url, api_key=args.vllm_api_key)
+    client = instructor.from_openai(raw_client, mode=instructor.Mode.JSON)
+    prompt_module = load_prompt_generator()
+    refiner = make_refiner()
+    verifier = make_verifier()
+    base_prompt, _ = prompt_from_current_generator(prompt_module, row["start"], row["goal"], row["workspace"], row["obstacles"])
+    prompt = base_prompt
+    last_metrics = None
+    last_refined = []
+
+    for attempt in range(1, args.llm_attempts + 1):
+        print(f"[live attempt {attempt}/{args.llm_attempts}] querying Llama with prompt_chars={len(prompt)}", flush=True)
+        try:
+            raw = request_llama_waypoints(client, args.llama_model_name, prompt, args.temperature, args.llm_retries)
+        except RuntimeError as exc:
+            print(f"[live attempt {attempt}] Llama request failed: {exc}", flush=True)
+            continue
+        print(f"[live attempt {attempt}] raw LLM waypoints={len(raw)}", flush=True)
+        try:
+            verified, metrics = refine_and_verify(refiner, verifier, raw, row)
+        except ValueError as exc:
+            last_refined = refiner.interpolate_waypoints(raw, row["workspace"], row["obstacles"])
+            last_metrics = verifier.compute_metrics(
+                {"waypoints": last_refined, "obstacles": row["obstacles"], "workspace": row["workspace"], "goal": row["goal"]}
+            )
+            print(
+                f"[live attempt {attempt}] verification failed: {exc}; "
+                f"failed_constraints={last_metrics['failed_constraints']}",
+                flush=True,
+            )
+            prompt = feedback_prompt(base_prompt, last_metrics)
+            continue
+        trajectory = generate_trajectory(verified, row["workspace"], row["obstacles"], dt=args.trajectory_dt)
+        print(f"[live attempt {attempt}] verified waypoints={len(verified)}, min-snap samples={len(trajectory['samples'])}", flush=True)
+        return raw, verified, metrics, trajectory, prompt
+
+    raise RuntimeError(f"LLM plan did not pass verification after {args.llm_attempts} attempts: {last_metrics}; last_refined={last_refined}")
+
+
 def propagate_controller(rrt_trajectory, llm_trajectory, k, dt):
     horizon = min(float(rrt_trajectory["samples"][-1]["t"]), float(llm_trajectory["samples"][-1]["t"]))
     times = np.arange(0.0, horizon + 0.5 * dt, dt)
@@ -86,6 +162,19 @@ def propagate_controller(rrt_trajectory, llm_trajectory, k, dt):
         control = -k @ (state - xhat) + uhat
         xd, _ = interpolate_sample(rrt_trajectory["samples"], float(t))
         result.append({"t": float(t), "x": state.tolist(), "u": control.tolist(), "xd": xd.tolist(), "xhat": xhat.tolist()})
+        state = state + dt * dynamics(state, control)
+    return result
+
+
+def propagate_llm_reference(llm_trajectory, k, dt, initial_state):
+    horizon = float(llm_trajectory["samples"][-1]["t"])
+    times = np.arange(0.0, horizon + 0.5 * dt, dt)
+    state = np.array(initial_state, dtype=float)
+    result = []
+    for t in times:
+        xhat, uhat = interpolate_sample(llm_trajectory["samples"], float(t))
+        control = -k @ (state - xhat) + uhat
+        result.append({"t": float(t), "x": state.tolist(), "u": control.tolist(), "xhat": xhat.tolist(), "uhat": uhat.tolist()})
         state = state + dt * dynamics(state, control)
     return result
 
@@ -154,8 +243,154 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
     plt.close(fig)
 
 
+def path_xy_from_samples(samples):
+    return [float(sample["x"][0]) for sample in samples], [float(sample["x"][1]) for sample in samples]
+
+
+def draw_live_scene(output_png, workspace, obstacles, raw_llm, verified_llm, llm_trajectory, commanded, actual_pose_trail, raw_rrt=None, verified_rrt_trajectory=None):
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+    fig, axis = plt.subplots(figsize=(8, 7))
+    axis.set_aspect("equal", adjustable="box")
+    axis.set_xlim(float(workspace["x"][0]) - 0.25, float(workspace["x"][1]) + 0.25)
+    axis.set_ylim(float(workspace["y"][0]) - 0.25, float(workspace["y"][1]) + 0.25)
+    axis.set_xlabel("x [m]")
+    axis.set_ylabel("y [m]")
+    axis.set_title("Live conformal control law")
+    axis.grid(True, alpha=0.25)
+
+    for obstacle in obstacles:
+        min_corner = obstacle.get("min_corner", [0.0, 0.0, 0.0])
+        max_corner = obstacle.get("max_corner", [0.0, 0.0, 0.0])
+        axis.add_patch(
+            Rectangle(
+                (float(min_corner[0]), float(min_corner[1])),
+                float(max_corner[0]) - float(min_corner[0]),
+                float(max_corner[1]) - float(min_corner[1]),
+                facecolor="#ef4444",
+                edgecolor="#991b1b",
+                alpha=0.28,
+            )
+        )
+
+    if raw_rrt:
+        axis.scatter([p["x"] for p in raw_rrt], [p["y"] for p in raw_rrt], color="#7c3aed", marker="x", s=70, label="raw RRT waypoints")
+    if raw_llm:
+        axis.scatter([p["x"] for p in raw_llm], [p["y"] for p in raw_llm], color="#f97316", marker="o", s=45, label="raw LLM waypoints")
+    if verified_rrt_trajectory:
+        xs, ys = path_xy_from_samples(verified_rrt_trajectory["samples"])
+        axis.plot(xs, ys, color="#2563eb", linewidth=2, label="verified RRT final")
+    xs, ys = path_xy_from_samples(llm_trajectory["samples"])
+    axis.plot(xs, ys, "--", color="#f97316", linewidth=2, label="verified LLM final")
+    axis.plot([s["x"][0] for s in commanded], [s["x"][1] for s in commanded], color="#16a34a", linewidth=2, label="commanded control law")
+    if actual_pose_trail:
+        axis.plot([p["x"] for p in actual_pose_trail], [p["y"] for p in actual_pose_trail], color="#111827", linewidth=2, label="actual PX4 pose")
+        axis.scatter([actual_pose_trail[-1]["x"]], [actual_pose_trail[-1]["y"]], color="#111827", marker="D", s=65)
+    axis.scatter([llm_trajectory["samples"][0]["x"][0]], [llm_trajectory["samples"][0]["x"][1]], color="#0f172a", marker="s", s=60, label="start")
+    axis.scatter([verified_llm[-1]["x"]], [verified_llm[-1]["y"]], color="#dc2626", marker="*", s=100, label="goal")
+    axis.legend(loc="upper right")
+    fig.tight_layout()
+    fig.savefig(output_png, dpi=160)
+    plt.close(fig)
+
+
+def make_control_law_payload(args, row, raw_llm, verified_llm, metrics, llm_trajectory, p, k, alpha, q_u, q_x, calibration_count, raw_rrt=None, verified_rrt_trajectory=None):
+    return {
+        "trajectory": llm_trajectory,
+        "K": k.tolist(),
+        "P": p.tolist(),
+        "alpha": alpha,
+        "start": row["start"],
+        "goal": row["goal"],
+        "workspace": row["workspace"],
+        "obstacles": row["obstacles"],
+        "raw_llm_waypoints": raw_llm,
+        "verified_llm_waypoints": verified_llm,
+        "verification_metrics": metrics,
+        "raw_rrt_waypoints": raw_rrt,
+        "verified_rrt_trajectory": verified_rrt_trajectory,
+        "q_u": q_u,
+        "q_x": q_x,
+        "calibration_samples": calibration_count,
+        "timestamp": time.time(),
+    }
+
+
+class LivePlotPublisher:
+    def __init__(self, args, payload, commanded):
+        import rclpy
+        from px4_msgs.msg import VehicleOdometry
+        from rclpy.executors import ExternalShutdownException
+        from rclpy.node import Node
+        from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+        from std_msgs.msg import String
+
+        class NodeImpl(Node):
+            def __init__(self, outer):
+                super().__init__("dconformal_contraction_live_verify")
+                self.outer = outer
+                odom_qos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT, history=QoSHistoryPolicy.KEEP_LAST, depth=10)
+                control_qos = QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                    history=QoSHistoryPolicy.KEEP_LAST,
+                    depth=1,
+                )
+                self.publisher = self.create_publisher(String, args.control_law_topic, control_qos)
+                self.odom_sub = self.create_subscription(VehicleOdometry, args.pose_topic, self.odom_callback, odom_qos)
+                self.timer = self.create_timer(args.plot_period_s, self.tick)
+                self.publish_payload()
+
+            def publish_payload(self):
+                msg = String()
+                msg.data = json.dumps(payload, separators=(",", ":"))
+                self.publisher.publish(msg)
+                self.get_logger().info(f"published control law on {args.control_law_topic}")
+
+            def odom_callback(self, msg):
+                if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
+                    return
+                self.outer.pose_trail.append({"x": float(msg.position[0]), "y": float(msg.position[1]), "z": float(msg.position[2])})
+                self.outer.pose_trail = self.outer.pose_trail[-args.pose_trail_limit :]
+
+            def tick(self):
+                self.publish_payload()
+                draw_live_scene(
+                    args.output_png,
+                    payload["workspace"],
+                    payload["obstacles"],
+                    payload["raw_llm_waypoints"],
+                    payload["verified_llm_waypoints"],
+                    payload["trajectory"],
+                    commanded,
+                    self.outer.pose_trail,
+                    raw_rrt=payload.get("raw_rrt_waypoints"),
+                    verified_rrt_trajectory=payload.get("verified_rrt_trajectory"),
+                )
+
+        self.rclpy = rclpy
+        self.external_shutdown_exception = ExternalShutdownException
+        self.rclpy.init()
+        self.pose_trail = []
+        self.node = NodeImpl(self)
+
+    def spin(self):
+        try:
+            self.rclpy.spin(self.node)
+        except (KeyboardInterrupt, self.external_shutdown_exception):
+            pass
+        finally:
+            self.node.destroy_node()
+            if self.rclpy.ok():
+                self.rclpy.shutdown()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Verify double-integrator conformal tracking with slide-4 control law.")
+    parser.add_argument("--live", action="store_true", help="Run live LLM design, publish control-law message, and plot odometry.")
+    parser.add_argument("--start", default=None, help='JSON point for live mode, e.g. {"x":0,"y":0,"z":-0.25}')
+    parser.add_argument("--goal", default=None, help='JSON point for live mode, e.g. {"x":2.5,"y":0,"z":-0.25}')
+    parser.add_argument("--workspace", default=json.dumps(DEFAULT_WORKSPACE))
+    parser.add_argument("--obstacles", default="[]")
     parser.add_argument("--calibration-csv", type=Path, default=DEFAULT_CALIBRATION_CSV)
     parser.add_argument("--sample-id", type=int, default=0)
     parser.add_argument("--calibration-samples", type=int, default=None)
@@ -164,18 +399,96 @@ def main():
     parser.add_argument("--dt", type=float, default=0.05)
     parser.add_argument("--output-png", type=Path, default=DEFAULT_OUTPUT_PNG)
     parser.add_argument("--report-json", type=Path, default=DEFAULT_REPORT_JSON)
+    parser.add_argument("--control-law-topic", default=DEFAULT_CONTROL_LAW_TOPIC)
+    parser.add_argument("--pose-topic", default=DEFAULT_POSE_TOPIC)
+    parser.add_argument("--llama-model-name", default=DEFAULT_LLAMA_MODEL_NAME)
+    parser.add_argument("--vllm-base-url", default=DEFAULT_VLLM_BASE_URL)
+    parser.add_argument("--vllm-api-key", default="EMPTY")
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--llm-retries", type=int, default=2)
+    parser.add_argument("--llm-attempts", type=int, default=3)
+    parser.add_argument("--trajectory-dt", type=float, default=0.1)
+    parser.add_argument("--plot-period-s", type=float, default=0.5)
+    parser.add_argument("--pose-trail-limit", type=int, default=300)
+    parser.add_argument("--show-rrt", action="store_true", help="In live mode, compute RRT only for final-plan visualization.")
     args = parser.parse_args()
 
     rows = load_rows(args.calibration_csv)
     if not rows:
         raise RuntimeError(f"No calibration rows found in {args.calibration_csv}")
-    if args.sample_id < 0 or args.sample_id >= len(rows):
-        raise ValueError(f"--sample-id must be between 0 and {len(rows) - 1}.")
     calibration_rows = rows[: args.calibration_samples] if args.calibration_samples else rows
-    row = rows[args.sample_id]
-
     q_u = conformal_quantile([item["s_u"] for item in calibration_rows], args.delta_u)
     q_x = conformal_quantile([item["s_x"] for item in calibration_rows], args.delta_x)
+
+    if args.live:
+        if not args.start or not args.goal:
+            raise ValueError("--live requires --start and --goal.")
+        row = {
+            "start": load_json(args.start),
+            "goal": load_json(args.goal),
+            "workspace": load_json(args.workspace),
+            "obstacles": load_json(args.obstacles),
+        }
+        raw_llm, verified_llm, metrics, llm_trajectory, _ = query_live_llm(args, row)
+        p, k, alpha = solve_care()
+        initial_state = [float(row["start"]["x"]), float(row["start"]["y"]), 0.0, 0.0]
+        commanded = propagate_llm_reference(llm_trajectory, k, args.dt, initial_state)
+        raw_rrt = None
+        verified_rrt_trajectory = None
+        if args.show_rrt:
+            raw_rrt = plan_rrt(
+                row["start"],
+                row["goal"],
+                row["obstacles"],
+                workspace=row["workspace"],
+                clearance_m=DEFAULT_CLEARANCE_M,
+                seed=7,
+            )
+            try:
+                verified_rrt, _ = refine_and_verify(make_refiner(), make_verifier(), raw_rrt, row)
+                verified_rrt_trajectory = generate_trajectory(verified_rrt, row["workspace"], row["obstacles"], dt=args.trajectory_dt)
+                print(f"[live RRT] verified waypoints={len(verified_rrt)}, min-snap samples={len(verified_rrt_trajectory['samples'])}", flush=True)
+            except ValueError as exc:
+                print(f"[live RRT] verification failed, plotting raw markers only: {exc}", flush=True)
+        payload = make_control_law_payload(
+            args,
+            row,
+            raw_llm,
+            verified_llm,
+            metrics,
+            llm_trajectory,
+            p,
+            k,
+            alpha,
+            q_u,
+            q_x,
+            len(calibration_rows),
+            raw_rrt=raw_rrt,
+            verified_rrt_trajectory=verified_rrt_trajectory,
+        )
+        args.report_json.parent.mkdir(parents=True, exist_ok=True)
+        args.report_json.write_text(json.dumps({**payload, "commanded": commanded}, indent=2), encoding="utf-8")
+        draw_live_scene(
+            args.output_png,
+            row["workspace"],
+            row["obstacles"],
+            raw_llm,
+            verified_llm,
+            llm_trajectory,
+            commanded,
+            [],
+            raw_rrt=raw_rrt,
+            verified_rrt_trajectory=verified_rrt_trajectory,
+        )
+        print(json.dumps({"q_u": round(q_u, 6), "q_x": round(q_x, 6), "K": k.round(6).tolist(), "control_law_topic": args.control_law_topic}, indent=2))
+        live = LivePlotPublisher(args, payload, commanded)
+        live.spin()
+        return
+
+    if args.sample_id < 0 or args.sample_id >= len(rows):
+        raise ValueError(f"--sample-id must be between 0 and {len(rows) - 1}.")
+    row = rows[args.sample_id]
+
     p, k, alpha = solve_care()
     rrt_trajectory = trajectory_from_row(row, "rrt")
     llm_trajectory = trajectory_from_row(row, "llm")

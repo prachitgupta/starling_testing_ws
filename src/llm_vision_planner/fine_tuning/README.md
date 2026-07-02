@@ -68,7 +68,7 @@ The launch file starts:
 - `scripts/verifier.py`
 - `scripts/visualize.py`
 
-Start the follower used by this codebase:
+For the standard waypoint follower:
 
 ```bash
 ros2 run llm_vision_planner trajectory_follower_continuous.py --ros-args \
@@ -100,34 +100,55 @@ ros2 topic echo /llm_vision/plan_refined
 ros2 topic echo /llm_vision/plan_verified
 ```
 
-## 6. Run Live LLM Controller Script
+## 6. Run Live Control-Law Design and Plotting
 
-Use this when you want the live flow without RRT online. It queries Llama, refines and verifies the LLM waypoints, re-prompts on verifier failure, runs min-snap, solves CARE, applies the double-integrator control law, and writes a JSON report plus plot.
+Use this to query Llama, refine and verify the LLM plan, re-prompt on verifier failure, run min-snap, solve CARE, publish `/llm_vision/dconformal_control_law`, and plot final verified RRT/LLM paths plus raw waypoint markers.
 
 ```bash
 cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
-python3 fine_tuning/scripts/live_dconformal_controller.py \
+python3 fine_tuning/scripts/dconformal_contraction_verify.py \
+  --live \
   --start '{"x":0.0,"y":0.0,"z":-0.25}' \
   --goal '{"x":2.5,"y":0.0,"z":-0.25}' \
   --obstacles '[]' \
   --calibration-csv fine_tuning/datasets/conformal_rrt_calibration_21.csv \
   --calibration-samples 20 \
   --llm-attempts 3 \
-  --output-json fine_tuning/plots/live_dconformal_controller.json \
-  --output-png fine_tuning/plots/live_dconformal_controller.png
+  --show-rrt \
+  --report-json fine_tuning/plots/dconformal_live_design.json \
+  --output-png fine_tuning/plots/dconformal_live_design.png
 ```
 
-With obstacles:
+With obstacles, replace `--obstacles '[]'`:
 
 ```bash
-python3 fine_tuning/scripts/live_dconformal_controller.py \
-  --start '{"x":0.0,"y":0.0,"z":-0.25}' \
-  --goal '{"x":2.5,"y":0.0,"z":-0.25}' \
-  --obstacles '[{"id":1,"label":"box_1","shape":"box","min_corner":[1.0,-0.3,-0.75],"max_corner":[1.5,0.3,0.25]}]' \
-  --calibration-csv fine_tuning/datasets/conformal_rrt_calibration_21.csv \
-  --calibration-samples 20
+--obstacles '[{"id":1,"label":"box_1","shape":"box","min_corner":[1.0,-0.3,-0.75],"max_corner":[1.5,0.3,0.25]}]'
 ```
 
-## 7. Important Current Limitation
+## 7. Run Mission Takeoff and Control Executor
 
-`dconformal_contraction_verify.py` is an offline controller verification script. The SITL follower currently tracks verified waypoints from `/llm_vision/plan_verified`; it does not publish the double-integrator control law as a ROS controller node yet.
+Start takeoff first and wait for hover:
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source install/setup.bash
+ros2 run llm_vision_planner mission_takeoff.py --ros-args \
+  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
+```
+
+Then start the executor in another terminal. It waits for `/llm_vision/dconformal_control_law`, computes `u = -K(x - xhat_d) + uhat_d` from live odometry, integrates position/velocity setpoints, and publishes only position and velocity setpoints to PX4.
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source install/setup.bash
+ros2 run llm_vision_planner control_law_executer.py --ros-args \
+  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
+```
+
+Monitor:
+
+```bash
+ros2 topic echo /llm_vision/dconformal_control_law
+ros2 topic echo /llm_vision/offboard_owner
+ros2 topic echo /fmu/in/trajectory_setpoint
+```

@@ -14,6 +14,7 @@ install(PROGRAMS
   scripts/mission_takeoff.py
   scripts/trajectory_follower.py
   scripts/trajectory_follower_continuous.py
+  scripts/control_law_executer.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

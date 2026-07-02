@@ -181,3 +181,15 @@ llm_vision_trajectory_follower_continuous:
     prime_s: 1.5
     publish_hz: 20.0
     debug: true
+
+control_law_executer:
+  ros__parameters:
+    control_law_topic: /llm_vision/dconformal_control_law
+    pose_topic: /fmu/out/vehicle_odometry
+    offboard_owner_topic: /llm_vision/offboard_owner
+    publish_hz: 20.0
+    pose_timeout_s: 1.0
+    prime_s: 1.5
+    start_accept_m: 0.75
+    airborne_z_max: -0.05
+    debug: true

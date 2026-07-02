@@ -50,31 +50,34 @@ class WaypointPlan(BaseModel):
     )
 
 
-def interpolate_vector(samples, key, fraction):
-    if len(samples) == 1:
-        return samples[0][key]
-    position = fraction * (len(samples) - 1)
-    low = int(math.floor(position))
-    high = min(low + 1, len(samples) - 1)
-    ratio = position - low
-    return [
-        float(samples[low][key][index]) + (float(samples[high][key][index]) - float(samples[low][key][index])) * ratio
-        for index in range(len(samples[low][key]))
-    ]
+def interpolate_sample(samples, t):
+    if t <= float(samples[0]["t"]):
+        return samples[0]["x"], samples[0]["u"]
+    if t >= float(samples[-1]["t"]):
+        return samples[-1]["x"], samples[-1]["u"]
+    for index in range(1, len(samples)):
+        if float(samples[index]["t"]) >= t:
+            before = samples[index - 1]
+            after = samples[index]
+            span = max(float(after["t"]) - float(before["t"]), 1e-9)
+            ratio = (t - float(before["t"])) / span
+            x = [float(before["x"][i]) + (float(after["x"][i]) - float(before["x"][i])) * ratio for i in range(4)]
+            u = [float(before["u"][i]) + (float(after["u"][i]) - float(before["u"][i])) * ratio for i in range(2)]
+            return x, u
+    return samples[-1]["x"], samples[-1]["u"]
 
 
-def score_trajectories(rrt_trajectory, llm_trajectory):
+def score_trajectories(rrt_trajectory, llm_trajectory, dt=0.1):
     rrt_samples = rrt_trajectory["samples"]
     llm_samples = llm_trajectory["samples"]
-    count = max(len(rrt_samples), len(llm_samples), 2)
+    horizon = min(float(rrt_samples[-1]["t"]), float(llm_samples[-1]["t"]))
+    count = max(2, int(math.ceil(horizon / dt)) + 1)
     s_u = 0.0
     s_x = 0.0
     for index in range(count):
-        fraction = index / (count - 1)
-        rrt_x = interpolate_vector(rrt_samples, "x", fraction)
-        llm_x = interpolate_vector(llm_samples, "x", fraction)
-        rrt_u = interpolate_vector(rrt_samples, "u", fraction)
-        llm_u = interpolate_vector(llm_samples, "u", fraction)
+        t = min(index * dt, horizon)
+        rrt_x, rrt_u = interpolate_sample(rrt_samples, t)
+        llm_x, llm_u = interpolate_sample(llm_samples, t)
         s_x = max(s_x, math.sqrt(sum((llm_x[i] - rrt_x[i]) ** 2 for i in range(4))))
         s_u = max(s_u, math.sqrt(sum((llm_u[i] - rrt_u[i]) ** 2 for i in range(2))))
     return {"s_u": round(s_u, 6), "s_x": round(s_x, 6)}
@@ -218,7 +221,7 @@ def build_dataset(args):
             f"llm={len(llm_trajectory['samples'])}",
             flush=True,
         )
-        scores = score_trajectories(rrt_trajectory, llm_trajectory)
+        scores = score_trajectories(rrt_trajectory, llm_trajectory, args.dt)
         scored.append((row, candidate, rrt_verified, llm_verified, rrt_metrics, llm_metrics, rrt_trajectory, llm_trajectory, scores, prompt))
         print(f"[accepted {len(scored)}/{args.samples}] s_u={scores['s_u']}, s_x={scores['s_x']}", flush=True)
 

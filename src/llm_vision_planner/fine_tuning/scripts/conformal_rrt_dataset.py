@@ -18,7 +18,7 @@ from dataset_generator import (
     prompt_from_current_generator,
     sample_environment,
 )
-from min_snap import generate_trajectory
+from min_snap import generate_trajectory, segment_durations
 from pydantic import BaseModel, Field
 from rrt import plan_rrt
 
@@ -106,6 +106,15 @@ def score_trajectories(rrt_trajectory, llm_trajectory, dt=0.1):
         s_x = max(s_x, math.sqrt(sum((llm_x[i] - rrt_x[i]) ** 2 for i in range(4))))
         s_u = max(s_u, math.sqrt(sum((llm_u[i] - rrt_u[i]) ** 2 for i in range(2))))
     return {"s_u": round(s_u, 6), "s_x": round(s_x, 6)}
+
+
+def shared_llm_durations(rrt_durations, llm_waypoints):
+    if len(rrt_durations) == len(llm_waypoints) - 1:
+        return list(rrt_durations)
+    durations = segment_durations(llm_waypoints)
+    total = sum(rrt_durations)
+    natural_total = sum(durations)
+    return [duration * total / natural_total for duration in durations]
 
 
 def conformal_quantile(values, delta):
@@ -281,7 +290,13 @@ def build_dataset(args):
             continue
         print(f"[attempt {attempts}] running min-snap trajectories", flush=True)
         rrt_trajectory = generate_trajectory(rrt_verified, row["workspace"], row["obstacles"], dt=args.dt)
-        llm_trajectory = generate_trajectory(llm_verified, row["workspace"], row["obstacles"], dt=args.dt)
+        llm_trajectory = generate_trajectory(
+            llm_verified,
+            row["workspace"],
+            row["obstacles"],
+            dt=args.dt,
+            durations=shared_llm_durations(rrt_trajectory["durations"], llm_verified),
+        )
         print(
             f"[attempt {attempts}] trajectory samples: rrt={len(rrt_trajectory['samples'])}, "
             f"llm={len(llm_trajectory['samples'])}",

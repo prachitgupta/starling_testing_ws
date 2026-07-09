@@ -115,6 +115,16 @@ def completion_from_path(path):
     }
 
 
+def write_rows(rows, output_csv):
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    tmp_output = output_csv.with_suffix(output_csv.suffix + ".tmp")
+    with tmp_output.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    tmp_output.replace(output_csv)
+
+
 def generate_dataset(samples, output_csv, seed, use_fixed_goal):
     random.seed(seed)
     prompt_module = load_prompt_generator()
@@ -160,15 +170,11 @@ def generate_dataset(samples, output_csv, seed, use_fixed_goal):
                 "waypoints": json.dumps(path, separators=(",", ":")),
             }
         )
+        write_rows(rows, output_csv)
 
     if len(rows) < samples:
         raise RuntimeError(f"Generated {len(rows)} samples after {attempts} attempts; requested {samples}.")
 
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
-    with output_csv.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
     return output_csv
 
 

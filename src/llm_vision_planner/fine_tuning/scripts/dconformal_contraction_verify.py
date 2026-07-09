@@ -25,6 +25,7 @@ from conformal_rrt_dataset import (
     prompt_from_current_generator,
     refine_and_verify,
     request_llama_waypoints,
+    shared_llm_durations,
 )
 from dataset_generator import DEFAULT_CLEARANCE_M, DEFAULT_WORKSPACE, load_prompt_generator
 
@@ -63,18 +64,21 @@ def conformal_quantile(values, delta):
     return ordered[min(rank, len(ordered)) - 1]
 
 
-def trajectory_from_row(row, prefix):
-    trajectory_key = f"{prefix}_trajectory"
-    if row.get(trajectory_key):
-        return parse_json_field(row[trajectory_key])
+def waypoints_from_row(row, prefix):
     verified_key = f"{prefix}_verified_waypoints"
     if row.get(verified_key):
-        waypoints = parse_json_field(row[verified_key])
-    else:
-        waypoints = parse_json_field(row[f"{prefix}_waypoints"])
+        return parse_json_field(row[verified_key])
+    return parse_json_field(row[f"{prefix}_waypoints"])
+
+
+def trajectory_from_row(row, prefix, durations=None):
+    trajectory_key = f"{prefix}_trajectory"
+    if durations is None and row.get(trajectory_key):
+        return parse_json_field(row[trajectory_key])
+    waypoints = waypoints_from_row(row, prefix)
     workspace = parse_json_field(row["workspace"])
     obstacles = parse_json_field(row["obstacles"])
-    return generate_trajectory(waypoints, workspace, obstacles)
+    return generate_trajectory(waypoints, workspace, obstacles, durations=durations)
 
 
 def interpolate_sample(samples, t):
@@ -496,7 +500,10 @@ def main():
 
     p, k, alpha = solve_care()
     rrt_trajectory = trajectory_from_row(row, "rrt")
-    llm_trajectory = trajectory_from_row(row, "llm")
+    llm_durations = None
+    if not row.get("llm_trajectory"):
+        llm_durations = shared_llm_durations(rrt_trajectory["durations"], waypoints_from_row(row, "llm"))
+    llm_trajectory = trajectory_from_row(row, "llm", durations=llm_durations)
     closed_loop = propagate_controller(rrt_trajectory, llm_trajectory, k, args.dt)
     tube = tube_profile(closed_loop, p, B_DOUBLE_INTEGRATOR, k, alpha, q_u, q_x)
     max_tracking_error = max(np.linalg.norm(np.array(sample["x"]) - np.array(sample["xd"])) for sample in closed_loop)

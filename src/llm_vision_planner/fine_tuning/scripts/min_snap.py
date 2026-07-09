@@ -103,11 +103,16 @@ def evaluate_axis(coefficients, segment, tau):
     return position, velocity, acceleration
 
 
-def generate_trajectory(waypoints, workspace=None, obstacles=None, dt=DT):
+def generate_trajectory(waypoints, workspace=None, obstacles=None, dt=DT, durations=None):
     usable_waypoints = list(waypoints)
     if len(usable_waypoints) < 2:
         raise ValueError("Minimum-snap generation requires at least two verified waypoints.")
-    durations = segment_durations(usable_waypoints)
+    if durations is None:
+        durations = segment_durations(usable_waypoints)
+    else:
+        durations = [float(duration) for duration in durations]
+        if len(durations) != len(usable_waypoints) - 1 or min(durations) <= 0.0:
+            raise ValueError("durations must contain one positive value per trajectory segment.")
     coeff_x = solve_axis_min_snap([float(point["x"]) for point in usable_waypoints], durations)
     coeff_y = solve_axis_min_snap([float(point["y"]) for point in usable_waypoints], durations)
 

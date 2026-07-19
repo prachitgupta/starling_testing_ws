@@ -1,4 +1,4 @@
-# Shared-Clock Minimum-Control QP Pipeline
+# Shared-Clock Minimum-Control QP Position Pipeline
 
 This directory retains the certified waypoint pipeline for the planar damped model
 
@@ -9,6 +9,31 @@ u_cmd = uhat_d - K (x - xhat_d)
 ```
 
 Here `u_cmd` is a horizontal velocity demand. It is not a physical acceleration.
+The QP cruise speed is `0.30 m/s`; its controls are evaluated with exact zero-order
+hold rather than linearly interpolated.
+
+## File roles
+
+- `scripts/dataset_generator.py` is the public data-generation CLI. Its original
+  mode still creates RRT instruction-tuning data. With `--prediction-pairs`, it
+  creates calibration source data instead.
+- `scripts/conformal_rrt_dataset.py` implements prediction-pair collection. It
+  samples environments, calls RRT and vLLM, runs the existing refinement and
+  verifier, and writes only the raw/verified waypoint pairs and metadata. It does
+  not generate trajectories, scores, quantiles, or acceptance columns.
+- `scripts/generate_qp_calibration_dataset.py` consumes those stored verified
+  pairs without contacting vLLM. It generates shared-clock minimum-control QP
+  trajectories and computes `s_u`, `s_x`, `q_u`, `q_x`, deltas, and acceptance.
+- `scripts/generate_position_score_calibration.py` consumes the QP CSV and
+  simulates the feedback-controlled damped model at 20 Hz. It adds the direct
+  cross-track position score `s_p`, equal-time diagnostic, legacy comparison
+  score `s_w`, and their conformal quantiles.
+- `scripts/dconformal_contraction_verify.py` reads the final position-score CSV,
+  evaluates an arbitrary sample, and plots the direct position tube, exact 2D
+  projection, and legacy 4D state radius.
+
+This separation makes vLLM collection resumable and reusable: changing the QP,
+score, confidence level, or plotting does not require new LLM predictions.
 
 ## Build
 
@@ -21,21 +46,81 @@ source install/setup.bash
 
 ## Reproduce the 2,000-row calibration files
 
-Run the commands in `REPRODUCE_XU_DATASETS.md`. They reuse the stored 2,001 verified RRT/LLM pairs and do not contact vLLM.
+Run the commands in `REPRODUCE_XU_DATASETS.md`. Prediction-pair generation is
+separate from QP/conformal computation, so an existing source-pair CSV can be
+reused without contacting vLLM.
+
+## Generate 5,000 samples in tmux
+
+The prediction stage requires the configured vLLM server. Use the system Python
+after sourcing ROS Humble so the offline refinement and verifier can import
+`rclpy`.
+
+Start a persistent terminal:
+
+```bash
+tmux new-session -s qp5000
+```
+
+Inside tmux, run the three stages sequentially:
+
+```bash
+cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
+source /opt/ros/humble/setup.bash
+
+/usr/bin/python3 fine_tuning/scripts/dataset_generator.py \
+  --prediction-pairs \
+  --samples 5000 \
+  --output fine_tuning/datasets/conformal_rrt_prediction_pairs_5000.csv \
+  2>&1 | tee /tmp/qp5000_predictions.log
+
+/usr/bin/python3 fine_tuning/scripts/generate_qp_calibration_dataset.py \
+  --input fine_tuning/datasets/conformal_rrt_prediction_pairs_5000.csv \
+  --output fine_tuning/datasets/calibration_min_control_qp_shared_clock_5000.csv \
+  --samples 5000 \
+  --dt 0.1 \
+  --delta-u 0.05 \
+  --delta-x 0.05 \
+  2>&1 | tee /tmp/qp5000_trajectories.log
+
+/usr/bin/python3 fine_tuning/scripts/generate_position_score_calibration.py \
+  --input fine_tuning/datasets/calibration_min_control_qp_shared_clock_5000.csv \
+  --output fine_tuning/datasets/calibration_min_control_qp_position_score_5000.csv \
+  --samples 5000 \
+  --delta-p 0.10 \
+  --delta-w 0.10 \
+  --control-dt 0.05 \
+  2>&1 | tee /tmp/qp5000_position_scores.log
+```
+
+Detach with `Ctrl-b d` and reattach later with:
+
+```bash
+tmux attach-session -t qp5000
+```
+
+For 5,000 calibration rows, the 90% position-score rank is 4,501. The first
+stage is the only one that contacts vLLM; the QP and scoring stages can be rerun
+from their input CSVs.
 
 ## Offline certificate check
 
 ```bash
 cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
 python3 fine_tuning/scripts/dconformal_contraction_verify.py \
-  --calibration-csv fine_tuning/datasets/calibration_min_control_qp_single_score_2000.csv \
+  --calibration-csv fine_tuning/datasets/calibration_min_control_qp_position_score_2000.csv \
   --calibration-samples 2000 \
   --sample-id 998 \
-  --report-json /tmp/qp_single_score_verify.json \
-  --output-png /tmp/qp_single_score_verify.png
+  --report-json /tmp/qp_position_verify.json \
+  --output-png /tmp/qp_position_verify.png
 ```
 
-The 90% finite-sample certificate uses rank 1801, `q_w = 1.641463`, and planar radius `rho_infinity = 1.913080 m`.
+The 90% finite-sample certificate uses rank 1801 and the direct closed-loop
+cross-track score. Its radius is the position quantile itself:
+`radius = q_p = 0.241187 m`. The equal-time position error is retained only as
+a diagnostic. The verifier plot also compares the current-speed 4D state radius
+`1.481553` and its exact 2D projection `0.602299 m`. All scores use the calibrated
+planar model at a 20 Hz control rate.
 
 ## PX4 SITL and unified launch
 
@@ -60,4 +145,6 @@ ros2 topic echo /fmu/out/vehicle_status
 ros2 topic echo /fmu/out/vehicle_land_detected
 ```
 
-Use PX4 SITL for the first end-to-end run. The 1.913080 m value certifies the calibrated planar model/reference discrepancy, not the full nonlinear PX4 vehicle.
+Use PX4 SITL for the first end-to-end run. The position radius certifies the
+sampled closed-loop calibrated planar model, not the full nonlinear PX4 vehicle
+or unmodelled flight disturbances.

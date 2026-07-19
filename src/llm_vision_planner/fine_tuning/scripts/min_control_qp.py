@@ -8,7 +8,7 @@ import numpy as np
 
 DAMPING = 1.1
 DT = 0.1
-CRUISE_SPEED_MPS = 0.5
+CRUISE_SPEED_MPS = 0.3
 
 
 def segment_durations(waypoints, cruise_speed_mps=CRUISE_SPEED_MPS):
@@ -52,6 +52,31 @@ def discrete_dynamics(dt=DT, damping=DAMPING):
     a = np.array([[1.0, position_velocity_gain], [0.0, decay]], dtype=float)
     b = np.array([position_control_gain, velocity_gain], dtype=float)
     return a, b
+
+
+def propagate_state(state, control, dt, damping=DAMPING):
+    """Propagate [px, py, vx, vy] exactly for one held-control interval."""
+    state = np.asarray(state, dtype=float)
+    control = np.asarray(control, dtype=float)
+    a, b = discrete_dynamics(dt, damping)
+    axes = np.vstack((state[:2], state[2:]))
+    propagated = a @ axes + b[:, None] * control[None, :]
+    return np.concatenate((propagated[0], propagated[1]))
+
+
+def evaluate_sample(samples, timestamp, damping=DAMPING):
+    """Evaluate a sampled QP reference with exact zero-order-held control."""
+    if not samples:
+        raise ValueError("samples must not be empty")
+    timestamp = float(timestamp)
+    times = np.fromiter((float(sample["t"]) for sample in samples), dtype=float)
+    if timestamp <= times[0]:
+        return np.asarray(samples[0]["x"], dtype=float), np.asarray(samples[0]["u"], dtype=float)
+    if timestamp >= times[-1]:
+        return np.asarray(samples[-1]["x"], dtype=float), np.asarray(samples[-1]["u"], dtype=float)
+    index = int(np.searchsorted(times, timestamp, side="right") - 1)
+    state = propagate_state(samples[index]["x"], samples[index]["u"], timestamp - times[index], damping)
+    return state, np.asarray(samples[index]["u"], dtype=float)
 
 
 def _solve_controls(waypoints, waypoint_knots, total_steps, dt):

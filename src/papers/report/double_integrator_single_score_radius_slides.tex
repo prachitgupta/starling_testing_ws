@@ -35,7 +35,7 @@
 \newcommand{\lmax}{\lambda_{\max}}
 
 \title[Single-Score Radius: Double Integrator]{Single-Score Safety Radius for the Damped Double Integrator}
-\subtitle{Detailed Lyapunov and conformal derivation}
+\subtitle{4D Lyapunov tube, exact 2D projection, and direct position score}
 \author{}
 \date{}
 
@@ -386,6 +386,110 @@ Complete time-dependent tube:
 If $e(0)=0$, the tube grows monotonically from zero toward $1.913079$.
 \end{frame}
 
+\begin{frame}{Projecting the 4D Ellipsoid onto 2D Position}
+\small
+Let the position output be
+\[
+e_p=C_p e,
+\qquad
+C_p=\begin{bmatrix}1&0&0&0\\0&1&0&0\end{bmatrix}.
+\]
+Suppose the 4D Lyapunov argument has established
+\[
+e^\top P e\leq \beta(t)^2.
+\]
+The smallest Euclidean position ball containing the projection is found from
+\[
+\rho_p(t)^2=
+\max_{e^\top Pe\leq\beta(t)^2}e^\top C_p^\top C_p e.
+\]
+Set $z=P^{1/2}e$.  The constrained maximization gives
+\[
+\boxed{
+\rho_p(t)=g_p\,\beta(t),\qquad
+g_p:=\sqrt{\lambda_{\max}\!\left(C_pP^{-1}C_p^\top\right)}.}
+\]
+
+\begin{alertblock}{Why the full inverse appears}
+Position and velocity are coupled by the off-diagonal blocks of $P$.
+Using only the upper-left position block of $P$ is therefore not exact.
+\end{alertblock}
+\end{frame}
+
+\begin{frame}{Projected Position Tube from the 4D Certificate}
+The scalar Lyapunov bound is
+\[
+\beta(t)=W(0)e^{-\alpha_Pt}
++\frac{q_w}{\alpha_P}(1-e^{-\alpha_Pt}),
+\qquad W(0)=\sqrt{e(0)^\top Pe(0)}.
+\]
+Therefore the inherited 2D output certificate is
+\[
+\boxed{
+\rho_p(t)=g_pW(0)e^{-\alpha_Pt}
++g_p\frac{q_w}{\alpha_P}(1-e^{-\alpha_Pt}).}
+\]
+For the repository CARE matrix,
+\[
+C_pP^{-1}C_p^\top=0.269772\,I_2,
+\qquad g_p=0.519396.
+\]
+For the original $q_w=1.641463$ calibration and $e(0)=0$,
+\[
+\boxed{\rho_{p,\infty}=0.519396\frac{1.641463}{1.096230}
+=0.777728\ {\rm m}.}
+\]
+This is tighter than $1.913079$, while inheriting the same 4D conformal event.
+\end{frame}
+
+\begin{frame}{0.30 m/s: Projection Versus Direct Score}
+Reducing the QP cruise speed and recalibrating the old 4D disturbance score gives
+\[
+\begin{aligned}
+q_w&=1.271204, & \rho_{4D,\infty}&=1.481553\ {\rm m},\\
+&& \rho_{p,\infty}^{\rm proj}&=0.602299\ {\rm m}.
+\end{aligned}
+\]
+
+The deployed pipeline instead calibrates the position output directly. For
+closed-loop model trajectory $p_i^{\rm cl}(t_k)$ and expert path $\gamma_{d,i}$,
+\[
+\boxed{
+S_i^{\rm cross}
+=\max_k\min_s\left\|p_i^{\rm cl}(t_k)-\gamma_{d,i}(s)\right\|_2.}
+\]
+At $N=2000$, $\delta_p=0.10$, and rank $1801$,
+\[
+\boxed{q_p=S_{(1801)}^{\rm cross}=0.241187\ {\rm m},
+\qquad \rho_p=q_p.}
+\]
+No $P$, $\alpha_P$, or eigenvalue conversion is applied to this direct score.
+\end{frame}
+
+\begin{frame}{What Each Position Number Guarantees}
+\footnotesize
+\begin{tabular}{@{}p{0.34\textwidth}p{0.25\textwidth}p{0.25\textwidth}@{}}
+\toprule
+Construction & Radius & Contract \\
+\midrule
+Original 4D norm & $1.913079$ m & $\|[e_p,e_v]\|_2$ \\
+2D projection of original 4D tube & $0.777728$ m & $\|e_p\|_2$ at equal time \\
+0.30 m/s projected 4D tube & $0.602299$ m & equal-time position \\
+Direct equal-time position score & $0.255089$ m & sampled $\max_k\|e_p(t_k)\|_2$ \\
+Direct cross-track position score & $\mathbf{0.241187}$ m & sampled path distance \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.25em}
+\begin{itemize}
+  \item Projection protects against every position--velocity combination
+  inside the 4D ellipsoid.
+  \item Direct calibration scores the output instead of enclosing the full state.
+  \item Cross-track does not bound along-track timing error or velocity error.
+  The current calculation uses exact QP zero-order hold and 20 Hz samples.
+\end{itemize}
+\end{frame}
+
 \begin{frame}{Why One Score Is Tighter}
 The previous two-score construction first applies
 \[
@@ -457,6 +561,11 @@ The score contains both $P$ and $K$ through $\sqrt{w^\top Pw}$ and $w=Bd_u+BKd_x
 \end{aligned}
 \]
 \end{block}
+
+\vspace{0.3em}
+For the current direct-output deployment, the separate calibrated statement is
+$\mathbb P[S_{\rm test}^{\rm cross}\leq0.241187\ {\rm m}]\geq0.90$;
+it must not be described as a 4D state bound.
 \end{frame}
 
 \end{document}

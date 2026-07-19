@@ -4,20 +4,69 @@
 import argparse
 import csv
 import json
+import math
 from pathlib import Path
 
-from conformal_rrt_dataset import FIELDNAMES, conformal_quantile, score_trajectories
-from min_control_qp import generate_shared_pair
+from min_control_qp import evaluate_sample, generate_shared_pair
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_INPUT = SCRIPT_DIR.parent / "datasets" / "conformal_rrt_calibration_dataset_2001.csv"
 DEFAULT_OUTPUT = SCRIPT_DIR.parent / "datasets" / "calibration_min_control_qp_shared_clock_2000.csv"
+REQUIRED_SOURCE_FIELDS = {
+    "sample_id",
+    "workspace",
+    "obstacles",
+    "rrt_verified_waypoints",
+    "llm_verified_waypoints",
+}
+CALIBRATION_FIELDS = [
+    "rrt_trajectory",
+    "llm_trajectory",
+    "s_u",
+    "s_x",
+    "q_u",
+    "q_x",
+    "delta_u",
+    "delta_x",
+    "accepted",
+]
+
+
+def conformal_quantile(values, delta):
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        return 0.0
+    rank = max(1, math.ceil((1.0 - delta) * (len(ordered) + 1)))
+    return ordered[min(rank, len(ordered)) - 1]
+
+
+def score_trajectories(rrt_trajectory, llm_trajectory):
+    rrt_samples = rrt_trajectory["samples"]
+    llm_samples = llm_trajectory["samples"]
+    horizon = min(float(rrt_samples[-1]["t"]), float(llm_samples[-1]["t"]))
+    times = sorted(
+        {float(sample["t"]) for sample in rrt_samples if float(sample["t"]) <= horizon}
+        | {float(sample["t"]) for sample in llm_samples if float(sample["t"]) <= horizon}
+    )
+    s_u = 0.0
+    s_x = 0.0
+    for timestamp in times:
+        rrt_x, rrt_u = evaluate_sample(rrt_samples, timestamp)
+        llm_x, llm_u = evaluate_sample(llm_samples, timestamp)
+        s_x = max(s_x, float(math.sqrt(sum((llm_x[index] - rrt_x[index]) ** 2 for index in range(4)))))
+        s_u = max(s_u, float(math.sqrt(sum((llm_u[index] - rrt_u[index]) ** 2 for index in range(2)))))
+    return {"s_u": round(s_u, 6), "s_x": round(s_x, 6)}
 
 
 def build(args):
     with args.input.open(newline="", encoding="utf-8") as stream:
-        source_rows = list(csv.DictReader(stream))[: args.samples]
+        reader = csv.DictReader(stream)
+        source_fieldnames = list(reader.fieldnames or [])
+        source_rows = list(reader)[: args.samples]
+    missing = REQUIRED_SOURCE_FIELDS - set(source_fieldnames)
+    if missing:
+        raise ValueError(f"Prediction-pair CSV is missing required columns: {', '.join(sorted(missing))}")
     if len(source_rows) != args.samples:
         raise RuntimeError(f"Input contains {len(source_rows)} rows; requested {args.samples}.")
     output_rows = []
@@ -27,7 +76,7 @@ def build(args):
         rrt_waypoints = json.loads(source["rrt_verified_waypoints"])
         llm_waypoints = json.loads(source["llm_verified_waypoints"])
         rrt, llm = generate_shared_pair(rrt_waypoints, llm_waypoints, workspace, obstacles, args.dt)
-        scores = score_trajectories(rrt, llm, args.dt)
+        scores = score_trajectories(rrt, llm)
         row = dict(source)
         row["rrt_trajectory"] = json.dumps(rrt, separators=(",", ":"))
         row["llm_trajectory"] = json.dumps(llm, separators=(",", ":"))
@@ -42,10 +91,11 @@ def build(args):
         row["accepted"] = float(row["s_u"]) <= q_u and float(row["s_x"]) <= q_x
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")
+    output_fields = [name for name in source_fieldnames if name not in CALIBRATION_FIELDS] + CALIBRATION_FIELDS
     with temporary.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=FIELDNAMES)
+        writer = csv.DictWriter(stream, fieldnames=output_fields, lineterminator="\n")
         writer.writeheader()
-        writer.writerows({name: row.get(name, "") for name in FIELDNAMES} for row in output_rows)
+        writer.writerows({name: row.get(name, "") for name in output_fields} for row in output_rows)
     temporary.replace(args.output)
     print(f"Wrote {len(output_rows)} rows to {args.output}")
     print(f"q_u={q_u:.6f}, q_x={q_x:.6f}")

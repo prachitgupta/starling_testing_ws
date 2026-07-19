@@ -14,9 +14,9 @@ import numpy as np
 from matplotlib.patches import Circle, Rectangle
 
 from lqr import A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, DAMPING, certified_metric_alpha, solve_care
-from min_control_qp import generate_shared_pair, generate_trajectory
+from min_control_qp import evaluate_sample, generate_shared_pair, generate_trajectory, propagate_state
+from position_score import closed_loop_trace, position_scores
 from rrt import plan_rrt
-from single_score import combined_disturbance_score
 
 from conformal_rrt_dataset import (
     DEFAULT_LLAMA_MODEL_NAME,
@@ -33,9 +33,9 @@ from dataset_generator import DEFAULT_CLEARANCE_M, DEFAULT_WORKSPACE, load_promp
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATASET_DIR = SCRIPT_DIR.parent / "datasets"
 PLOTS_DIR = SCRIPT_DIR.parent / "plots"
-DEFAULT_CALIBRATION_CSV = DATASET_DIR / "calibration_min_control_qp_single_score_2000.csv"
-DEFAULT_OUTPUT_PNG = PLOTS_DIR / "dconformal_qp_single_score_verification.png"
-DEFAULT_REPORT_JSON = PLOTS_DIR / "dconformal_qp_single_score_verification.json"
+DEFAULT_CALIBRATION_CSV = DATASET_DIR / "calibration_min_control_qp_position_score_2000.csv"
+DEFAULT_OUTPUT_PNG = PLOTS_DIR / "dconformal_qp_position_verification.png"
+DEFAULT_REPORT_JSON = PLOTS_DIR / "dconformal_qp_position_verification.json"
 DEFAULT_CONTROL_LAW_TOPIC = "/llm_vision/dconformal_control_law"
 DEFAULT_POSE_TOPIC = "/fmu/out/vehicle_odometry"
 
@@ -79,27 +79,6 @@ def trajectory_from_row(row, prefix, durations=None):
     workspace = parse_json_field(row["workspace"])
     obstacles = parse_json_field(row["obstacles"])
     return generate_trajectory(waypoints, workspace, obstacles, durations=durations)
-
-
-def interpolate_sample(samples, t):
-    if t <= float(samples[0]["t"]):
-        return np.array(samples[0]["x"], dtype=float), np.array(samples[0]["u"], dtype=float)
-    if t >= float(samples[-1]["t"]):
-        return np.array(samples[-1]["x"], dtype=float), np.array(samples[-1]["u"], dtype=float)
-    for index in range(1, len(samples)):
-        if float(samples[index]["t"]) >= t:
-            before = samples[index - 1]
-            after = samples[index]
-            span = max(float(after["t"]) - float(before["t"]), 1e-9)
-            ratio = (t - float(before["t"])) / span
-            x = np.array(before["x"], dtype=float) + (np.array(after["x"], dtype=float) - np.array(before["x"], dtype=float)) * ratio
-            u = np.array(before["u"], dtype=float) + (np.array(after["u"], dtype=float) - np.array(before["u"], dtype=float)) * ratio
-            return x, u
-    return np.array(samples[-1]["x"], dtype=float), np.array(samples[-1]["u"], dtype=float)
-
-
-def dynamics(state, control):
-    return A_DOUBLE_INTEGRATOR @ state + B_DOUBLE_INTEGRATOR @ control
 
 
 def feedback_prompt(base_prompt, metrics):
@@ -163,17 +142,7 @@ def query_live_llm(args, row):
 
 
 def propagate_controller(rrt_trajectory, llm_trajectory, k, dt):
-    horizon = min(float(rrt_trajectory["samples"][-1]["t"]), float(llm_trajectory["samples"][-1]["t"]))
-    times = np.arange(0.0, horizon + 0.5 * dt, dt)
-    state = np.array(rrt_trajectory["samples"][0]["x"], dtype=float)
-    result = []
-    for t in times:
-        xhat, uhat = interpolate_sample(llm_trajectory["samples"], float(t))
-        control = -k @ (state - xhat) + uhat
-        xd, _ = interpolate_sample(rrt_trajectory["samples"], float(t))
-        result.append({"t": float(t), "x": state.tolist(), "u": control.tolist(), "xd": xd.tolist(), "xhat": xhat.tolist()})
-        state = state + dt * dynamics(state, control)
-    return result
+    return closed_loop_trace(rrt_trajectory, llm_trajectory, k, dt)
 
 
 def propagate_llm_reference(llm_trajectory, k, dt, initial_state):
@@ -181,27 +150,17 @@ def propagate_llm_reference(llm_trajectory, k, dt, initial_state):
     times = np.arange(0.0, horizon + 0.5 * dt, dt)
     state = np.array(initial_state, dtype=float)
     result = []
-    for t in times:
-        xhat, uhat = interpolate_sample(llm_trajectory["samples"], float(t))
+    for index, t in enumerate(times):
+        xhat, uhat = evaluate_sample(llm_trajectory["samples"], float(t))
         control = -k @ (state - xhat) + uhat
         result.append({"t": float(t), "x": state.tolist(), "u": control.tolist(), "xhat": xhat.tolist(), "uhat": uhat.tolist()})
-        state = state + dt * dynamics(state, control)
+        if index + 1 < len(times):
+            state = propagate_state(state, control, float(times[index + 1] - t))
     return result
 
 
-def single_score_tube_profile(closed_loop, p, alpha, q_w):
-    eigvals = np.linalg.eigvalsh(p)
-    lambda_min = float(np.min(eigvals))
-    lambda_max = float(np.max(eigvals))
-    initial_error = np.linalg.norm(np.array(closed_loop[0]["x"]) - np.array(closed_loop[0]["xd"]))
-    profile = []
-    for sample in closed_loop:
-        t = float(sample["t"])
-        decay = math.exp(-alpha * t)
-        radius = math.sqrt(lambda_max / lambda_min) * initial_error * decay
-        radius += q_w * (1.0 - decay) / (alpha * math.sqrt(lambda_min))
-        profile.append({"t": t, "radius": radius})
-    return profile
+def position_tube_profile(closed_loop, q_p):
+    return [{"t": float(sample["t"]), "radius": float(q_p)} for sample in closed_loop]
 
 
 def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, closed_loop, tube, result):
@@ -212,7 +171,7 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
     axis.set_ylim(float(workspace["y"][0]) - 0.25, float(workspace["y"][1]) + 0.25)
     axis.set_xlabel("x position [m]")
     axis.set_ylabel("y position [m]")
-    axis.set_title("QP double-integrator tracking with single-score certificate")
+    axis.set_title("QP tracking certificate comparison")
     axis.grid(True, alpha=0.25)
 
     for obstacle in obstacles:
@@ -231,6 +190,24 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
 
     sampled_closed_loop = closed_loop[:: max(1, len(closed_loop) // 30)]
     sampled_tube = tube[:: max(1, len(tube) // 30)]
+    for index, sample in enumerate(sampled_closed_loop):
+        xd = sample["xd"]
+        axis.add_patch(
+            Circle(
+                (xd[0], xd[1]),
+                result["projected_position_radius_m"],
+                facecolor="#c4b5fd",
+                edgecolor="#7c3aed",
+                linewidth=0.6,
+                alpha=0.06,
+                label=(
+                    rf"90% projected 2D: $q_w={result['q_w']:.3f}$, "
+                    rf"$\rho_p={result['projected_position_radius_m']:.3f}$ m"
+                    if index == 0
+                    else None
+                ),
+            )
+        )
     for index, (sample, tube_sample) in enumerate(zip(sampled_closed_loop, sampled_tube)):
         xd = sample["xd"]
         axis.add_patch(
@@ -240,9 +217,20 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
                 facecolor="#60a5fa",
                 edgecolor="none",
                 alpha=0.10,
-                label="90% certified state-error radius" if index == 0 else None,
+                label=rf"90% direct cross-track: $q_p={result['q_p']:.3f}$ m" if index == 0 else None,
             )
         )
+
+    axis.plot(
+        [],
+        [],
+        ":",
+        color="#111827",
+        label=(
+            rf"90% 4D state: $q_w={result['q_w']:.3f}$, "
+            rf"$\rho_{{4D}}={result['state_radius_4d']:.3f}$ (not a position circle)"
+        ),
+    )
 
     axis.plot([s["x"][0] for s in rrt_samples], [s["x"][1] for s in rrt_samples], color="#2563eb", label=r"RRT expert reference $x_d$")
     axis.plot(
@@ -256,9 +244,10 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
     axis.scatter([rrt_samples[0]["x"][0]], [rrt_samples[0]["x"][1]], color="#111827", s=60, marker="s", label="initial position")
     axis.scatter([rrt_samples[-1]["x"][0]], [rrt_samples[-1]["x"][1]], color="#7c3aed", s=100, marker="*", label="goal position")
     annotation = (
-        f"s_w={result['s_w']:.3f} ≤ q_w={result['q_w']:.3f}\n"
-        f"P(maxₜ ||x-x_d|| ≤ ρ) ≥ {result['coverage']:.2f}\n"
-        f"max state error={result['max_tracking_error']:.3f}, max ρ={result['max_tube_radius_m']:.3f}"
+        f"$s_p$={result['s_p']:.3f} m ≤ $q_p$={result['q_p']:.3f} m\n"
+        f"projected 2D radius={result['projected_position_radius_m']:.3f} m\n"
+        f"4D state radius={result['state_radius_4d']:.3f} (mixed state units)\n"
+        f"equal-time position error={result['s_position_time']:.3f} m"
     )
     axis.text(
         0.02,
@@ -267,7 +256,7 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
         transform=axis.transAxes,
         bbox={"facecolor": "white", "edgecolor": "#d1d5db", "alpha": 0.9},
     )
-    axis.legend(loc="upper right")
+    axis.legend(loc="upper right", fontsize=8)
     fig.tight_layout()
     fig.savefig(output_png, dpi=180)
     plt.close(fig)
@@ -323,12 +312,10 @@ def draw_live_scene(output_png, workspace, obstacles, raw_llm, verified_llm, llm
     plt.close(fig)
 
 
-def make_control_law_payload(args, row, raw_llm, verified_llm, metrics, llm_trajectory, p, k, alpha, q_w, calibration_count, raw_rrt=None, verified_rrt_trajectory=None):
+def make_control_law_payload(args, row, raw_llm, verified_llm, metrics, llm_trajectory, k, q_p, calibration_count, raw_rrt=None, verified_rrt_trajectory=None):
     return {
         "trajectory": llm_trajectory,
         "K": k.tolist(),
-        "P": p.tolist(),
-        "alpha": alpha,
         "start": row["start"],
         "goal": row["goal"],
         "workspace": row["workspace"],
@@ -338,9 +325,10 @@ def make_control_law_payload(args, row, raw_llm, verified_llm, metrics, llm_traj
         "verification_metrics": metrics,
         "raw_rrt_waypoints": raw_rrt,
         "verified_rrt_trajectory": verified_rrt_trajectory,
-        "q_w": q_w,
-        "delta_w": args.delta_w,
-        "score_type": "combined_p_weighted_disturbance",
+        "q_p": q_p,
+        "radius_m": q_p,
+        "delta_p": args.delta_p,
+        "score_type": "closed_loop_cross_track_position",
         "calibration_samples": calibration_count,
         "timestamp": time.time(),
     }
@@ -416,7 +404,7 @@ class LivePlotPublisher:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Verify double-integrator conformal tracking with slide-4 control law.")
+    parser = argparse.ArgumentParser(description="Verify the direct cross-track position certificate for QP tracking.")
     parser.add_argument("--live", action="store_true", help="Run live LLM design, publish control-law message, and plot odometry.")
     parser.add_argument("--start", default=None, help='JSON point for live mode, e.g. {"x":0,"y":0,"z":-0.25}')
     parser.add_argument("--goal", default=None, help='JSON point for live mode, e.g. {"x":2.5,"y":0,"z":-0.25}')
@@ -425,6 +413,7 @@ def main():
     parser.add_argument("--calibration-csv", type=Path, default=DEFAULT_CALIBRATION_CSV)
     parser.add_argument("--sample-id", type=int, default=0)
     parser.add_argument("--calibration-samples", type=int, default=None)
+    parser.add_argument("--delta-p", type=float, default=0.10)
     parser.add_argument("--delta-w", type=float, default=0.10)
     parser.add_argument("--dt", type=float, default=0.05)
     parser.add_argument("--output-png", type=Path, default=DEFAULT_OUTPUT_PNG)
@@ -447,14 +436,21 @@ def main():
     if not rows:
         raise RuntimeError(f"No calibration rows found in {args.calibration_csv}")
     calibration_rows = rows[: args.calibration_samples] if args.calibration_samples else rows
-    if not all(row.get("s_w") for row in calibration_rows):
-        raise ValueError("The QP conformal verifier requires a calibration CSV with an s_w column.")
-    p, k, eigenvalue_alpha = solve_care()
+    if not all(row.get("s_p") and row.get("s_w") for row in calibration_rows):
+        raise ValueError("The QP conformal verifier requires calibration columns s_p and s_w.")
+    p, k, _ = solve_care()
+    q_p = conformal_quantile([item["s_p"] for item in calibration_rows], args.delta_p)
     q_w = conformal_quantile([item["s_w"] for item in calibration_rows], args.delta_w)
-    alpha = certified_metric_alpha(A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, k, p)
+    alpha_p = certified_metric_alpha(A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, k, p)
+    lambda_min = float(np.min(np.linalg.eigvalsh(p)))
+    position_output = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
+    projection_gain = math.sqrt(float(np.max(np.linalg.eigvalsh(position_output @ np.linalg.inv(p) @ position_output.T))))
+    state_radius_4d = q_w / (alpha_p * math.sqrt(lambda_min))
+    projected_position_radius = projection_gain * q_w / alpha_p
     print(
-        f"[calibration] rows={len(calibration_rows)}, delta_w={args.delta_w}, "
-        f"q_w={round(q_w, 6)}, alpha_P={round(alpha, 6)}",
+        f"[calibration] rows={len(calibration_rows)}, delta_p={args.delta_p}, "
+        f"q_p={round(q_p, 6)} m, q_w={round(q_w, 6)}, "
+        f"rho_4d={round(state_radius_4d, 6)}, rho_projected_2d={round(projected_position_radius, 6)} m",
         flush=True,
     )
 
@@ -494,10 +490,8 @@ def main():
             verified_llm,
             metrics,
             llm_trajectory,
-            p,
             k,
-            alpha,
-            q_w,
+            q_p,
             len(calibration_rows),
             raw_rrt=raw_rrt,
             verified_rrt_trajectory=verified_rrt_trajectory,
@@ -516,7 +510,7 @@ def main():
             raw_rrt=raw_rrt,
             verified_rrt_trajectory=verified_rrt_trajectory,
         )
-        print(json.dumps({"q_w": q_w, "K": k.round(6).tolist(), "control_law_topic": args.control_law_topic}, indent=2))
+        print(json.dumps({"q_p": q_p, "radius_m": q_p, "K": k.round(6).tolist(), "control_law_topic": args.control_law_topic}, indent=2))
         live = LivePlotPublisher(args, payload, commanded)
         live.spin()
         return
@@ -536,33 +530,32 @@ def main():
             parse_json_field(row["obstacles"]),
             dt=args.trajectory_dt,
         )
-    s_w = float(row["s_w"]) if row.get("s_w") else combined_disturbance_score(
-        rrt_trajectory,
-        llm_trajectory,
-        p,
-        B_DOUBLE_INTEGRATOR,
-        k,
-    )
     closed_loop = propagate_controller(rrt_trajectory, llm_trajectory, k, args.dt)
-    tube = single_score_tube_profile(closed_loop, p, alpha, q_w)
-    max_tracking_error = max(np.linalg.norm(np.array(sample["x"]) - np.array(sample["xd"])) for sample in closed_loop)
-    max_tube_radius = max(sample["radius"] for sample in tube)
+    calculated_scores = position_scores(rrt_trajectory, llm_trajectory, k, args.dt)
+    s_p = float(row["s_p"]) if row.get("s_p") else calculated_scores["s_p"]
+    s_position_time = float(row["s_position_time"]) if row.get("s_position_time") else calculated_scores["s_position_time"]
+    tube = position_tube_profile(closed_loop, q_p)
     result = {
-        "score_type": "single",
+        "score_type": "closed_loop_cross_track_position",
         "sample_id": args.sample_id,
         "calibration_samples": len(calibration_rows),
-        "s_w": round(s_w, 6),
+        "s_p": round(s_p, 6),
+        "s_position_time": round(s_position_time, 6),
+        "q_p": round(q_p, 6),
+        "delta_p": args.delta_p,
         "q_w": round(q_w, 6),
         "delta_w": args.delta_w,
-        "score_accepted": bool(s_w <= q_w),
-        "coverage": round(1.0 - args.delta_w, 6),
-        "alpha": round(alpha, 6),
-        "eigenvalue_alpha": round(eigenvalue_alpha, 6),
+        "score_accepted": bool(s_p <= q_p),
+        "coverage": round(1.0 - args.delta_p, 6),
         "K": k.round(6).tolist(),
         "damping": DAMPING,
-        "max_tracking_error": round(float(max_tracking_error), 6),
-        "max_tube_radius_m": round(float(max_tube_radius), 6),
-        "inside_tube": bool(max_tracking_error <= max_tube_radius),
+        "control_dt": args.dt,
+        "radius_m": round(q_p, 6),
+        "alpha_p": round(alpha_p, 6),
+        "projection_gain": round(projection_gain, 6),
+        "state_radius_4d": round(state_radius_4d, 6),
+        "projected_position_radius_m": round(projected_position_radius, 6),
+        "inside_position_tube": bool(calculated_scores["s_p"] <= q_p),
         "output_png": str(args.output_png),
     }
 

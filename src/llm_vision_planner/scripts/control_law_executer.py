@@ -23,10 +23,10 @@ from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReli
 from std_msgs.msg import String
 
 try:
-    from min_control_qp import generate_trajectory
+    from min_control_qp import evaluate_sample, generate_trajectory
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
-    from min_control_qp import generate_trajectory
+    from min_control_qp import evaluate_sample, generate_trajectory
 
 
 PLAN_TOPIC = "/llm_vision/plan_verified"
@@ -55,28 +55,8 @@ LATCHED_QOS = QoSProfile(
 )
 
 
-def interpolate_sample(samples, timestamp):
-    if timestamp <= float(samples[0]["t"]):
-        return np.asarray(samples[0]["x"], dtype=float), np.asarray(samples[0]["u"], dtype=float)
-    if timestamp >= float(samples[-1]["t"]):
-        return np.asarray(samples[-1]["x"], dtype=float), np.asarray(samples[-1]["u"], dtype=float)
-    for index in range(1, len(samples)):
-        if float(samples[index]["t"]) >= timestamp:
-            before, after = samples[index - 1], samples[index]
-            span = max(float(after["t"]) - float(before["t"]), 1e-9)
-            ratio = (timestamp - float(before["t"])) / span
-            state = np.asarray(before["x"], dtype=float) + ratio * (
-                np.asarray(after["x"], dtype=float) - np.asarray(before["x"], dtype=float)
-            )
-            control = np.asarray(before["u"], dtype=float) + ratio * (
-                np.asarray(after["u"], dtype=float) - np.asarray(before["u"], dtype=float)
-            )
-            return state, control
-    return np.asarray(samples[-1]["x"], dtype=float), np.asarray(samples[-1]["u"], dtype=float)
-
-
 def feedback_control(actual_state, reference_state, reference_control, gain=FEEDBACK_K):
-    """Single-score report control law: u=uhat-K(x-xhat)."""
+    """Calibrated planar control law: u=uhat-K(x-xhat)."""
     return np.asarray(reference_control, dtype=float) - np.asarray(gain, dtype=float) @ (
         np.asarray(actual_state, dtype=float) - np.asarray(reference_state, dtype=float)
     )
@@ -280,7 +260,7 @@ class ControlLawExecuter(Node):
 
         elif self.state == "TRACK_QP":
             elapsed = now - self.track_start_s
-            reference_state, reference_control = interpolate_sample(self.samples, elapsed)
+            reference_state, reference_control = evaluate_sample(self.samples, elapsed)
             actual_state = [self.position[0], self.position[1], self.velocity[0], self.velocity[1]]
             command = feedback_control(actual_state, reference_state, reference_control)
             self.last_setpoint_position = [math.nan, math.nan, self.takeoff_target[2]]

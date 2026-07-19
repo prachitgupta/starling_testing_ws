@@ -3,7 +3,6 @@ import argparse
 import csv
 import importlib.util
 import json
-import math
 import random
 import sys
 from pathlib import Path
@@ -17,7 +16,6 @@ from dataset_generator import (
     prompt_from_current_generator,
     sample_environment,
 )
-from min_control_qp import generate_shared_pair, segment_durations
 from pydantic import BaseModel, Field
 from rrt import plan_rrt
 
@@ -28,7 +26,7 @@ DEFAULT_LLAMA_MODEL_NAME = "rrt_planner"
 PACKAGE_DIR = Path(__file__).resolve().parents[2]
 REFINEMENT_PATH = PACKAGE_DIR / "scripts" / "refinment.py"
 VERIFIER_PATH = PACKAGE_DIR / "scripts" / "verifier.py"
-FIELDNAMES = [
+SOURCE_FIELDNAMES = [
     "sample_id",
     "start",
     "goal",
@@ -40,15 +38,6 @@ FIELDNAMES = [
     "llm_verified_waypoints",
     "rrt_verification_metrics",
     "llm_verification_metrics",
-    "rrt_trajectory",
-    "llm_trajectory",
-    "s_u",
-    "s_x",
-    "q_u",
-    "q_x",
-    "delta_u",
-    "delta_x",
-    "accepted",
     "llama_model_name",
     "vllm_base_url",
     "prompt",
@@ -72,56 +61,6 @@ class WaypointPlan(BaseModel):
         max_length=8,
         description="Sparse ordered NED waypoints. Final waypoint must be the goal.",
     )
-
-
-def interpolate_sample(samples, t):
-    if t <= float(samples[0]["t"]):
-        return samples[0]["x"], samples[0]["u"]
-    if t >= float(samples[-1]["t"]):
-        return samples[-1]["x"], samples[-1]["u"]
-    for index in range(1, len(samples)):
-        if float(samples[index]["t"]) >= t:
-            before = samples[index - 1]
-            after = samples[index]
-            span = max(float(after["t"]) - float(before["t"]), 1e-9)
-            ratio = (t - float(before["t"])) / span
-            x = [float(before["x"][i]) + (float(after["x"][i]) - float(before["x"][i])) * ratio for i in range(4)]
-            u = [float(before["u"][i]) + (float(after["u"][i]) - float(before["u"][i])) * ratio for i in range(2)]
-            return x, u
-    return samples[-1]["x"], samples[-1]["u"]
-
-
-def score_trajectories(rrt_trajectory, llm_trajectory, dt=0.1):
-    rrt_samples = rrt_trajectory["samples"]
-    llm_samples = llm_trajectory["samples"]
-    horizon = min(float(rrt_samples[-1]["t"]), float(llm_samples[-1]["t"]))
-    count = max(2, int(math.ceil(horizon / dt)) + 1)
-    s_u = 0.0
-    s_x = 0.0
-    for index in range(count):
-        t = min(index * dt, horizon)
-        rrt_x, rrt_u = interpolate_sample(rrt_samples, t)
-        llm_x, llm_u = interpolate_sample(llm_samples, t)
-        s_x = max(s_x, math.sqrt(sum((llm_x[i] - rrt_x[i]) ** 2 for i in range(4))))
-        s_u = max(s_u, math.sqrt(sum((llm_u[i] - rrt_u[i]) ** 2 for i in range(2))))
-    return {"s_u": round(s_u, 6), "s_x": round(s_x, 6)}
-
-
-def shared_llm_durations(rrt_durations, llm_waypoints):
-    if len(rrt_durations) == len(llm_waypoints) - 1:
-        return list(rrt_durations)
-    durations = segment_durations(llm_waypoints)
-    total = sum(rrt_durations)
-    natural_total = sum(durations)
-    return [duration * total / natural_total for duration in durations]
-
-
-def conformal_quantile(values, delta):
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    rank = max(1, math.ceil((1.0 - delta) * (len(ordered) + 1)))
-    return ordered[min(rank, len(ordered)) - 1]
 
 
 def load_module(name, path):
@@ -188,45 +127,32 @@ def request_llama_waypoints(client, model_name, prompt, temperature, max_retries
     raise RuntimeError(f"Llama waypoint request failed after {max_retries} attempts: {last_error}")
 
 
-def write_dataset(scored, args):
-    split = max(1, int(len(scored) * args.calibration_fraction))
-    q_u = conformal_quantile([item[8]["s_u"] for item in scored[:split]], args.delta_u)
-    q_x = conformal_quantile([item[8]["s_x"] for item in scored[:split]], args.delta_x)
+def write_prediction(prediction, index, args):
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    tmp_output = args.output.with_suffix(args.output.suffix + ".tmp")
-    with tmp_output.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=FIELDNAMES)
-        writer.writeheader()
-        for index, (row, candidate, rrt_verified, llm_verified, rrt_metrics, llm_metrics, rrt_trajectory, llm_trajectory, scores, prompt) in enumerate(scored):
-            writer.writerow(
-                {
-                    "sample_id": index,
-                    "start": json.dumps(row["start"], separators=(",", ":")),
-                    "goal": json.dumps(row["goal"], separators=(",", ":")),
-                    "workspace": json.dumps(row["workspace"], separators=(",", ":")),
-                    "obstacles": json.dumps(row["obstacles"], separators=(",", ":")),
-                    "rrt_waypoints": json.dumps(row["rrt_label"], separators=(",", ":")),
-                    "llm_waypoints": json.dumps(candidate, separators=(",", ":")),
-                    "rrt_verified_waypoints": json.dumps(rrt_verified, separators=(",", ":")),
-                    "llm_verified_waypoints": json.dumps(llm_verified, separators=(",", ":")),
-                    "rrt_verification_metrics": json.dumps(rrt_metrics, separators=(",", ":")),
-                    "llm_verification_metrics": json.dumps(llm_metrics, separators=(",", ":")),
-                    "rrt_trajectory": json.dumps(rrt_trajectory, separators=(",", ":")),
-                    "llm_trajectory": json.dumps(llm_trajectory, separators=(",", ":")),
-                    "s_u": scores["s_u"],
-                    "s_x": scores["s_x"],
-                    "q_u": round(q_u, 6),
-                    "q_x": round(q_x, 6),
-                    "delta_u": args.delta_u,
-                    "delta_x": args.delta_x,
-                    "accepted": scores["s_u"] <= q_u and scores["s_x"] <= q_x,
-                    "llama_model_name": args.llama_model_name,
-                    "vllm_base_url": args.vllm_base_url,
-                    "prompt": prompt,
-                }
-            )
-    tmp_output.replace(args.output)
-    return q_u, q_x
+    mode = "w" if index == 0 else "a"
+    with args.output.open(mode, newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=SOURCE_FIELDNAMES, lineterminator="\n")
+        if index == 0:
+            writer.writeheader()
+        row, candidate, rrt_verified, llm_verified, rrt_metrics, llm_metrics, prompt = prediction
+        writer.writerow(
+            {
+                "sample_id": index,
+                "start": json.dumps(row["start"], separators=(",", ":")),
+                "goal": json.dumps(row["goal"], separators=(",", ":")),
+                "workspace": json.dumps(row["workspace"], separators=(",", ":")),
+                "obstacles": json.dumps(row["obstacles"], separators=(",", ":")),
+                "rrt_waypoints": json.dumps(row["rrt_label"], separators=(",", ":")),
+                "llm_waypoints": json.dumps(candidate, separators=(",", ":")),
+                "rrt_verified_waypoints": json.dumps(rrt_verified, separators=(",", ":")),
+                "llm_verified_waypoints": json.dumps(llm_verified, separators=(",", ":")),
+                "rrt_verification_metrics": json.dumps(rrt_metrics, separators=(",", ":")),
+                "llm_verification_metrics": json.dumps(llm_metrics, separators=(",", ":")),
+                "llama_model_name": args.llama_model_name,
+                "vllm_base_url": args.vllm_base_url,
+                "prompt": prompt,
+            }
+        )
 
 
 def build_dataset(args):
@@ -237,7 +163,7 @@ def build_dataset(args):
     workspace = dict(DEFAULT_WORKSPACE)
     print(
         f"Starting calibration dataset generation: target_samples={args.samples}, seed={args.seed}, "
-        f"dt={args.dt}, vllm={args.vllm_base_url}, model={args.llama_model_name}",
+        f"vllm={args.vllm_base_url}, model={args.llama_model_name}",
         flush=True,
     )
     raw_client = OpenAI(base_url=args.vllm_base_url, api_key=args.vllm_api_key)
@@ -245,11 +171,11 @@ def build_dataset(args):
     prompt_module = load_prompt_generator()
     refiner = make_refiner()
     verifier = make_verifier()
-    scored = []
+    predictions = []
     attempts = 0
-    while len(scored) < args.samples and attempts < args.samples * 30:
+    while len(predictions) < args.samples and attempts < args.samples * 30:
         attempts += 1
-        print(f"[attempt {attempts}] sampling environment ({len(scored)}/{args.samples} accepted)", flush=True)
+        print(f"[attempt {attempts}] sampling environment ({len(predictions)}/{args.samples} accepted)", flush=True)
         start, goal, obstacles = sample_environment(workspace, None, DEFAULT_CLEARANCE_M)
         print(
             f"[attempt {attempts}] start={start}, goal={goal}, obstacles={len(obstacles)}",
@@ -290,54 +216,23 @@ def build_dataset(args):
         except ValueError as exc:
             print(f"[attempt {attempts}] skipped: {exc}", flush=True)
             continue
-        print(f"[attempt {attempts}] running shared-clock minimum-control QP trajectories", flush=True)
-        rrt_trajectory, llm_trajectory = generate_shared_pair(
-            rrt_verified,
-            llm_verified,
-            row["workspace"],
-            row["obstacles"],
-            dt=args.dt,
-        )
-        print(
-            f"[attempt {attempts}] trajectory samples: rrt={len(rrt_trajectory['samples'])}, "
-            f"llm={len(llm_trajectory['samples'])}",
-            flush=True,
-        )
-        scores = score_trajectories(rrt_trajectory, llm_trajectory, args.dt)
-        scored.append((row, candidate, rrt_verified, llm_verified, rrt_metrics, llm_metrics, rrt_trajectory, llm_trajectory, scores, prompt))
-        print(f"[accepted {len(scored)}/{args.samples}] s_u={scores['s_u']}, s_x={scores['s_x']}", flush=True)
-        q_u, q_x = write_dataset(scored, args)
-        print(
-            f"[checkpoint] wrote {len(scored)} rows to {args.output}; "
-            f"q_u={round(q_u, 6)}, q_x={round(q_x, 6)}",
-            flush=True,
-        )
+        predictions.append((row, candidate, rrt_verified, llm_verified, rrt_metrics, llm_metrics, prompt))
+        write_prediction(predictions[-1], len(predictions) - 1, args)
+        print(f"[accepted {len(predictions)}/{args.samples}] wrote prediction-pair checkpoint to {args.output}", flush=True)
 
-    if len(scored) < args.samples:
-        raise RuntimeError(f"Only built {len(scored)} verified rows after {attempts} attempts; requested {args.samples}.")
-
-    split = max(1, int(len(scored) * args.calibration_fraction))
-    q_u = conformal_quantile([item[8]["s_u"] for item in scored[:split]], args.delta_u)
-    q_x = conformal_quantile([item[8]["s_x"] for item in scored[:split]], args.delta_x)
-    print(
-        f"Computed quantiles from first {split} rows: q_u={round(q_u, 6)}, q_x={round(q_x, 6)}",
-        flush=True,
-    )
+    if len(predictions) < args.samples:
+        raise RuntimeError(f"Only built {len(predictions)} verified rows after {attempts} attempts; requested {args.samples}.")
 
     return args.output
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build fresh prompt-compatible conformal calibration CSV data with RRT labels and Llama predictions."
+        description="Generate verified RRT/Llama prediction pairs without trajectories or conformal scores."
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--samples", type=int, default=2001)
     parser.add_argument("--seed", type=int, default=20260618)
-    parser.add_argument("--dt", type=float, default=0.1)
-    parser.add_argument("--delta-u", type=float, default=0.05)
-    parser.add_argument("--delta-x", type=float, default=0.05)
-    parser.add_argument("--calibration-fraction", type=float, default=0.8)
     parser.add_argument("--llama-model-name", default=DEFAULT_LLAMA_MODEL_NAME)
     parser.add_argument("--vllm-base-url", default=DEFAULT_VLLM_BASE_URL)
     parser.add_argument("--vllm-api-key", default="EMPTY")
@@ -346,7 +241,7 @@ def main():
     args = parser.parse_args()
 
     output = build_dataset(args)
-    print(f"Wrote prompt-compatible RRT conformal calibration dataset to {output}")
+    print(f"Wrote verified RRT/Llama prediction pairs to {output}")
 
 
 if __name__ == "__main__":

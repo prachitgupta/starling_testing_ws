@@ -113,7 +113,7 @@ path_verifier:
     verified_plan_topic: /llm_vision/plan_verified
     safety_margin_m: 0.40
     interpolation_spacing_m: 1.0
-    cruise_speed_mps: 0.5
+    cruise_speed_mps: 0.3
     max_velocity_mps: 1.5
     max_acceleration_mps2: 1.5
     goal_tolerance_m: 0.05

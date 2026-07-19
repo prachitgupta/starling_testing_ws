@@ -119,7 +119,7 @@ def write_rows(rows, output_csv):
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     tmp_output = output_csv.with_suffix(output_csv.suffix + ".tmp")
     with tmp_output.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
     tmp_output.replace(output_csv)
@@ -179,14 +179,31 @@ def generate_dataset(samples, output_csv, seed, use_fixed_goal):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate RRT-labeled instruction tuning data.")
-    parser.add_argument("--samples", type=int, default=100)
-    parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--output", type=Path, default=DEFAULT_DATASET_DIR / "rrt_expert_dataset.csv")
+    parser = argparse.ArgumentParser(description="Generate RRT training data or verified RRT/Llama prediction pairs.")
+    parser.add_argument("--samples", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--random-goal", action="store_true", help="Sample random goals instead of using the package default goal.")
+    parser.add_argument("--prediction-pairs", action="store_true", help="Generate verified RRT and Llama predictions without QP or conformal columns.")
+    parser.add_argument("--llama-model-name", default="rrt_planner")
+    parser.add_argument("--vllm-base-url", default="http://172.22.224.93:8000/v1")
+    parser.add_argument("--vllm-api-key", default="EMPTY")
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--llm-retries", type=int, default=2)
     args = parser.parse_args()
 
-    output_csv = generate_dataset(args.samples, args.output, args.seed, use_fixed_goal=not args.random_goal)
+    if args.prediction_pairs:
+        from conformal_rrt_dataset import DEFAULT_OUTPUT, build_dataset
+
+        args.samples = args.samples or 2001
+        args.seed = args.seed if args.seed is not None else 20260618
+        args.output = args.output or DEFAULT_OUTPUT
+        output_csv = build_dataset(args)
+    else:
+        args.samples = args.samples or 100
+        args.seed = args.seed if args.seed is not None else 7
+        args.output = args.output or (DEFAULT_DATASET_DIR / "rrt_expert_dataset.csv")
+        output_csv = generate_dataset(args.samples, args.output, args.seed, use_fixed_goal=not args.random_goal)
     print(f"Wrote dataset to {output_csv}")
 
 

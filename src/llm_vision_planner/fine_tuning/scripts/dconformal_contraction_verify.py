@@ -13,9 +13,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Circle, Rectangle
 
-from lqr import A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, DAMPING, solve_care
-from min_snap import generate_trajectory
+from lqr import A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, DAMPING, certified_metric_alpha, solve_care
+from min_control_qp import generate_shared_pair, generate_trajectory
 from rrt import plan_rrt
+from single_score import combined_disturbance_score
 
 from conformal_rrt_dataset import (
     DEFAULT_LLAMA_MODEL_NAME,
@@ -25,7 +26,6 @@ from conformal_rrt_dataset import (
     prompt_from_current_generator,
     refine_and_verify,
     request_llama_waypoints,
-    shared_llm_durations,
 )
 from dataset_generator import DEFAULT_CLEARANCE_M, DEFAULT_WORKSPACE, load_prompt_generator
 
@@ -33,9 +33,9 @@ from dataset_generator import DEFAULT_CLEARANCE_M, DEFAULT_WORKSPACE, load_promp
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATASET_DIR = SCRIPT_DIR.parent / "datasets"
 PLOTS_DIR = SCRIPT_DIR.parent / "plots"
-DEFAULT_CALIBRATION_CSV = DATASET_DIR / "conformal_rrt_calibration_dataset.csv"
-DEFAULT_OUTPUT_PNG = PLOTS_DIR / "dconformal_contraction_verification.png"
-DEFAULT_REPORT_JSON = PLOTS_DIR / "dconformal_contraction_verification.json"
+DEFAULT_CALIBRATION_CSV = DATASET_DIR / "calibration_min_control_qp_single_score_2000.csv"
+DEFAULT_OUTPUT_PNG = PLOTS_DIR / "dconformal_qp_single_score_verification.png"
+DEFAULT_REPORT_JSON = PLOTS_DIR / "dconformal_qp_single_score_verification.json"
 DEFAULT_CONTROL_LAW_TOPIC = "/llm_vision/dconformal_control_law"
 DEFAULT_POSE_TOPIC = "/fmu/out/vehicle_odometry"
 
@@ -140,7 +140,13 @@ def query_live_llm(args, row):
         except ValueError as exc:
             last_refined = refiner.interpolate_waypoints(raw, row["workspace"], row["obstacles"])
             last_metrics = verifier.compute_metrics(
-                {"waypoints": last_refined, "obstacles": row["obstacles"], "workspace": row["workspace"], "goal": row["goal"]}
+                {
+                    "waypoints": last_refined,
+                    "start": row["start"],
+                    "obstacles": row["obstacles"],
+                    "workspace": row["workspace"],
+                    "goal": row["goal"],
+                }
             )
             print(
                 f"[live attempt {attempt}] verification failed: {exc}; "
@@ -150,7 +156,7 @@ def query_live_llm(args, row):
             prompt = feedback_prompt(base_prompt, last_metrics)
             continue
         trajectory = generate_trajectory(verified, row["workspace"], row["obstacles"], dt=args.trajectory_dt)
-        print(f"[live attempt {attempt}] verified waypoints={len(verified)}, min-snap samples={len(trajectory['samples'])}", flush=True)
+        print(f"[live attempt {attempt}] verified waypoints={len(verified)}, QP samples={len(trajectory['samples'])}", flush=True)
         return raw, verified, metrics, trajectory, prompt
 
     raise RuntimeError(f"LLM plan did not pass verification after {args.llm_attempts} attempts: {last_metrics}; last_refined={last_refined}")
@@ -183,19 +189,17 @@ def propagate_llm_reference(llm_trajectory, k, dt, initial_state):
     return result
 
 
-def tube_profile(closed_loop, p, b, k, alpha, q_u, q_x):
+def single_score_tube_profile(closed_loop, p, alpha, q_w):
     eigvals = np.linalg.eigvalsh(p)
     lambda_min = float(np.min(eigvals))
     lambda_max = float(np.max(eigvals))
-    b_norm = float(np.linalg.norm(b, 2))
-    bk_norm = float(np.linalg.norm(b @ k, 2))
     initial_error = np.linalg.norm(np.array(closed_loop[0]["x"]) - np.array(closed_loop[0]["xd"]))
     profile = []
     for sample in closed_loop:
         t = float(sample["t"])
         decay = math.exp(-alpha * t)
         radius = math.sqrt(lambda_max / lambda_min) * initial_error * decay
-        radius += math.sqrt(lambda_max) * (b_norm * q_u + bk_norm * q_x) * (1.0 - decay) / (alpha * math.sqrt(lambda_min))
+        radius += q_w * (1.0 - decay) / (alpha * math.sqrt(lambda_min))
         profile.append({"t": t, "radius": radius})
     return profile
 
@@ -206,9 +210,9 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
     axis.set_aspect("equal", adjustable="box")
     axis.set_xlim(float(workspace["x"][0]) - 0.25, float(workspace["x"][1]) + 0.25)
     axis.set_ylim(float(workspace["y"][0]) - 0.25, float(workspace["y"][1]) + 0.25)
-    axis.set_xlabel("x [m]")
-    axis.set_ylabel("y [m]")
-    axis.set_title("Double-integrator conformal tracking")
+    axis.set_xlabel("x position [m]")
+    axis.set_ylabel("y position [m]")
+    axis.set_title("QP double-integrator tracking with single-score certificate")
     axis.grid(True, alpha=0.25)
 
     for obstacle in obstacles:
@@ -225,19 +229,41 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
             )
         )
 
-    for sample, tube_sample in zip(closed_loop[:: max(1, len(closed_loop) // 30)], tube[:: max(1, len(tube) // 30)]):
+    sampled_closed_loop = closed_loop[:: max(1, len(closed_loop) // 30)]
+    sampled_tube = tube[:: max(1, len(tube) // 30)]
+    for index, (sample, tube_sample) in enumerate(zip(sampled_closed_loop, sampled_tube)):
         xd = sample["xd"]
-        axis.add_patch(Circle((xd[0], xd[1]), tube_sample["radius"], facecolor="#60a5fa", edgecolor="none", alpha=0.10))
+        axis.add_patch(
+            Circle(
+                (xd[0], xd[1]),
+                tube_sample["radius"],
+                facecolor="#60a5fa",
+                edgecolor="none",
+                alpha=0.10,
+                label="90% certified state-error radius" if index == 0 else None,
+            )
+        )
 
-    axis.plot([s["x"][0] for s in rrt_samples], [s["x"][1] for s in rrt_samples], color="#2563eb", label="desired RRT")
-    axis.plot([s["x"][0] for s in llm_samples], [s["x"][1] for s in llm_samples], "--", color="#f97316", label="LLM reference")
-    axis.plot([s["x"][0] for s in closed_loop], [s["x"][1] for s in closed_loop], color="#16a34a", label="controlled")
-    axis.scatter([rrt_samples[0]["x"][0]], [rrt_samples[0]["x"][1]], color="#111827", s=60, marker="s", label="start")
-    axis.scatter([rrt_samples[-1]["x"][0]], [rrt_samples[-1]["x"][1]], color="#7c3aed", s=100, marker="*", label="goal")
+    axis.plot([s["x"][0] for s in rrt_samples], [s["x"][1] for s in rrt_samples], color="#2563eb", label=r"RRT expert reference $x_d$")
+    axis.plot(
+        [s["x"][0] for s in llm_samples],
+        [s["x"][1] for s in llm_samples],
+        "--",
+        color="#f97316",
+        label=r"LLM QP reference $\hat{x}_d$",
+    )
+    axis.plot([s["x"][0] for s in closed_loop], [s["x"][1] for s in closed_loop], color="#16a34a", label=r"closed-loop state $x$")
+    axis.scatter([rrt_samples[0]["x"][0]], [rrt_samples[0]["x"][1]], color="#111827", s=60, marker="s", label="initial position")
+    axis.scatter([rrt_samples[-1]["x"][0]], [rrt_samples[-1]["x"][1]], color="#7c3aed", s=100, marker="*", label="goal position")
+    annotation = (
+        f"s_w={result['s_w']:.3f} ≤ q_w={result['q_w']:.3f}\n"
+        f"P(maxₜ ||x-x_d|| ≤ ρ) ≥ {result['coverage']:.2f}\n"
+        f"max state error={result['max_tracking_error']:.3f}, max ρ={result['max_tube_radius_m']:.3f}"
+    )
     axis.text(
         0.02,
         0.02,
-        f"P >= {result['joint_probability_lower_bound']:.2f}\nq_u={result['q_u']:.3f}, q_x={result['q_x']:.3f}\nmax tube={result['max_tube_radius_m']:.3f} m",
+        annotation,
         transform=axis.transAxes,
         bbox={"facecolor": "white", "edgecolor": "#d1d5db", "alpha": 0.9},
     )
@@ -297,7 +323,7 @@ def draw_live_scene(output_png, workspace, obstacles, raw_llm, verified_llm, llm
     plt.close(fig)
 
 
-def make_control_law_payload(args, row, raw_llm, verified_llm, metrics, llm_trajectory, p, k, alpha, q_u, q_x, calibration_count, raw_rrt=None, verified_rrt_trajectory=None):
+def make_control_law_payload(args, row, raw_llm, verified_llm, metrics, llm_trajectory, p, k, alpha, q_w, calibration_count, raw_rrt=None, verified_rrt_trajectory=None):
     return {
         "trajectory": llm_trajectory,
         "K": k.tolist(),
@@ -312,8 +338,9 @@ def make_control_law_payload(args, row, raw_llm, verified_llm, metrics, llm_traj
         "verification_metrics": metrics,
         "raw_rrt_waypoints": raw_rrt,
         "verified_rrt_trajectory": verified_rrt_trajectory,
-        "q_u": q_u,
-        "q_x": q_x,
+        "q_w": q_w,
+        "delta_w": args.delta_w,
+        "score_type": "combined_p_weighted_disturbance",
         "calibration_samples": calibration_count,
         "timestamp": time.time(),
     }
@@ -398,8 +425,7 @@ def main():
     parser.add_argument("--calibration-csv", type=Path, default=DEFAULT_CALIBRATION_CSV)
     parser.add_argument("--sample-id", type=int, default=0)
     parser.add_argument("--calibration-samples", type=int, default=None)
-    parser.add_argument("--delta-u", type=float, default=0.05)
-    parser.add_argument("--delta-x", type=float, default=0.05)
+    parser.add_argument("--delta-w", type=float, default=0.10)
     parser.add_argument("--dt", type=float, default=0.05)
     parser.add_argument("--output-png", type=Path, default=DEFAULT_OUTPUT_PNG)
     parser.add_argument("--report-json", type=Path, default=DEFAULT_REPORT_JSON)
@@ -421,11 +447,14 @@ def main():
     if not rows:
         raise RuntimeError(f"No calibration rows found in {args.calibration_csv}")
     calibration_rows = rows[: args.calibration_samples] if args.calibration_samples else rows
-    q_u = conformal_quantile([item["s_u"] for item in calibration_rows], args.delta_u)
-    q_x = conformal_quantile([item["s_x"] for item in calibration_rows], args.delta_x)
+    if not all(row.get("s_w") for row in calibration_rows):
+        raise ValueError("The QP conformal verifier requires a calibration CSV with an s_w column.")
+    p, k, eigenvalue_alpha = solve_care()
+    q_w = conformal_quantile([item["s_w"] for item in calibration_rows], args.delta_w)
+    alpha = certified_metric_alpha(A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, k, p)
     print(
-        f"[calibration] rows={len(calibration_rows)}, delta_u={args.delta_u}, q_u={round(q_u, 6)}, "
-        f"delta_x={args.delta_x}, q_x={round(q_x, 6)}",
+        f"[calibration] rows={len(calibration_rows)}, delta_w={args.delta_w}, "
+        f"q_w={round(q_w, 6)}, alpha_P={round(alpha, 6)}",
         flush=True,
     )
 
@@ -439,7 +468,6 @@ def main():
             "obstacles": load_json(args.obstacles),
         }
         raw_llm, verified_llm, metrics, llm_trajectory, _ = query_live_llm(args, row)
-        p, k, alpha = solve_care()
         initial_state = [float(row["start"]["x"]), float(row["start"]["y"]), 0.0, 0.0]
         commanded = propagate_llm_reference(llm_trajectory, k, args.dt, initial_state)
         raw_rrt = None
@@ -456,7 +484,7 @@ def main():
             try:
                 verified_rrt, _ = refine_and_verify(make_refiner(), make_verifier(), raw_rrt, row)
                 verified_rrt_trajectory = generate_trajectory(verified_rrt, row["workspace"], row["obstacles"], dt=args.trajectory_dt)
-                print(f"[live RRT] verified waypoints={len(verified_rrt)}, min-snap samples={len(verified_rrt_trajectory['samples'])}", flush=True)
+                print(f"[live RRT] verified waypoints={len(verified_rrt)}, QP samples={len(verified_rrt_trajectory['samples'])}", flush=True)
             except ValueError as exc:
                 print(f"[live RRT] verification failed, plotting raw markers only: {exc}", flush=True)
         payload = make_control_law_payload(
@@ -469,8 +497,7 @@ def main():
             p,
             k,
             alpha,
-            q_u,
-            q_x,
+            q_w,
             len(calibration_rows),
             raw_rrt=raw_rrt,
             verified_rrt_trajectory=verified_rrt_trajectory,
@@ -489,7 +516,7 @@ def main():
             raw_rrt=raw_rrt,
             verified_rrt_trajectory=verified_rrt_trajectory,
         )
-        print(json.dumps({"q_u": round(q_u, 6), "q_x": round(q_x, 6), "K": k.round(6).tolist(), "control_law_topic": args.control_law_topic}, indent=2))
+        print(json.dumps({"q_w": q_w, "K": k.round(6).tolist(), "control_law_topic": args.control_law_topic}, indent=2))
         live = LivePlotPublisher(args, payload, commanded)
         live.spin()
         return
@@ -498,25 +525,39 @@ def main():
         raise ValueError(f"--sample-id must be between 0 and {len(rows) - 1}.")
     row = rows[args.sample_id]
 
-    p, k, alpha = solve_care()
-    rrt_trajectory = trajectory_from_row(row, "rrt")
-    llm_durations = None
-    if not row.get("llm_trajectory"):
-        llm_durations = shared_llm_durations(rrt_trajectory["durations"], waypoints_from_row(row, "llm"))
-    llm_trajectory = trajectory_from_row(row, "llm", durations=llm_durations)
+    if row.get("rrt_trajectory") and row.get("llm_trajectory"):
+        rrt_trajectory = trajectory_from_row(row, "rrt")
+        llm_trajectory = trajectory_from_row(row, "llm")
+    else:
+        rrt_trajectory, llm_trajectory = generate_shared_pair(
+            waypoints_from_row(row, "rrt"),
+            waypoints_from_row(row, "llm"),
+            parse_json_field(row["workspace"]),
+            parse_json_field(row["obstacles"]),
+            dt=args.trajectory_dt,
+        )
+    s_w = float(row["s_w"]) if row.get("s_w") else combined_disturbance_score(
+        rrt_trajectory,
+        llm_trajectory,
+        p,
+        B_DOUBLE_INTEGRATOR,
+        k,
+    )
     closed_loop = propagate_controller(rrt_trajectory, llm_trajectory, k, args.dt)
-    tube = tube_profile(closed_loop, p, B_DOUBLE_INTEGRATOR, k, alpha, q_u, q_x)
+    tube = single_score_tube_profile(closed_loop, p, alpha, q_w)
     max_tracking_error = max(np.linalg.norm(np.array(sample["x"]) - np.array(sample["xd"])) for sample in closed_loop)
     max_tube_radius = max(sample["radius"] for sample in tube)
     result = {
+        "score_type": "single",
         "sample_id": args.sample_id,
         "calibration_samples": len(calibration_rows),
-        "q_u": round(q_u, 6),
-        "q_x": round(q_x, 6),
-        "delta_u": args.delta_u,
-        "delta_x": args.delta_x,
-        "joint_probability_lower_bound": round(1.0 - args.delta_u - args.delta_x, 6),
+        "s_w": round(s_w, 6),
+        "q_w": round(q_w, 6),
+        "delta_w": args.delta_w,
+        "score_accepted": bool(s_w <= q_w),
+        "coverage": round(1.0 - args.delta_w, 6),
         "alpha": round(alpha, 6),
+        "eigenvalue_alpha": round(eigenvalue_alpha, 6),
         "K": k.round(6).tolist(),
         "damping": DAMPING,
         "max_tracking_error": round(float(max_tracking_error), 6),

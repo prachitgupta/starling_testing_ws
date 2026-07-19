@@ -1,189 +1,63 @@
-# Double-Integrator Conformal Controller
+# Shared-Clock Minimum-Control QP Pipeline
 
-This folder contains the calibration, minimum-snap, LQR, live design, plotting, and verification scripts for the damped double-integrator controller.
-
-State and input:
+This directory retains the certified waypoint pipeline for the planar damped model
 
 ```text
 x = [px, py, vx, vy]
-u = [ax, ay]
+xdot = [vx, vy, -1.1 vx + 1.1 ux, -1.1 vy + 1.1 uy]
+u_cmd = uhat_d - K (x - xhat_d)
 ```
 
-Control law:
+Here `u_cmd` is a horizontal velocity demand. It is not a physical acceleration.
 
-```text
-u = -K(x - xhat_d) + uhat_d
-```
-
-## 1. Build
+## Build
 
 ```bash
 cd ~/Desktop/starling_testing_ws
 source /opt/ros/humble/setup.bash
-colcon build --packages-select px4_msgs voxl_msgs starling_testing llm_vision_planner
+colcon build --packages-select llm_vision_planner
 source install/setup.bash
 ```
 
-## 2. Generate Calibration Data
+## Reproduce the 2,000-row calibration files
 
-This queries the remote Llama planner, generates RRT labels, refines and verifies both paths, converts both verified paths through `min_snap.py`, computes scores, and checkpoints the CSV after every accepted datapoint.
+Run the commands in `REPRODUCE_XU_DATASETS.md`. They reuse the stored 2,001 verified RRT/LLM pairs and do not contact vLLM.
 
-```bash
-cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
-python3 fine_tuning/scripts/conformal_rrt_dataset.py \
-  --samples 21 \
-  --calibration-fraction 0.96 \
-  --output fine_tuning/datasets/conformal_rrt_calibration_21.csv \
-  --vllm-base-url http://172.22.224.93:8000/v1 \
-  --llama-model-name rrt_planner
-```
-
-For 21 samples, use the first 20 for calibration and sample id 20 for a held-out check.
-
-## 3. Offline Verification
+## Offline certificate check
 
 ```bash
 cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
 python3 fine_tuning/scripts/dconformal_contraction_verify.py \
-  --calibration-csv fine_tuning/datasets/conformal_rrt_calibration_21.csv \
-  --calibration-samples 20 \
-  --sample-id 20 \
-  --output-png fine_tuning/plots/dconformal_contraction_verify_21.png \
-  --report-json fine_tuning/plots/dconformal_contraction_verify_21.json
+  --calibration-csv fine_tuning/datasets/calibration_min_control_qp_single_score_2000.csv \
+  --calibration-samples 2000 \
+  --sample-id 998 \
+  --report-json /tmp/qp_single_score_verify.json \
+  --output-png /tmp/qp_single_score_verify.png
 ```
 
-The script prints `q_u` and `q_x` on the terminal and writes the same values to the JSON report.
+The 90% finite-sample certificate uses rank 1801, `q_w = 1.641463`, and planar radius `rho_infinity = 1.913080 m`.
 
-## 4. Start PX4 SITL
+## PX4 SITL and unified launch
 
-Terminal 1:
-
-```bash
-cd ~/PX4-Autopilot
-make px4_sitl gz_x500
-```
-
-Terminal 2:
-
-```bash
-MicroXRCEAgent udp4 -p 8888
-```
-
-Confirm ROS can see PX4 odometry:
+Start PX4 SITL and the Micro XRCE-DDS agent, then launch:
 
 ```bash
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
-ros2 topic echo /fmu/out/vehicle_odometry
+ros2 launch llm_vision_planner full_plot.launch.py
 ```
 
-## 5. Take Off and Hold
+`control_law_executer.py` is the sole offboard owner. It primes PX4, arms, takes off, holds until the prompt/vLLM/refinement/verifier chain returns a passed plan, generates the shared-clock minimum-control QP reference, tracks it, holds the goal, and requests PX4 auto-land. The launch does not use `mission_takeoff.py` or either trajectory follower.
 
-Terminal 3:
+Monitor the pipeline with:
 
 ```bash
-cd ~/Desktop/starling_testing_ws
-source install/setup.bash
-ros2 run llm_vision_planner mission_takeoff.py --ros-args \
-  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
-```
-
-Wait until the log shows the vehicle is holding pose. Keep this node running.
-
-## 6. Live Conformal Design and Plot
-
-Terminal 4:
-
-```bash
-cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
-source ../../install/setup.bash
-python3 fine_tuning/scripts/dconformal_contraction_verify.py \
-  --live \
-  --start '{"x":0.0,"y":0.0,"z":-0.25}' \
-  --goal '{"x":2.5,"y":0.0,"z":-0.25}' \
-  --obstacles '[]' \
-  --calibration-csv fine_tuning/datasets/conformal_rrt_calibration_21.csv \
-  --calibration-samples 20 \
-  --llm-attempts 3 \
-  --show-rrt \
-  --report-json fine_tuning/plots/dconformal_live_design.json \
-  --output-png fine_tuning/plots/dconformal_live_design.png
-```
-
-This node:
-
-- prints `q_u` and `q_x`;
-- queries Llama;
-- refines and verifies LLM waypoints;
-- re-prompts Llama if verification fails;
-- converts the verified LLM path through `min_snap.py`;
-- solves CARE for `K`, `P`, and `alpha`;
-- publishes `/llm_vision/dconformal_control_law`;
-- plots raw waypoint markers, verified paths, commanded path, and actual PX4 pose.
-
-With obstacles, replace `--obstacles '[]'`:
-
-```bash
---obstacles '[{"id":1,"label":"box_1","shape":"box","min_corner":[1.0,-0.3,-0.75],"max_corner":[1.5,0.3,0.25]}]'
-```
-
-## 7. Run the Control-Law Executor
-
-Terminal 5:
-
-```bash
-cd ~/Desktop/starling_testing_ws
-source install/setup.bash
-ros2 run llm_vision_planner control_law_executer.py --ros-args \
-  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
-```
-
-The executor waits for the design message and PX4 odometry. Once takeoff has completed, it computes:
-
-```text
-u = -K(x - xhat_d) + uhat_d
-```
-
-Then it integrates the commanded acceleration internally and publishes only:
-
-```text
-/fmu/in/offboard_control_mode
-/fmu/in/trajectory_setpoint
-```
-
-It uses `/fmu/in/vehicle_command` only for the offboard-mode handoff.
-
-## 8. Monitor
-
-```bash
-ros2 topic echo /llm_vision/dconformal_control_law
+ros2 topic echo /llm_vision/mission_state
+ros2 topic echo /llm_vision/plan_verified
 ros2 topic echo /llm_vision/offboard_owner
 ros2 topic echo /fmu/in/trajectory_setpoint
-ros2 topic echo /fmu/out/vehicle_odometry
+ros2 topic echo /fmu/out/vehicle_status
+ros2 topic echo /fmu/out/vehicle_land_detected
 ```
 
-Plot and report files:
-
-```text
-src/llm_vision_planner/fine_tuning/plots/dconformal_live_design.png
-src/llm_vision_planner/fine_tuning/plots/dconformal_live_design.json
-```
-
-## 9. Run in tmux
-
-```bash
-cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
-tmux new -s conformal_data
-python3 fine_tuning/scripts/conformal_rrt_dataset.py \
-  --samples 21 \
-  --calibration-fraction 0.96 \
-  --output fine_tuning/datasets/conformal_rrt_calibration_21.csv \
-  --vllm-base-url http://172.22.224.93:8000/v1 \
-  --llama-model-name rrt_planner
-```
-
-Detach with `Ctrl-b d`, reattach with:
-
-```bash
-tmux attach -t conformal_data
-```
+Use PX4 SITL for the first end-to-end run. The 1.913080 m value certifies the calibrated planar model/reference discrepancy, not the full nonlinear PX4 vehicle.

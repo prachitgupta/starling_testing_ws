@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 from typing import List
 
-import instructor
 from dataset_generator import (
     DEFAULT_CLEARANCE_M,
     DEFAULT_DATASET_DIR,
@@ -18,12 +17,12 @@ from dataset_generator import (
     prompt_from_current_generator,
     sample_environment,
 )
-from min_snap import generate_trajectory, segment_durations
+from min_control_qp import generate_shared_pair, segment_durations
 from pydantic import BaseModel, Field
 from rrt import plan_rrt
 
 
-DEFAULT_OUTPUT = DEFAULT_DATASET_DIR / "conformal_rrt_calibration_dataset.csv"
+DEFAULT_OUTPUT = DEFAULT_DATASET_DIR / "conformal_rrt_calibration_dataset_2001.csv"
 DEFAULT_VLLM_BASE_URL = "http://172.22.224.93:8000/v1"
 DEFAULT_LLAMA_MODEL_NAME = "rrt_planner"
 PACKAGE_DIR = Path(__file__).resolve().parents[2]
@@ -152,6 +151,7 @@ def make_verifier():
     verifier.max_velocity_mps = module.MAX_VELOCITY_MPS
     verifier.max_acceleration_mps2 = module.MAX_ACCELERATION_MPS2
     verifier.goal_tolerance_m = module.GOAL_TOLERANCE_M
+    verifier.start_tolerance_m = module.START_TOLERANCE_M
     verifier.progress_tolerance_m = module.PROGRESS_TOLERANCE_M
     verifier.nominal_dt_s = verifier.interpolation_spacing_m / verifier.cruise_speed_mps
     return verifier
@@ -161,6 +161,7 @@ def refine_and_verify(refiner, verifier, waypoints, row):
     refined = refiner.interpolate_waypoints(waypoints, row["workspace"], row["obstacles"])
     payload = {
         "waypoints": refined,
+        "start": row["start"],
         "obstacles": row["obstacles"],
         "workspace": row["workspace"],
         "goal": row["goal"],
@@ -229,6 +230,7 @@ def write_dataset(scored, args):
 
 
 def build_dataset(args):
+    import instructor
     from openai import OpenAI
 
     random.seed(args.seed)
@@ -288,14 +290,13 @@ def build_dataset(args):
         except ValueError as exc:
             print(f"[attempt {attempts}] skipped: {exc}", flush=True)
             continue
-        print(f"[attempt {attempts}] running min-snap trajectories", flush=True)
-        rrt_trajectory = generate_trajectory(rrt_verified, row["workspace"], row["obstacles"], dt=args.dt)
-        llm_trajectory = generate_trajectory(
+        print(f"[attempt {attempts}] running shared-clock minimum-control QP trajectories", flush=True)
+        rrt_trajectory, llm_trajectory = generate_shared_pair(
+            rrt_verified,
             llm_verified,
             row["workspace"],
             row["obstacles"],
             dt=args.dt,
-            durations=shared_llm_durations(rrt_trajectory["durations"], llm_verified),
         )
         print(
             f"[attempt {attempts}] trajectory samples: rrt={len(rrt_trajectory['samples'])}, "
@@ -331,7 +332,7 @@ def main():
         description="Build fresh prompt-compatible conformal calibration CSV data with RRT labels and Llama predictions."
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--samples", type=int, default=5000)
+    parser.add_argument("--samples", type=int, default=2001)
     parser.add_argument("--seed", type=int, default=20260618)
     parser.add_argument("--dt", type=float, default=0.1)
     parser.add_argument("--delta-u", type=float, default=0.05)

@@ -117,6 +117,7 @@ path_verifier:
     max_velocity_mps: 1.5
     max_acceleration_mps2: 1.5
     goal_tolerance_m: 0.05
+    start_tolerance_m: 0.10
     progress_tolerance_m: 0.001
     debug: True
 
@@ -184,12 +185,24 @@ llm_vision_trajectory_follower_continuous:
 
 control_law_executer:
   ros__parameters:
-    control_law_topic: /llm_vision/dconformal_control_law
+    plan_topic: /llm_vision/plan_verified
+    mission_state_topic: /llm_vision/mission_state
     pose_topic: /fmu/out/vehicle_odometry
+    vehicle_status_topic: /fmu/out/vehicle_status
+    land_detected_topic: /fmu/out/vehicle_land_detected
     offboard_owner_topic: /llm_vision/offboard_owner
     publish_hz: 20.0
     pose_timeout_s: 1.0
+    status_timeout_s: 2.0
     prime_s: 1.5
-    start_accept_m: 0.75
-    airborne_z_max: -0.05
+    takeoff_z: -0.25
+    takeoff_accept_m: 0.08
+    takeoff_settle_s: 2.0
+    hover_speed_accept_mps: 0.10
+    start_accept_m: 0.10
+    goal_accept_m: 0.20
+    goal_settle_s: 2.0
+    command_retry_s: 1.0
+    transition_timeout_s: 15.0
+    trajectory_dt: 0.1
     debug: true

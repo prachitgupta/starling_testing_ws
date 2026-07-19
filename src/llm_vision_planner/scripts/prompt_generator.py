@@ -483,6 +483,7 @@ class PromptGenerator(Node):
         return (
             "Constraints:\n"
             f"- all waypoints in NED frame, z must stay {self.fixed_z:.2f}\n"
+            "- first waypoint must exactly match the provided hover start coordinates\n"
             "- final waypoint must be goal coordinates\n"
             f"- maintain >={self.clearance_m:.2f}m clearance from obstacle x-y boxes\n"
             "- stay within workspace\n"

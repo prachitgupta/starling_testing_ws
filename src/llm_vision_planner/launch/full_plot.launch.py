@@ -86,6 +86,14 @@ def generate_launch_description():
         parameters=[params_file],
     )
 
+    control_executor = Node(
+        package="llm_vision_planner",
+        executable="control_law_executer.py",
+        name="control_law_executer",
+        output="screen",
+        parameters=[params_file],
+    )
+
     visualizer = Node(
         package="llm_vision_planner",
         executable="visualize.py",
@@ -106,6 +114,7 @@ def generate_launch_description():
             TimerAction(period=2.0, actions=[prompt_generator]),
             refinement,
             verifier,
+            control_executor,
             visualizer,
         ]
     )

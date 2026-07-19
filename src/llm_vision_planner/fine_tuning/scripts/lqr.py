@@ -38,6 +38,20 @@ def closed_loop_alpha(a, b, k):
     return float(max(0.0, -np.max(np.real(eigvals))))
 
 
+def certified_metric_alpha(a, b, k, p):
+    """Largest alpha satisfying Acl.T P + P Acl <= -2 alpha P."""
+    acl = np.asarray(a, dtype=float) - np.asarray(b, dtype=float) @ np.asarray(k, dtype=float)
+    p = np.asarray(p, dtype=float)
+    eigvals, eigvecs = np.linalg.eigh(p)
+    if np.min(eigvals) <= 0.0:
+        raise ValueError("P must be positive definite")
+    inverse_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T
+    decay_matrix = -(acl.T @ p + p @ acl)
+    normalized = inverse_sqrt @ decay_matrix @ inverse_sqrt
+    normalized = 0.5 * (normalized + normalized.T)
+    return float(max(0.0, 0.5 * np.min(np.linalg.eigvalsh(normalized))))
+
+
 def solve_care(a=None, b=None, q=None, r=None):
     solve_continuous_are, _ = require_scipy()
     a = np.array(A_DOUBLE_INTEGRATOR if a is None else a, dtype=float)

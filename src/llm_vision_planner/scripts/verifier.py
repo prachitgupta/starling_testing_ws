@@ -17,6 +17,7 @@ NOMINAL_DT_S = INTERPOLATION_SPACING_M / CRUISE_SPEED_MPS
 MAX_VELOCITY_MPS = 1.5
 MAX_ACCELERATION_MPS2 = 1.5
 GOAL_TOLERANCE_M = 0.05
+START_TOLERANCE_M = 0.10
 PROGRESS_TOLERANCE_M = 1e-3
 VERIFIED_PLAN_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
@@ -43,6 +44,7 @@ class PathVerifier(Node):
         self.declare_parameter("max_velocity_mps", MAX_VELOCITY_MPS)
         self.declare_parameter("max_acceleration_mps2", MAX_ACCELERATION_MPS2)
         self.declare_parameter("goal_tolerance_m", GOAL_TOLERANCE_M)
+        self.declare_parameter("start_tolerance_m", START_TOLERANCE_M)
         self.declare_parameter("progress_tolerance_m", PROGRESS_TOLERANCE_M)
         self.declare_parameter("debug", False)
 
@@ -54,6 +56,7 @@ class PathVerifier(Node):
         self.max_velocity_mps = float(self.get_parameter("max_velocity_mps").value)
         self.max_acceleration_mps2 = float(self.get_parameter("max_acceleration_mps2").value)
         self.goal_tolerance_m = float(self.get_parameter("goal_tolerance_m").value)
+        self.start_tolerance_m = float(self.get_parameter("start_tolerance_m").value)
         self.progress_tolerance_m = float(self.get_parameter("progress_tolerance_m").value)
         self.nominal_dt_s = self.interpolation_spacing_m / self.cruise_speed_mps
 
@@ -97,6 +100,7 @@ class PathVerifier(Node):
         waypoints = payload.get("waypoints", [])
         obstacles = payload.get("obstacles", [])
         workspace = payload.get("workspace", {})
+        start = payload.get("start", {})
         goal = payload.get("goal", {})
 
         in_workspace = all(self.point_in_workspace(point, workspace) for point in waypoints)
@@ -105,6 +109,7 @@ class PathVerifier(Node):
         goal_clearance = self.clearance_to_obstacles(goal, obstacles) if goal else 0.0
         goal_clearance_ok = bool(goal) and goal_clearance >= self.safety_margin_m
         collision_free = bool(waypoints) and min_clearance >= self.safety_margin_m
+        start_match = self.start_matches(waypoints[0], start) if waypoints else False
         goal_match = self.goal_matches(waypoints[-1], goal) if waypoints else False
         monotonic_progress = self.is_monotonic_progress(waypoints, goal)
         max_speed, max_accel = self.kinematic_metrics(waypoints)
@@ -115,6 +120,7 @@ class PathVerifier(Node):
             "in_workspace": in_workspace,
             "goal_clearance": goal_clearance_ok,
             "collision_free": collision_free,
+            "start_match": start_match,
             "goal_match": goal_match,
             "monotonic_goal_progress": monotonic_progress,
             "max_segment_speed": max_speed <= self.max_velocity_mps,
@@ -126,6 +132,7 @@ class PathVerifier(Node):
             "max_segment_speed": self.max_velocity_mps,
             "max_segment_accel": self.max_acceleration_mps2,
             "goal_tolerance_m": self.goal_tolerance_m,
+            "start_tolerance_m": self.start_tolerance_m,
             "progress_tolerance_m": self.progress_tolerance_m,
         }
         feedback_table = self.feedback_table(
@@ -136,6 +143,7 @@ class PathVerifier(Node):
             goal_clearance,
             goal_clearance_ok,
             collision_free,
+            start_match,
             goal_match,
             monotonic_progress,
         )
@@ -151,6 +159,7 @@ class PathVerifier(Node):
             "smoothness_score": round(smoothness, 3),
             "passed": passed,
             "goal_match": goal_match,
+            "start_match": start_match,
             "in_workspace": in_workspace,
             "nominal_dt_s": round(self.nominal_dt_s, 3),
             "failed_constraints": failed_constraints,
@@ -167,6 +176,7 @@ class PathVerifier(Node):
         goal_clearance,
         goal_clearance_ok,
         collision_free,
+        start_match,
         goal_match,
         monotonic_progress,
     ):
@@ -175,6 +185,7 @@ class PathVerifier(Node):
             ("goal_clearance", f"{goal_clearance:.3f}", f">= {self.safety_margin_m:.3f}", goal_clearance_ok),
             ("collision_free", str(collision_free), "true", collision_free),
             ("min_clearance_m", f"{min_clearance:.3f}", f">= {self.safety_margin_m:.3f}", min_clearance >= self.safety_margin_m),
+            ("start_match", str(start_match), "true", start_match),
             ("goal_match", str(goal_match), "true", goal_match),
             ("monotonic_goal_progress", str(monotonic_progress), "true", monotonic_progress),
             ("max_segment_speed", f"{max_speed:.3f}", f"<= {self.max_velocity_mps:.3f}", max_speed <= self.max_velocity_mps),
@@ -221,6 +232,14 @@ class PathVerifier(Node):
         dy = float(goal.get("y", 0.0)) - float(waypoint["y"])
         dz = float(goal.get("z", -0.2)) - float(waypoint["z"])
         return math.sqrt(dx * dx + dy * dy + dz * dz) <= self.goal_tolerance_m
+
+    def start_matches(self, waypoint, start):
+        if not start:
+            return False
+        dx = float(start.get("x", 0.0)) - float(waypoint["x"])
+        dy = float(start.get("y", 0.0)) - float(waypoint["y"])
+        dz = float(start.get("z", -0.2)) - float(waypoint["z"])
+        return math.sqrt(dx * dx + dy * dy + dz * dz) <= self.start_tolerance_m
 
     def is_monotonic_progress(self, waypoints, goal):
         if not waypoints:

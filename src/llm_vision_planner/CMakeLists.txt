@@ -18,11 +18,18 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(FILES
+  fine_tuning/scripts/min_control_qp.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(DIRECTORY
   launch
   config
   fine_tuning
   DESTINATION share/${PROJECT_NAME}
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE
 )
 
 ament_package()

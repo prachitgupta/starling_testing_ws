@@ -1,0 +1,462 @@
+\documentclass[aspectratio=43,11pt]{beamer}
+
+\usepackage{amsmath,amssymb,bm,booktabs}
+
+\definecolor{deckblue}{RGB}{55,53,184}
+\definecolor{softblue}{RGB}{232,238,252}
+\definecolor{darkgreen}{RGB}{0,120,75}
+
+\setbeamercolor{structure}{fg=deckblue}
+\setbeamercolor{frametitle}{fg=white,bg=deckblue}
+\setbeamercolor{title in head/foot}{fg=white,bg=deckblue}
+\setbeamercolor{page number in head/foot}{fg=white,bg=deckblue}
+\setbeamerfont{frametitle}{size=\Large,series=\mdseries}
+\setbeamertemplate{frametitle}[default][left]
+\setbeamertemplate{footline}{%
+  \leavevmode%
+  \hbox{%
+    \begin{beamercolorbox}[wd=.88\paperwidth,ht=2.2ex,dp=.75ex,center]{title in head/foot}%
+      \usebeamerfont{title in head/foot}\insertshorttitle
+    \end{beamercolorbox}%
+    \begin{beamercolorbox}[wd=.12\paperwidth,ht=2.2ex,dp=.75ex,center]{page number in head/foot}%
+      \insertframenumber/\inserttotalframenumber
+    \end{beamercolorbox}%
+  }%
+}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{itemize item}[circle]
+\setbeamertemplate{itemize subitem}[circle]
+
+\newcommand{\xd}{x_d}
+\newcommand{\xh}{\hat{x}_d}
+\newcommand{\ud}{u_d}
+\newcommand{\uh}{\hat{u}_d}
+\newcommand{\lmin}{\lambda_{\min}}
+\newcommand{\lmax}{\lambda_{\max}}
+
+\title[Single-Score Radius: Double Integrator]{Single-Score Safety Radius for the Damped Double Integrator}
+\subtitle{Detailed Lyapunov and conformal derivation}
+\author{}
+\date{}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}{Scope: One Model, One Calibration Score}
+\begin{itemize}
+  \item Plant: planar damped double integrator, exactly as used by the repository.
+  \item Reference gap: RRT expert $(\xd,\ud)$ versus LLM prediction $(\xh,\uh)$.
+  \item Controller: LQR feedback around the LLM reference.
+  \item Certificate: one conformal score for the \alert{combined disturbance entering the error dynamics}.
+\end{itemize}
+
+\vspace{0.5em}
+\begin{block}{Target statement}
+Construct $\rho(t)$ such that, for a fresh exchangeable test environment,
+\[
+\mathbb P\!\left[\|x(t)-\xd(t)\|_2\leq \rho(t),\ \forall t\in[0,T]\right]\geq 1-\delta.
+\]
+\end{block}
+
+No nonlinear quadrotor model and no separate $q_u,q_x$ union bound are used.
+\end{frame}
+
+\begin{frame}{Damped Double-Integrator Dynamics}
+State and design-level input:
+\[
+x=\begin{bmatrix}p_x&p_y&v_x&v_y\end{bmatrix}^{\!\top}\in\mathbb R^4,
+\qquad
+u=\begin{bmatrix}u_x&u_y\end{bmatrix}^{\!\top}\in\mathbb R^2.
+\]
+
+With damping $d=1.1$,
+\[
+\dot p=v,\qquad \dot v=-d\,v+d\,u,
+\qquad \dot x=Ax+Bu,
+\]
+\[
+A=\begin{bmatrix}
+0&0&1&0\\
+0&0&0&1\\
+0&0&-1.1&0\\
+0&0&0&-1.1
+\end{bmatrix},
+\qquad
+B=\begin{bmatrix}
+0&0\\0&0\\1.1&0\\0&1.1
+\end{bmatrix}.
+\]
+
+The model assumes the low-level flight stack realizes the commanded planar input $u$.
+\end{frame}
+
+\begin{frame}{Expert, LLM Reference, and Implementable Controller}
+Expert and predicted reference dynamics:
+\[
+\dot \xd=A\xd+B\ud,
+\qquad
+\dot \xh=A\xh+B\uh.
+\]
+
+Define true tracking error and prediction gaps:
+\[
+e:=x-\xd,qquad
+d_x:=\xh-\xd,qquad
+d_u:=\uh-\ud.
+\]
+
+The implementable controller tracks the available LLM reference:
+\[
+\hat e:=x-\xh=e-d_x,
+\qquad
+u=-K\hat e+\uh=-K(e-d_x)+\uh.
+\]
+
+\begin{alertblock}{Important}
+$\xd$ and $\ud$ are required during calibration, but they are not required online.
+\end{alertblock}
+\end{frame}
+
+\begin{frame}{Error Dynamics: Combine the Two Gaps First}
+Starting with $e=x-\xd$,
+\begin{align*}
+\dot e
+&=Ax+Bu-(A\xd+B\ud)\\
+&=Ae+B\big[-K(e-d_x)+\uh-\ud\big]\\
+&=(A-BK)e+B d_u+BKd_x.
+\end{align*}
+
+Define
+\[
+A_c:=A-BK,
+\qquad
+\boxed{w(t):=B d_u(t)+BKd_x(t)}.
+\]
+
+Then the entire uncertain error system is
+\[
+\boxed{\dot e=A_c e+w.}
+\]
+
+The closed loop sees only $w$; it does not see separate worst-case values of $d_u$ and $d_x$.
+\end{frame}
+
+\begin{frame}{Lyapunov Metric and Certified Decay Rate}
+Choose $P=P^\top\succ0$ and
+\[
+V(e):=e^\top P e.
+\]
+
+The required certificate condition is
+\[
+A_c^\top P+PA_c\preceq -2\alpha_P P,
+\qquad \alpha_P>0.
+\]
+
+For fixed $P,K$, the largest valid rate is
+\[
+\boxed{
+\alpha_P=\frac{1}{2}\lambda_{\min}\!\left(
+P^{-1/2}\big[-A_c^\top P-PA_c\big]P^{-1/2}
+\right).}
+\]
+
+\begin{alertblock}{Do not substitute the spectral abscissa automatically}
+$-\max\operatorname{Re}\lambda(A_c)$ describes modal decay, but it need not satisfy the matrix inequality in the chosen $P$-metric.
+\end{alertblock}
+\end{frame}
+
+\begin{frame}{Differentiate the Lyapunov Function}
+Using $\dot e=A_c e+w$,
+\begin{align*}
+\dot V
+&=\dot e^\top Pe+e^\top P\dot e\\
+&=e^\top(A_c^\top P+PA_c)e+2e^\top Pw\\
+&\leq -2\alpha_P V+2e^\top Pw.
+\end{align*}
+
+Factor $P=P^{1/2}P^{1/2}$ and apply Cauchy--Schwarz:
+\begin{align*}
+e^\top Pw
+&=(P^{1/2}e)^\top(P^{1/2}w)\\
+&\leq \|P^{1/2}e\|_2\,\|P^{1/2}w\|_2\\
+&=\sqrt V\,\sqrt{w^\top P w}.
+\end{align*}
+
+Therefore
+\[
+\boxed{\dot V\leq-2\alpha_PV+2\sqrt V\sqrt{w^\top Pw}.}
+\]
+\end{frame}
+
+\begin{frame}{Scalar Comparison System}
+Let
+\[
+W:=\sqrt V=\sqrt{e^\top Pe}.
+\]
+
+For $W>0$, $\dot W=\dot V/(2W)$, hence
+\[
+\dot W\leq -\alpha_P W+\sqrt{w^\top P w}.
+\]
+
+If a trajectory satisfies
+\[
+\sup_{t\in[0,T]}\sqrt{w(t)^\top P w(t)}\leq q_w,
+\]
+then
+\[
+\dot W\leq-\alpha_PW+q_w.
+\]
+
+Solving this scalar differential inequality gives
+\[
+\boxed{
+W(t)\leq W(0)e^{-\alpha_Pt}
++\frac{q_w}{\alpha_P}\big(1-e^{-\alpha_Pt}\big).}
+\]
+\end{frame}
+
+\begin{frame}{One Conformal Nonconformity Score}
+For calibration environment $i$, compute the full trajectories and form
+\[
+w_i(t)=B\big(\hat u_{d,i}(t)-u_{d,i}(t)\big)
++BK\big(\hat x_{d,i}(t)-x_{d,i}(t)\big).
+\]
+
+Use one scalar score:
+\[
+\boxed{
+S_i:=\max_{t\in[0,T_i]}
+\sqrt{w_i(t)^\top P w_i(t)}.}
+\]
+
+Given $N$ exchangeable calibration scores, set
+\[
+k=\left\lceil(1-\delta)(N+1)\right\rceil,
+\qquad
+q_w=S_{(\min\{k,N\})},
+\]
+where $S_{(j)}$ is the $j$th order statistic.
+
+Then
+\[
+\mathbb P(S_{\rm test}\leq q_w)\geq1-\delta.
+\]
+Because $S_i$ already maximizes over time, this is a simultaneous trajectory-level event.
+\end{frame}
+
+\begin{frame}{Convert the Metric Bound to a State-Norm Tube}
+Eigenvalue bounds give
+\[
+\sqrt{\lmin(P)}\,\|e\|_2
+\leq \sqrt{e^\top Pe}=W
+\leq \sqrt{\lmax(P)}\,\|e\|_2.
+\]
+
+Thus
+\[
+\boxed{
+\rho(t)=
+\sqrt{\frac{\lmax(P)}{\lmin(P)}}\|e(0)\|_2e^{-\alpha_Pt}
++\frac{q_w}{\alpha_P\sqrt{\lmin(P)}}
+\big(1-e^{-\alpha_Pt}\big).}
+\]
+
+With probability at least $1-\delta$,
+\[
+\|x(t)-\xd(t)\|_2\leq\rho(t),
+\qquad\forall t\in[0,T].
+\]
+
+As $t\to\infty$,
+\[
+\boxed{\rho_\infty=\frac{q_w}{\alpha_P\sqrt{\lmin(P)}}.}
+\]
+\end{frame}
+
+\begin{frame}{Numerical CARE Solution Used in the Repository}
+The current LQR weights are
+\[
+Q=\operatorname{diag}(10,10,1,1),
+\qquad R=I_2.
+\]
+
+The CARE solution is
+\[
+P=\begin{bmatrix}
+8.8032&0&2.8748&0\\
+0&8.8032&0&2.8748\\
+2.8748&0&1.6216&0\\
+0&2.8748&0&1.6216
+\end{bmatrix},
+\]
+\[
+K=\begin{bmatrix}
+3.1623&0&1.7838&0\\
+0&3.1623&0&1.7838
+\end{bmatrix}.
+\]
+
+\begin{align*}
+\lmin(P)&=0.612622, & \lmax(P)&=9.812202,\\
+\sqrt{\kappa(P)}&=4.002092.&&
+\end{align*}
+\end{frame}
+
+\begin{frame}{Certified Rate Versus Eigenvalue Rate}
+Closed-loop eigenvalues:
+\[
+\lambda(A-BK)=-1.531095\pm1.065013j
+\quad\text{(each repeated twice).}
+\]
+
+The code currently reports the spectral value
+\[
+\alpha_{\rm eig}=1.531095.
+\]
+
+But the generalized-eigenvalue calculation required by the $P$-metric gives
+\[
+\boxed{\alpha_P=1.096230.}
+\]
+
+Indeed,
+\[
+A_c^\top P+PA_c+2\alpha_{\rm eig}P\npreceq0,
+\]
+whereas
+\[
+A_c^\top P+PA_c+2\alpha_PP\preceq0.
+\]
+
+The radius calculation must use $\alpha_P$ unless a different valid transient bound is proved.
+\end{frame}
+
+\begin{frame}{2,000-Sample Single-Score Calibration}
+Calibration source:
+\begin{itemize}
+  \item $N=2000$ actual refined and verified RRT/LLM prediction pairs;
+  \item shared-clock minimum-control QP trajectories;
+  \item score $S_i=\max_t\sqrt{w_i^\top Pw_i}$;
+  \item desired trajectory-level coverage $1-\delta=0.90$.
+\end{itemize}
+
+Finite-sample rank:
+\[
+k=\left\lceil0.9(2000+1)\right\rceil
+=\lceil1800.9\rceil=1801.
+\]
+
+The empirical conformal quantile is
+\[
+\boxed{q_w=S_{(1801)}=1.641463.}
+\]
+
+Only one failure budget $\delta=0.10$ is used; no $\delta_u+\delta_x$ split is required.
+\end{frame}
+
+\begin{frame}{Numerical Radius}
+\small
+Insert
+\begin{align*}
+q_w&=1.641463, & \alpha_P&=1.096230,\\
+\lmin(P)&=0.612622, & \sqrt{\kappa(P)}&=4.002092.
+\end{align*}
+
+Steady-state term:
+\begin{align*}
+\rho_\infty
+&=\frac{q_w}{\alpha_P\sqrt{\lmin(P)}}\\
+&=\frac{1.641463}{1.096230\sqrt{0.612622}}\\
+&=\boxed{1.913079}.
+\end{align*}
+
+Complete time-dependent tube:
+\[
+\boxed{\begin{aligned}
+\rho(t)={}&4.002092\|e(0)\|_2e^{-1.096230t}\\
+&+1.913079\big(1-e^{-1.096230t}\big).
+\end{aligned}}
+\]
+
+If $e(0)=0$, the tube grows monotonically from zero toward $1.913079$.
+\end{frame}
+
+\begin{frame}{Why One Score Is Tighter}
+The previous two-score construction first applies
+\[
+\|Bd_u+BKd_x\|
+\leq \|B\|\|d_u\|+\|BK\|\|d_x\|,
+\]
+then combines two separate conformal events with a union bound.
+
+The one-score construction calibrates
+\[
+\sqrt{(Bd_u+BKd_x)^\top P(Bd_u+BKd_x)}
+\]
+directly. It retains:
+\begin{itemize}
+  \item the directions of $d_u$ and $d_x$;
+  \item their correlation within each trajectory;
+  \item cancellation or reinforcement through $B$ and $BK$;
+  \item the exact certificate metric $P$.
+\end{itemize}
+
+The smaller radius comes from removing norm and union-bound conservatism, not from weakening 90\% coverage.
+\end{frame}
+
+\begin{frame}{What Is Fixed and What Must Be Recalibrated}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\textbf{Fixed for one certificate}
+\begin{itemize}
+  \item dynamics matrices $A,B$;
+  \item controller gain $K$;
+  \item metric $P$;
+  \item certified rate $\alpha_P$;
+  \item score definition and coverage $1-\delta$.
+\end{itemize}
+
+\column{0.48\textwidth}
+\textbf{Requires recalibration}
+\begin{itemize}
+  \item changing $K$ or LQR $Q,R$;
+  \item changing $P$ or state normalization;
+  \item changing trajectory generation;
+  \item changing clock alignment;
+  \item changing the operating distribution.
+\end{itemize}
+\end{columns}
+
+\vspace{0.5em}
+\begin{alertblock}{Reason}
+The score contains both $P$ and $K$ through $\sqrt{w^\top Pw}$ and $w=Bd_u+BKd_x$.
+\end{alertblock}
+\end{frame}
+
+\begin{frame}{Interpretation and Assumptions}
+\footnotesize
+\begin{itemize}
+  \item The conformal guarantee requires calibration and test environments to be exchangeable.
+  \item The linear model and idealized low-level realization must remain valid over the certified operation.
+  \item The state norm mixes position and velocity components; $1.913079$ is a full-state Euclidean bound, not automatically a pure geometric distance.
+  \item Since $\|p-p_d\|_2\leq\|x-x_d\|_2$, it is numerically conservative for position. A unit-consistent position certificate should use explicit state normalization or output projection.
+  \item This bounds RRT--LLM discrepancy entering the error dynamics; it does not certify obstacle clearance by itself.
+\end{itemize}
+
+\begin{block}{Final 90\% single-score certificate}
+\[
+\begin{aligned}
+\mathbb P\!\big[\|x(t)-\xd(t)\|_2
+&\leq4.002092\|e(0)\|e^{-1.096230t}\\
+&\quad+1.913079(1-e^{-1.096230t}),\ \forall t\big]\geq0.90.
+\end{aligned}
+\]
+\end{block}
+\end{frame}
+
+\end{document}

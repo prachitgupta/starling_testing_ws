@@ -1,0 +1,38 @@
+{
+  "score_type": "single",
+  "sample_id": 998,
+  "calibration_samples": 2000,
+  "s_u": 0.448121,
+  "s_x": 0.227418,
+  "q_u": null,
+  "q_x": null,
+  "s_w": 1.069411,
+  "q_w": 1.641463,
+  "delta_w": 0.1,
+  "score_accepted": true,
+  "coverage": 0.9,
+  "delta_u": 0.05,
+  "delta_x": 0.05,
+  "joint_probability_lower_bound": 0.9,
+  "alpha": 1.09623,
+  "eigenvalue_alpha": 1.531095,
+  "K": [
+    [
+      3.162278,
+      0.0,
+      1.78381,
+      0.0
+    ],
+    [
+      0.0,
+      3.162278,
+      0.0,
+      1.78381
+    ]
+  ],
+  "damping": 1.1,
+  "max_tracking_error": 0.218733,
+  "max_tube_radius_m": 1.895918,
+  "inside_tube": true,
+  "output_png": "/home/prachit/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/plots/dconformal_qp_single_score_verification.png"
+}

@@ -1,0 +1,194 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{array}
+\usepackage{url}
+
+\title{Tube Radius Calculation Summary}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Source}
+
+This note summarizes the double-integrator conformal tube radius used by
+\path{fine_tuning/scripts/dconformal_contraction_verify.py}.  The numerical
+example below uses the current report snapshot:
+\[
+\text{\path{fine_tuning/plots/dconformal_contraction_verify_1849.json}}.
+\]
+
+For that run:
+\[
+\begin{aligned}
+\text{sample\_id} &= 1858, &
+\text{calibration samples} &= 1850,\\
+s_u &= 0.836826, &
+s_x &= 0.268212,\\
+q_u &= 0.651208, &
+q_x &= 0.386208,\\
+\delta_u &= 0.15, &
+\delta_x &= 0.15.
+\end{aligned}
+\]
+The reported joint probability lower bound is therefore
+\[
+1-\delta_u-\delta_x = 1-0.15-0.15 = 0.70.
+\]
+
+\section*{Tube Formula}
+
+The code computes the radius at each time sample as
+\[
+r(t)
+=
+\sqrt{\frac{\lambda_{\max}}{\lambda_{\min}}}
+\|x(0)-x_d(0)\| e^{-\alpha t}
++
+\frac{\sqrt{\lambda_{\max}}}{\alpha\sqrt{\lambda_{\min}}}
+\left(\|B\| q_u + \|BK\| q_x\right)
+\left(1-e^{-\alpha t}\right).
+\]
+
+The first term is the decaying initial tracking error.  The second term is the
+conformal uncertainty contribution from control mismatch and state/reference
+mismatch.
+
+\section*{Fixed Values for the Current LQR Setup}
+
+These values are fixed as long as the double-integrator model and LQR weights in
+\path{fine_tuning/scripts/lqr.py} are unchanged:
+\[
+\begin{aligned}
+\lambda_{\min}(P) &= 0.6126217787,\\
+\lambda_{\max}(P) &= 9.8122021157,\\
+\sqrt{\lambda_{\max}/\lambda_{\min}} &= 4.0020916201,\\
+\alpha &= 1.5310952658,\\
+\|B\|_2 &= 1.1,\\
+\|BK\|_2 &= 3.9937691073.
+\end{aligned}
+\]
+
+The common multiplier in the steady uncertainty term is
+\[
+\frac{\sqrt{\lambda_{\max}}}{\alpha\sqrt{\lambda_{\min}}}
+= 2.6138749883.
+\]
+
+\section*{Numerical Calculation}
+
+Using the current quantiles:
+\[
+q_u = 0.651208, \qquad q_x = 0.386208,
+\]
+the uncertainty contribution inside the parentheses is
+\[
+\begin{aligned}
+\|B\|q_u &= 1.1(0.651208) = 0.7163288,\\
+\|BK\|q_x &= 3.9937691073(0.386208) = 1.5424256,\\
+\|B\|q_u+\|BK\|q_x &= 2.2587544.
+\end{aligned}
+\]
+
+The asymptotic, or steady-state, radius contribution is
+\[
+r_\infty
+= 2.6138749883(2.2587544)
+= 5.9041016\ \text{m}.
+\]
+
+For the plotted trajectory, the largest tube radius occurs at approximately
+\[
+t = 2.5\ \text{s}.
+\]
+At this time,
+\[
+e^{-\alpha t}
+= e^{-1.5310952658(2.5)}
+= 0.0217588.
+\]
+
+The initial tracking error for this run is zero:
+\[
+\|x(0)-x_d(0)\| = 0.
+\]
+Therefore the decaying initial-error term contributes zero, and the finite-time
+radius is
+\[
+\begin{aligned}
+r(2.5)
+&= 0
++ 5.9041016(1-0.0217588)\\
+&= 5.7756356\ \text{m}.
+\end{aligned}
+\]
+
+This matches the reported maximum tube radius:
+\[
+\texttt{max\_tube\_radius\_m} = 5.775636.
+\]
+
+\section*{What Is Fixed vs. What Can Change}
+
+\begin{center}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.28\linewidth}
+                >{\raggedright\arraybackslash}p{0.62\linewidth}}
+\hline
+Quantity & Status \\
+\hline
+$B$, damping, $Q$, $R$ & Fixed unless the LQR/model setup in \texttt{lqr.py} is changed.\\
+$P$, $K$, $\alpha$ & Derived from solving the Riccati equation; fixed only while $A$, $B$, $Q$, and $R$ are fixed.\\
+$\lambda_{\min}$, $\lambda_{\max}$ & Eigenvalues of $P$; change if $P$ changes.\\
+$\|B\|$, $\|BK\|$ & Fixed for a fixed $B$ and $K$.\\
+$q_u$, $q_x$ & Change with calibration CSV, sample count, $\delta_u$, $\delta_x$, scoring method, and trajectory scheduling.\\
+$s_u$, $s_x$ & Per-sample scores; change from sample to sample.\\
+$\|x(0)-x_d(0)\|$ & Initial tracking error; changes with initial condition.\\
+$t$ and horizon & Change with trajectory duration and simulation timestep.\\
+\hline
+\end{tabular}
+\end{center}
+
+\section*{Why the Radius Can Be Larger Than Expected}
+
+\begin{enumerate}
+\item The actual tracking error is not the tube radius.  For this run,
+\[
+\max_t \|x(t)-x_d(t)\| = 0.306533\ \text{m},
+\]
+while the certified tube radius is
+\[
+5.775636\ \text{m}.
+\]
+The tube is a conservative bound, not the realized error.
+
+\item The state quantile $q_x$ is not only position error.  In this code,
+\[
+x = [p_x,\ p_y,\ v_x,\ v_y],
+\]
+so velocity mismatch contributes to $q_x$.
+
+\item The $q_x$ term is strongly amplified:
+\[
+\|BK\|q_x = 3.9937691073 q_x.
+\]
+Then the whole uncertainty term is multiplied again by
+\[
+\frac{\sqrt{\lambda_{\max}}}{\alpha\sqrt{\lambda_{\min}}}
+= 2.6138749883.
+\]
+
+\item The conformal tube assumes the calibrated uncertainty can persist over
+time.  That is why the uncertainty term grows with
+\[
+1-e^{-\alpha t}
+\]
+toward a steady radius.
+
+\item Changing the calibration quantiles changes the tube directly.  Larger
+$q_u$ or $q_x$ increases the radius linearly.
+\end{enumerate}
+
+\end{document}

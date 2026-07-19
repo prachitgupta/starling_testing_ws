@@ -1,0 +1,431 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+
+\title{\textbf{Conformal Contraction Mathematical Formulation}}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Given Values}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Quantity & Value \\
+\midrule
+Metric used for verification & \(M=\operatorname{diag}(1.0,1.0)\) \\
+Lower metric bound & \(m=1.0\) \\
+Upper metric bound & \(\bar m=1.0\) \\
+Contraction rate & \(\alpha=0.8\) \\
+Young's inequality parameter & \(\epsilon=0.4\) \\
+Dynamic risk level & \(\delta^{\mathrm{dyn}}=0.05\) \\
+Contraction risk level & \(\delta^{\mathrm{con}}=0.05\) \\
+Dynamic conformal quantile & \(q_{1-\delta}^{\mathrm{dyn}}=0.897275\) \\
+Contraction conformal quantile & \(q_{1-\delta}^{\mathrm{con}}=2.898368\) \\
+Observed dynamic score & \(S^{\mathrm{dyn}}=0.136886\) \\
+Observed contraction score & \(S^{\mathrm{con}}=0.067456\) \\
+Initial energy & \(\hat E(\gamma(\cdot,0))=0.0\) \\
+Maximum sampled energy & \(E_{\max}=0.018738\) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section*{Closed-Loop System}
+
+The real closed-loop system controlled by the learned policy is
+\[
+\dot x=f(x,u_{\mathrm{learned}}(x,E)).
+\]
+Add and subtract the nominal model-based controller term:
+\[
+\dot x
+=f(x,u_{\mathrm{learned}}(x,E))
+=\hat f(x,u_{\mathrm{mpc}}(x,E))
++f(x,u_{\mathrm{learned}}(x,E))-\hat f(x,u_{\mathrm{mpc}}(x,E)).
+\]
+For this verification, the candidate path is the learned-planner path and the nominal path is the reference path.
+
+\section*{Contraction Metric Condition}
+
+Assume a learned contraction metric \(\hat M(x,t)\succ0\) satisfying
+\[
+mI\preceq \hat M(x,t)\preceq \bar m I
+\]
+and approximately
+\[
+\dot{\hat M}
++\hat M\frac{\partial \hat f_{\mathrm{cl}}}{\partial x}
++\frac{\partial \hat f_{\mathrm{cl}}}{\partial x}\hat M
+\preceq -2\alpha \hat M .
+\]
+Plug in the implemented diagonal metric bounds.
+\[
+1.0I\preceq
+\begin{bmatrix}
+1.0&0\\
+0&1.0
+\end{bmatrix}
+\preceq 1.0I
+\]
+Final result.
+\[
+\boxed{\hat M=M=\operatorname{diag}(1.0,1.0)\text{ is positive definite and bounded.}}
+\]
+
+\section*{Riemannian Energy}
+
+Define the Riemannian energy along the minimizing geodesic \(\gamma\) connecting \(x\) and \(x_n\) as
+\[
+\hat E(\gamma(\cdot,t))
+=
+\int_0^1
+\delta\gamma(s,t)^\top
+\hat M(\gamma(s,t))
+\delta\gamma(s,t)\,ds,
+\qquad
+\delta\gamma(s,t)=\frac{\partial\gamma(s,t)}{\partial s}.
+\]
+For sampled 2D waypoint verification with a constant diagonal metric, use
+\[
+e_i=x_{c,i}-x_{n,i}
+=
+\begin{bmatrix}
+\Delta x_i\\
+\Delta y_i
+\end{bmatrix},
+\qquad
+E_i=e_i^\top M e_i .
+\]
+Plug in \(M=\operatorname{diag}(1.0,1.0)\).
+\[
+E_i
+=
+\begin{bmatrix}
+\Delta x_i&\Delta y_i
+\end{bmatrix}
+\begin{bmatrix}
+1.0&0\\
+0&1.0
+\end{bmatrix}
+\begin{bmatrix}
+\Delta x_i\\
+\Delta y_i
+\end{bmatrix}
+=\Delta x_i^2+\Delta y_i^2
+\]
+The maximum energy is computed over sampled candidate and nominal trajectory points:
+\[
+E_{\max}=\max_i E_i=\max_i e_i^\top M e_i.
+\]
+Plug in the computed verification value.
+\[
+E_{\max}=0.018738
+\]
+Final equivalent sampled Euclidean radius.
+\[
+r_{\max}
+=\sqrt{\frac{E_{\max}}{m}}
+=\sqrt{\frac{0.018738}{1.0}}
+=0.136886\ \mathrm{m}
+\]
+\[
+\boxed{E_{\max}\text{ is computed, not assumed.}}
+\]
+
+\section*{Dynamic Conformal Score}
+
+Conformal inference gives the dynamic model-error event
+\[
+\mathbb P\left[
+\left\|f(x,u_{\mathrm{learned}}(x,E))-\hat f(x,u_{\mathrm{mpc}}(x,E))\right\|
+\le q_{1-\delta}^{\mathrm{dyn}},
+\ \forall t\in[0,T]
+\right]\ge 1-\delta^{\mathrm{dyn}},
+\]
+where
+\[
+q_{1-\delta}^{\mathrm{dyn}}
+=
+\left\lceil(1-\delta^{\mathrm{dyn}})(N+1)\right\rceil
+\text{-th smallest of }
+(S_1^{\mathrm{dyn}},\ldots,S_N^{\mathrm{dyn}})
+\]
+and
+\[
+S_i^{\mathrm{dyn}}
+=
+\sup_{t\in[0,T]}
+\left\|f(x,u_{\mathrm{learned}}(x_i,E_i))
+-\hat f(x,u_{\mathrm{mpc}}(x_i,E_i))\right\|.
+\]
+For sampled paths, compute
+\[
+S^{\mathrm{dyn}}=\max_i\|v_{c,i}-v_{n,i}\|_2.
+\]
+Plug in the values.
+\[
+S^{\mathrm{dyn}}=0.136886,\qquad q_{1-\delta}^{\mathrm{dyn}}=0.897275
+\]
+\[
+0.136886\le0.897275
+\]
+Final result.
+\[
+\boxed{S^{\mathrm{dyn}}\le q_{1-\delta}^{\mathrm{dyn}}}
+\]
+
+\section*{Contraction Residual Score}
+
+The conformal contraction residual is
+\[
+\begin{aligned}
+S_i^{\mathrm{con}}
+=\max\Bigl\{0,\sup_{t\in[0,T]}
+&\Bigl(
+2\delta\gamma(1,t)^\top\hat M(\gamma(1,t))f(x,u_{\mathrm{learned}}(x,E))\\
+&-2\delta\gamma(0,t)^\top\hat M(\gamma(0,t))\hat f(x_n,u_{\mathrm{mpc}}(x_n,E_n))\\
+&+2\alpha \hat E(\gamma(\cdot,t))
+\Bigr)\Bigr\}.
+\end{aligned}
+\]
+For sampled paths with constant metric, compute
+\[
+\rho_i
+=
+2e_i^\top Mv_{c,i}
+-2e_i^\top Mv_{n,i}
++2\alpha e_i^\top M e_i,
+\qquad
+S^{\mathrm{con}}=\max_i\max(0,\rho_i).
+\]
+Plug in the values.
+\[
+S^{\mathrm{con}}=0.067456,\qquad q_{1-\delta}^{\mathrm{con}}=2.898368
+\]
+\[
+0.067456\le2.898368
+\]
+Final result.
+\[
+\boxed{S^{\mathrm{con}}\le q_{1-\delta}^{\mathrm{con}}}
+\]
+
+\section*{Conformal Quantiles}
+
+The conformal quantile rule is
+\[
+q_{1-\delta}
+=
+\left\lceil(1-\delta)(N+1)\right\rceil
+\text{-th smallest calibration score}.
+\]
+For this verification run, \(N=19\).
+Plug in the dynamic risk value.
+\[
+k_{\mathrm{dyn}}
+=\left\lceil(1-0.05)(19+1)\right\rceil
+=\lceil19\rceil
+=19
+\]
+\[
+q_{1-\delta}^{\mathrm{dyn}}=0.897275
+\]
+Plug in the contraction risk value.
+\[
+k_{\mathrm{con}}
+=\left\lceil(1-0.05)(19+1)\right\rceil
+=19
+\]
+\[
+q_{1-\delta}^{\mathrm{con}}=2.898368
+\]
+Final result.
+\[
+\boxed{
+q_{1-\delta}^{\mathrm{dyn}}=0.897275,\qquad
+q_{1-\delta}^{\mathrm{con}}=2.898368
+}
+\]
+
+\section*{Union-Bound Coverage}
+
+Combine the dynamic and contraction conformal events using Boole's inequality:
+\[
+\mathbb P[\mathrm{both\ conformal\ events}]
+\ge
+1-\delta^{\mathrm{dyn}}-\delta^{\mathrm{con}}.
+\]
+Plug in the values.
+\[
+1-0.05-0.05=0.90
+\]
+Final result.
+\[
+\boxed{\mathbb P[\mathrm{both\ conformal\ events}]\ge0.90}
+\]
+
+\section*{Young's Inequality Step}
+
+Use Young's inequality:
+\[
+2q_{1-\delta}^{\mathrm{dyn}}\sqrt{\bar m}\,\hat d(x,x_n)
+\le
+\epsilon\hat E(\gamma(\cdot,t))
++\left(q_{1-\delta}^{\mathrm{dyn}}\right)^2\bar m\epsilon^{-1},
+\qquad
+\forall\epsilon>0.
+\]
+This yields
+\[
+\mathbb P\left[
+\dot{\hat E}(\gamma(\cdot,t))
+\le
+-(2\alpha-\epsilon)\hat E(\gamma(\cdot,t))
++\left(q_{1-\delta}^{\mathrm{dyn}}\right)^2\bar m\epsilon^{-1}
++q_{1-\delta}^{\mathrm{con}},
+\ \forall t\in[0,T]
+\right]
+\ge
+1-\delta^{\mathrm{dyn}}-\delta^{\mathrm{con}}.
+\]
+Plug in the values in the additive disturbance term.
+\[
+\left(q_{1-\delta}^{\mathrm{dyn}}\right)^2\bar m\epsilon^{-1}
++q_{1-\delta}^{\mathrm{con}}
+=
+(0.897275)^2(1.0)(0.4)^{-1}+2.898368
+\]
+\[
+=2.012756+2.898368=4.911124
+\]
+Final result.
+\[
+\boxed{
+\dot{\hat E}
+\le
+-1.2\hat E+4.911124
+}
+\]
+
+\section*{Effective Contraction Rate}
+
+Select \(\epsilon\) so that
+\[
+2\bar\alpha=2\alpha-\epsilon>0.
+\]
+Plug in the values.
+\[
+2\bar\alpha=2(0.8)-0.4=1.2
+\]
+\[
+\bar\alpha=0.6
+\]
+Final result.
+\[
+\boxed{\bar\alpha=0.6>0}
+\]
+
+\section*{Final Energy Bound}
+
+The final conformal contraction energy bound is
+\[
+\mathbb P\left[
+\hat E(\gamma(\cdot,t))
+\le
+e^{-2\bar\alpha t}\hat E(\gamma(\cdot,0))
++
+\frac{
+\left(q_{1-\delta}^{\mathrm{dyn}}\right)^2\bar m\epsilon^{-1}
++q_{1-\delta}^{\mathrm{con}}
+}{
+2\bar\alpha
+}
+\left(1-e^{-2\bar\alpha t}\right),
+\ \forall t\in[0,T]
+\right]
+\ge
+1-\delta^{\mathrm{dyn}}-\delta^{\mathrm{con}}.
+\]
+Plug in the values.
+\[
+\hat E(\gamma(\cdot,t))
+\le
+e^{-2(0.6)t}(0.0)
++
+\frac{
+(0.897275)^2(1.0)(0.4)^{-1}
++2.898368
+}{
+2(0.6)
+}
+\left(1-e^{-2(0.6)t}\right)
+\]
+\[
+\hat E(\gamma(\cdot,t))
+\le
+4.092603\left(1-e^{-1.2t}\right)
+\]
+Final result.
+\[
+\boxed{
+\hat E(\gamma(\cdot,t))
+\le
+4.092603\left(1-e^{-1.2t}\right)
+}
+\]
+
+\section*{Tube Radius}
+
+Convert the energy bound to a Euclidean tube radius using the lower metric bound:
+\[
+r(t)=\sqrt{\frac{\hat E(\gamma(\cdot,t))}{m}}.
+\]
+Plug in the values.
+\[
+r(t)
+\le
+\sqrt{\frac{4.092603(1-e^{-1.2t})}{1.0}}
+\]
+Final result.
+\[
+\boxed{
+r(t)\le\sqrt{4.092603(1-e^{-1.2t})}\ \mathrm{m}
+}
+\]
+At steady state:
+\[
+r_\infty
+=
+\sqrt{\frac{4.092603}{1.0}}
+=2.023018\ \mathrm{m}
+\]
+\[
+\boxed{r_\infty=2.023018\ \mathrm{m}}
+\]
+
+\section*{Final Verification Decision}
+
+The verification accepts the sampled path because both conformal scores are below their quantiles:
+\[
+S^{\mathrm{dyn}}\le q_{1-\delta}^{\mathrm{dyn}},
+\qquad
+S^{\mathrm{con}}\le q_{1-\delta}^{\mathrm{con}}.
+\]
+Plug in the values.
+\[
+0.136886\le0.897275,
+\qquad
+0.067456\le2.898368
+\]
+Final result.
+\[
+\boxed{\text{Accepted conformal contraction verification with probability lower bound }0.90.}
+\]
+
+\end{document}

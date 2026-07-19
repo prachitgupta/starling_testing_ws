@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 from typing import List
 
-import instructor
 from dataset_generator import (
     DEFAULT_CLEARANCE_M,
     DEFAULT_DATASET_DIR,
@@ -229,6 +228,7 @@ def write_dataset(scored, args):
 
 
 def build_dataset(args):
+    import instructor
     from openai import OpenAI
 
     random.seed(args.seed)

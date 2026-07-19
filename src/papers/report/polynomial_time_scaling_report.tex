@@ -1,0 +1,50 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}\usepackage{amsmath,booktabs,graphicx,url}
+\title{Why Minimum-Snap $x_d$ and $u_d$ Can Grow for Nearby Waypoints}\author{}\date{}
+\begin{document}\maketitle
+\section*{Actual-data experiment}
+This report uses actual verified RRT and LLM waypoints from calibration sample 105; it does not synthesize a new prediction. The six LLM segment lengths range from 0.505 m to 0.749 m. The experiment keeps those waypoint locations fixed and uniformly multiplies all segment durations by $\rho\in\{1,0.75,0.5,0.25\}$. Thus any increase in state derivatives or control is caused by time parameterization, not greater waypoint distance.
+
+\begin{center}\small\begin{tabular}{rrrrrrrr}\toprule
+$\rho$ & horizon [s] & $s_x$ & $s_u$ & max $\|v\|$ & max $\|a\|$ & max $\|p^{(4)}\|$ & max $\|u\|$\\\midrule
+1.00 & 8.610 & 0.656 & 1.228 & 0.810 & 1.255 & 11.968 & 1.268 \\
+0.75 & 6.457 & 0.837 & 2.121 & 1.079 & 2.230 & 37.824 & 2.000 \\
+0.50 & 4.305 & 1.247 & 4.634 & 1.619 & 5.018 & 191.484 & 3.973 \\
+0.25 & 2.152 & 2.486 & 17.981 & 3.238 & 20.072 & 3063.749 & 16.742 \\
+\bottomrule\end{tabular}\end{center}
+
+\section*{Time normalization and coefficient growth}
+Write one seventh-degree segment using normalized time $\sigma=t/T$:
+\[
+p(t)=\sum_{k=0}^7 a_k\sigma^k
+=\sum_{k=0}^7 \underbrace{\frac{a_k}{T^k}}_{c_k}t^k.
+\]
+The physical-time coefficient is therefore $c_k=a_k/T^k$. In particular, the fourth through seventh coefficients contain $T^{-4},T^{-5},T^{-6},T^{-7}$. This is coefficient growth under a change of coordinates; it can also worsen numerical conditioning when $T$ is small.
+
+Every derivative adds another inverse power of duration:
+\[
+\frac{d^r p}{dt^r}=T^{-r}\frac{d^r p}{d\sigma^r}.
+\]
+Velocity scales as $T^{-1}$, acceleration as $T^{-2}$, jerk as $T^{-3}$, and snap as $T^{-4}$. The minimum-snap objective itself scales as
+\[
+\int_0^T \|p^{(4)}(t)\|^2dt
+=T^{-7}\int_0^1\left\|\frac{d^4p}{d\sigma^4}\right\|^2d\sigma.
+\]
+Minimum snap minimizes this large quantity subject to waypoint and continuity constraints; it cannot make the required derivatives small when the assigned time is too short.
+
+\section*{How oscillation is amplified}
+A small between-waypoint ripple $e(t)=A\sin(\omega t)$ has derivatives $A\omega^r$. Its position amplitude remains $A$, but its acceleration is $A\omega^2$ and snap is $A\omega^4$. Shorter segment time raises the effective frequency. High-order coupled fits can also overshoot between constraints even when adjacent waypoints are close; differentiation makes such visually small lobes significant in $v$, $a$, and snap. The reviewed linear/parabolic-blend paper explicitly motivates its lower-order construction by the computational burden and Runge-type behavior of higher-order interpolation.
+
+For this repository,
+\[
+x_d=[p_x,p_y,v_x,v_y]^\top,\qquad
+u_d=v_d+\frac{a_d}{1.1}.
+\]
+Consequently, position does not acquire a direct $T^{-4}$ factor. The velocity part of $x_d$ scales as $T^{-1}$, while $u_d$ contains $T^{-1}$ and $T^{-2}$ terms and is normally acceleration-dominated for short durations. The $T^{-4}$ factor belongs to snap and to fourth-order differentiation, not directly to this planar control definition. For a full differentially flat quadrotor, higher derivatives can enter attitude, angular-rate, and feedforward mappings, so amplification can propagate further; this relationship is discussed in the reviewed DFBC/NMPC paper.
+
+\begin{figure}[ht]\centering\includegraphics[width=.96\linewidth]{polynomial_time_scaling.png}\caption{Actual sample 105: identical waypoint geometry, score growth, derivative growth, and physical-time coefficient growth under re-timing.}\end{figure}
+\begin{figure}[ht]\centering\includegraphics[width=.94\linewidth]{polynomial_control_scaling.png}\caption{The same LLM waypoint path produces increasingly large control peaks as its duration is shortened.}\end{figure}
+
+\section*{Implication for conformal radius}
+The calibration scores take maxima over time. A brief derivative peak therefore becomes the sample's $s_u$ or $s_x$ and can enter a high conformal quantile. The contraction radius weights $q_x$ and $q_u$, so a small number of short-time or oscillatory polynomial fits can enlarge the radius for every subsequent trajectory. Shared scheduling removes one source of time mismatch, Frenet matching removes wall-clock phase during comparison, and guided parabolic blends avoid high-order polynomial differentiation; none substitutes for enforcing feasible segment times and explicit derivative/input limits.
+\end{document}

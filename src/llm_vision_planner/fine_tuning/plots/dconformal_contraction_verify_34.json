@@ -1,0 +1,29 @@
+{
+  "sample_id": 34,
+  "calibration_samples": 34,
+  "q_u": 2.228765,
+  "q_x": 0.874862,
+  "delta_u": 0.1,
+  "delta_x": 0.1,
+  "joint_probability_lower_bound": 0.8,
+  "alpha": 1.531095,
+  "K": [
+    [
+      3.162278,
+      0.0,
+      1.78381,
+      0.0
+    ],
+    [
+      0.0,
+      3.162278,
+      0.0,
+      1.78381
+    ]
+  ],
+  "damping": 1.1,
+  "max_tracking_error": 0.037885,
+  "max_tube_radius_m": 15.539564,
+  "inside_tube": true,
+  "output_png": "fine_tuning/plots/dconformal_contraction_verify_34.png"
+}

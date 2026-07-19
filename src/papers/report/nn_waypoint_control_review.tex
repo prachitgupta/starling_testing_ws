@@ -1,0 +1,13 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}\usepackage{amsmath,url}
+\title{Neural Waypoint-to-Control Generation: WN\&CNets}\author{}\date{}
+\begin{document}\maketitle
+\section*{What the method is}
+The local paper \emph{Imitation Learning-Based Online Time-Optimal Control with Multiple-Waypoint Constraints for Quadrotors} trains waypoint-constrained navigation and control networks (WN\&CNets) on state--control pairs produced offline by complementary-progress-constraint (CPC) time-optimal optimization. Its input contains relative positions to two waypoints, velocity, roll--pitch--yaw attitude, and thrust. Its output is the next angular-rate command and total-thrust command. Delay-aware training maps a delayed observed state to the future command.
+\section*{Why it can reduce amplification}
+The deployed network directly predicts control at each update. It therefore does not obtain feedforward control by repeatedly differentiating a fitted seventh-order position polynomial. This can remove polynomial conditioning, high derivative peaks, segment-duration sensitivity, and wall-clock phase amplification from the waypoint-to-control conversion. Smoothness is learned from CPC demonstrations rather than guaranteed analytically, so prediction errors, distribution shift, delay mismatch, and control discontinuities can still increase $s_u$ or $s_x$.
+\section*{Compatibility and limitations}
+The paper uses full quadrotor state and thrust/angular-rate commands, whereas the current repository calibrates a planar damped double integrator with $x=[p_x,p_y,v_x,v_y]$ and $u=[u_x,u_y]$. A compatible adoption therefore requires a separately generated expert dataset, an explicitly defined network mapping for the repository's state/control interface, trained weights, normalization metadata, and validation under the same refinement, verification, and conformal scoring pipeline. The paper also uses MINCO during multi-waypoint transitions, so it does not eliminate polynomial trajectories from every part of its full system.
+
+No neural model, training script, or calibration data is implemented as part of this comparison.
+\end{document}

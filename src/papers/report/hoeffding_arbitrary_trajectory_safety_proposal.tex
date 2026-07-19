@@ -1,0 +1,428 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+
+\title{\textbf{Hoeffding-Based Safety Probability Proposal for Arbitrary Trajectories}}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Objective}
+
+The goal is to validate whether an arbitrary candidate trajectory is safe with a statistical lower bound on the probability of safety.
+Instead of proving that a trajectory converges to a nominal reference, the proposal estimates the probability that a candidate trajectory satisfies safety constraints under sampled uncertainty.
+
+\section*{Proposed Validation Artifact}
+
+The proposed validation samples can be stored in:
+\[
+\texttt{papers/report/arbitrary\_trajectory\_safety\_validation\_placeholder.csv}.
+\]
+Each row stores one sampled rollout or perturbation test for a candidate trajectory.
+
+\section*{Arbitrary Candidate Trajectory}
+
+Let an arbitrary candidate trajectory be a finite horizon sequence of states and controls.
+\[
+\tau=
+\left\{
+(x_0,u_0),(x_1,u_1),\ldots,(x_T,u_T)
+\right\}
+\]
+Plug in the UAV planning interpretation.
+\[
+x_t=
+\begin{bmatrix}
+p_{x,t}\\
+p_{y,t}\\
+p_{z,t}
+\end{bmatrix},
+\qquad
+u_t=
+\begin{bmatrix}
+v_{x,t}\\
+v_{y,t}\\
+v_{z,t}
+\end{bmatrix}
+\]
+Final result.
+\[
+\boxed{\tau \text{ can be any generated, sampled, RRT, LLM, or hand-designed trajectory.}}
+\]
+
+\section*{Safety Set}
+
+The trajectory is safe if every state remains inside the workspace and outside all obstacle safety margins.
+\[
+x_t\in\mathcal X_{\mathrm{safe}},
+\qquad
+u_t\in\mathcal U,
+\qquad
+t=0,\ldots,T.
+\]
+Define the safe set as
+\[
+\mathcal X_{\mathrm{safe}}
+=
+\mathcal X
+\setminus
+\bigcup_{\ell=1}^{N_{\mathrm{obs}}}
+\mathcal O_\ell^{r_{\mathrm{safe}}},
+\]
+where \(\mathcal O_\ell^{r_{\mathrm{safe}}}\) is obstacle \(\ell\) expanded by safety radius \(r_{\mathrm{safe}}\).
+Plug in the current planner-style safety margin.
+\[
+r_{\mathrm{safe}}=0.40\ \mathrm{m}
+\]
+Final result.
+\[
+\boxed{
+x_t\in\mathcal X_{\mathrm{safe}}
+\text{ means the trajectory remains at least }0.40\ \mathrm{m}
+\text{ away from obstacles.}
+}
+\]
+
+\section*{Safety Indicator}
+
+For a sampled rollout \(X_i(\tau)\) of trajectory \(\tau\), define an indicator variable.
+\[
+I(X_i(\tau)) :=
+\begin{cases}
+1, & \text{if } x_t\in\mathcal X_{\mathrm{safe}},\ u_t\in\mathcal U,\ \forall t=0,\ldots,T,\\
+0, & \text{otherwise.}
+\end{cases}
+\]
+In words, \(I(X_i(\tau))=1\) means the sampled rollout of the arbitrary trajectory is safe.
+Plug in one example outcome.
+\[
+I(X_i(\tau))=1
+\quad\Rightarrow\quad
+\min_t d(x_t,\mathcal O)\ge0.40\ \mathrm{m}
+\]
+Final result.
+\[
+\boxed{I(X_i(\tau))\in[0,1]\text{ is a Bernoulli safety test.}}
+\]
+
+\section*{True Safety Probability}
+
+The true probability that trajectory \(\tau\) is safe is
+\[
+\mu_\tau := \mathbb P[I(X_i(\tau))=1].
+\]
+This probability is taken over sampled uncertainty such as obstacle noise, tracking error, perception error, wind disturbance, or initial-state perturbation.
+Plug in the interpretation.
+\[
+\mu_\tau
+=
+\mathbb P[
+\tau \text{ remains collision-free and constraint-satisfying}
+]
+\]
+Final result.
+\[
+\boxed{\mu_\tau\text{ is the safety probability of the arbitrary trajectory.}}
+\]
+
+\section*{Empirical Safety Rate}
+
+Given \(p\) independent sampled rollouts of the same arbitrary trajectory, estimate \(\mu_\tau\) by
+\[
+\tilde\mu_\tau
+:=
+\frac{1}{p}
+\sum_{j=1}^{p}
+I(X_j(\tau)).
+\]
+Plug in an example validation batch with \(p=100\) rollouts and \(96\) safe rollouts.
+\[
+\tilde\mu_\tau
+=
+\frac{96}{100}
+=0.96
+\]
+Final result.
+\[
+\boxed{\tilde\mu_\tau=0.96}
+\]
+
+\section*{Hoeffding Inequality}
+
+Let \(I(X_j(\tau))\), \(j=1,\ldots,p\), be \(p\) iid random variables with
+\[
+0\le I(X_j(\tau))\le1.
+\]
+Hoeffding's inequality gives
+\[
+\mathbb P\left[
+\left|\tilde\mu_\tau-\mu_\tau\right|
+\ge
+\epsilon_h
+\right]
+\le
+2\exp(-2p\epsilon_h^2).
+\]
+Define the confidence level
+\[
+\delta_h:=2\exp(-2p\epsilon_h^2).
+\]
+Final result.
+\[
+\boxed{
+\mathbb P\left[
+\left|\tilde\mu_\tau-\mu_\tau\right|<\epsilon_h
+\right]
+\ge
+1-\delta_h
+}
+\]
+
+\section*{Lower Bound on Safety Probability}
+
+Rearrange Hoeffding's inequality to obtain a lower confidence bound.
+\[
+\mu_\tau
+\ge
+\tilde\mu_\tau-\epsilon_h
+\]
+with confidence at least \(1-\delta_h\).
+Solve for \(\epsilon_h\) from
+\[
+\delta_h=2\exp(-2p\epsilon_h^2).
+\]
+This gives
+\[
+\epsilon_h
+=
+\sqrt{
+\frac{\ln(2/\delta_h)}{2p}
+}.
+\]
+Final result.
+\[
+\boxed{
+\mu_\tau
+\ge
+\tilde\mu_\tau
+-
+\sqrt{
+\frac{\ln(2/\delta_h)}{2p}
+}
+}
+\]
+
+\section*{Numerical Example}
+
+Use \(p=100\) sampled rollouts and confidence parameter \(\delta_h=0.05\).
+\[
+\epsilon_h
+=
+\sqrt{
+\frac{\ln(2/0.05)}{2(100)}
+}
+\]
+\[
+\epsilon_h
+=
+\sqrt{
+\frac{\ln(40)}{200}
+}
+=
+\sqrt{
+\frac{3.688879}{200}
+}
+=0.135812
+\]
+Using \(\tilde\mu_\tau=0.96\), the safety probability lower bound is
+\[
+\mu_\tau
+\ge
+0.96-0.135812
+=0.824188.
+\]
+Final result.
+\[
+\boxed{
+\mu_\tau\ge0.824188
+\text{ with confidence at least }0.95.
+}
+\]
+
+\section*{Acceptance Rule}
+
+Choose a required safety probability \(\mu_{\mathrm{crit}}\).
+Accept the arbitrary trajectory if
+\[
+\mu_{\mathrm{crit}}
+\le
+\tilde\mu_\tau-\epsilon_h.
+\]
+Plug in \(\mu_{\mathrm{crit}}=0.80\).
+\[
+0.80
+\le
+0.96-0.135812
+=0.824188
+\]
+Final result.
+\[
+\boxed{\tau\text{ is accepted as statistically safe.}}
+\]
+
+\section*{Required Number of Rollouts}
+
+If the desired empirical gap is \(\epsilon_h\), solve Hoeffding's inequality for \(p\).
+\[
+\delta_h=2\exp(-2p\epsilon_h^2)
+\]
+\[
+p
+\ge
+\frac{\ln(2/\delta_h)}{2\epsilon_h^2}.
+\]
+Plug in \(\delta_h=0.05\) and \(\epsilon_h=0.05\).
+\[
+p
+\ge
+\frac{\ln(40)}{2(0.05)^2}
+=
+\frac{3.688879}{0.005}
+=737.7758
+\]
+Final result.
+\[
+\boxed{p\ge738\text{ sampled rollouts are required.}}
+\]
+
+\section*{Trajectory-Level Safety Score}
+
+For ranking many candidate trajectories, define the lower confidence bound score
+\[
+J_{\mathrm{safe}}(\tau)
+:=
+\tilde\mu_\tau
+-
+\sqrt{
+\frac{\ln(2/\delta_h)}{2p}
+}.
+\]
+The selected trajectory is
+\[
+\tau^\star
+=
+\arg\max_{\tau\in\mathcal T_{\mathrm{cand}}}
+J_{\mathrm{safe}}(\tau)
+\]
+subject to
+\[
+J_{\mathrm{safe}}(\tau)\ge\mu_{\mathrm{crit}}.
+\]
+Final result.
+\[
+\boxed{
+\text{Choose the trajectory with the largest certified lower bound on safety.}
+}
+\]
+
+\section*{Closed-Loop Control Integration Ideas}
+
+\subsection*{Idea 1: Safety Filter Before Execution}
+
+Generate candidate trajectories and validate each trajectory with the Hoeffding lower bound.
+\[
+J_{\mathrm{safe}}(\tau)
+\ge
+\mu_{\mathrm{crit}}
+\]
+Only trajectories satisfying the bound are sent to the controller.
+Final result.
+\[
+\boxed{
+\text{Unsafe or statistically uncertain trajectories are rejected before flight.}
+}
+\]
+
+\subsection*{Idea 2: Receding-Horizon Revalidation}
+
+At each control update, validate the next short-horizon trajectory segment.
+\[
+\tau_{t:t+H}
+=
+\{x_t,u_t,\ldots,x_{t+H},u_{t+H}\}.
+\]
+Accept the segment if
+\[
+J_{\mathrm{safe}}(\tau_{t:t+H})\ge\mu_{\mathrm{crit}}.
+\]
+Final result.
+\[
+\boxed{
+\text{The safety probability is refreshed online as perception and state estimates change.}
+}
+\]
+
+\subsection*{Idea 3: Backup Controller Trigger}
+
+If the lower bound drops below the safety threshold, switch to a verified backup controller.
+\[
+J_{\mathrm{safe}}(\tau)<\mu_{\mathrm{crit}}
+\quad\Rightarrow\quad
+u=u_{\mathrm{backup}}(x).
+\]
+The backup controller can hover, brake, land, or track a locally safe waypoint.
+Final result.
+\[
+\boxed{
+\text{Closed-loop control uses the probability bound as a runtime safety trigger.}
+}
+\]
+
+\subsection*{Idea 4: Risk-Aware Cost for MPC}
+
+Include the lower-bound safety score in the MPC objective.
+\[
+\min_{\tau}
+\sum_{t=0}^{H}
+\ell(x_t,u_t)
+\lambda_{\mathrm{risk}}
+\left[
+1-J_{\mathrm{safe}}(\tau)
+\right]
+\]
+subject to
+\[
+J_{\mathrm{safe}}(\tau)\ge\mu_{\mathrm{crit}}.
+\]
+Final result.
+\[
+\boxed{
+\text{The controller prefers trajectories with higher certified safety probability.}
+}
+\]
+
+\section*{Summary}
+
+The proposed method turns arbitrary trajectory safety into a Bernoulli validation problem.
+For each candidate trajectory, sampled rollouts produce an empirical safety rate \(\tilde\mu_\tau\).
+Hoeffding's inequality converts this empirical rate into a lower confidence bound:
+\[
+\boxed{
+\mu_\tau
+\ge
+\tilde\mu_\tau
+-
+\sqrt{
+\frac{\ln(2/\delta_h)}{2p}
+}
+}
+\]
+This bound can be used as a trajectory verifier, a planner ranking score, a receding-horizon safety check, or a trigger for a backup controller.
+
+\end{document}

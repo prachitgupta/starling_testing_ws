@@ -14,10 +14,9 @@ hold rather than linearly interpolated.
 
 ## File roles
 
-- `scripts/dataset_generator.py` is the public data-generation CLI. Its original
-  mode still creates RRT instruction-tuning data. With `--prediction-pairs`, it
-  creates calibration source data instead.
-- `scripts/conformal_rrt_dataset.py` implements prediction-pair collection. It
+- `scripts/conformal_rrt_dataset.py` is the data-generation CLI. By default it
+  creates calibration source data; `--rrt-training` instead creates the original
+  RRT instruction-tuning data without contacting vLLM. For calibration data it
   samples environments, calls RRT and vLLM, runs the existing refinement and
   verifier, and writes only the raw/verified waypoint pairs and metadata. It does
   not generate trajectories, scores, quantiles, or acceptance columns.
@@ -32,7 +31,7 @@ hold rather than linearly interpolated.
   evaluates an arbitrary sample, and plots the direct position tube, exact 2D
   projection, and legacy 4D state radius.
 
-This separation makes vLLM collection resumable and reusable: changing the QP,
+This separation makes stored vLLM predictions reusable: changing the QP,
 score, confidence level, or plotting does not require new LLM predictions.
 
 ## Build
@@ -68,8 +67,7 @@ Inside tmux, run the three stages sequentially:
 cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
 source /opt/ros/humble/setup.bash
 
-/usr/bin/python3 fine_tuning/scripts/dataset_generator.py \
-  --prediction-pairs \
+/usr/bin/python3 fine_tuning/scripts/conformal_rrt_dataset.py \
   --samples 5000 \
   --output fine_tuning/datasets/conformal_rrt_prediction_pairs_5000.csv \
   2>&1 | tee /tmp/qp5000_predictions.log

@@ -19,15 +19,17 @@ from position_score import closed_loop_trace, position_scores
 from rrt import plan_rrt
 
 from conformal_rrt_dataset import (
+    DEFAULT_CLEARANCE_M,
     DEFAULT_LLAMA_MODEL_NAME,
+    DEFAULT_WORKSPACE,
     DEFAULT_VLLM_BASE_URL,
+    load_prompt_generator,
     make_refiner,
     make_verifier,
     prompt_from_current_generator,
     refine_and_verify,
     request_llama_waypoints,
 )
-from dataset_generator import DEFAULT_CLEARANCE_M, DEFAULT_WORKSPACE, load_prompt_generator
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent

@@ -184,13 +184,14 @@ Generate a dataset:
 
 ```bash
 cd ~/Desktop/starling_testing_ws/src
-python3 llm_vision_planner/fine_tuning/scripts/dataset_generator.py \
+python3 llm_vision_planner/fine_tuning/scripts/conformal_rrt_dataset.py \
+  --rrt-training \
   --samples 1000 \
   --random-goal \
   --seed 7
 ```
 
-Dataset generator args:
+RRT training-data generator args:
 
 - `--samples`: number of successful RRT-labeled rows to write.
 - `--seed`: random seed for repeatable environments and RRT paths.
@@ -200,7 +201,7 @@ Dataset generator args:
 Quick smoke test:
 
 ```bash
-python3 llm_vision_planner/fine_tuning/scripts/dataset_generator.py --samples 20 --seed 7
+python3 llm_vision_planner/fine_tuning/scripts/conformal_rrt_dataset.py --rrt-training --samples 20 --seed 7
 ```
 
 Install GPU training dependencies in a separate Python environment:

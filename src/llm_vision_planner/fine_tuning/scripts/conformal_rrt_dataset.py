@@ -3,27 +3,27 @@ import argparse
 import csv
 import importlib.util
 import json
+import math
 import random
 import sys
 from pathlib import Path
 from typing import List
 
-from dataset_generator import (
-    DEFAULT_CLEARANCE_M,
-    DEFAULT_DATASET_DIR,
-    DEFAULT_WORKSPACE,
-    load_prompt_generator,
-    prompt_from_current_generator,
-    sample_environment,
-)
 from pydantic import BaseModel, Field
-from rrt import plan_rrt
+from rrt import plan_rrt, point_clear, segment_clear
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+FINE_TUNING_DIR = SCRIPT_DIR.parent
+PACKAGE_DIR = FINE_TUNING_DIR.parent
+PROMPT_GENERATOR_PATH = PACKAGE_DIR / "scripts" / "prompt_generator.py"
+DEFAULT_DATASET_DIR = FINE_TUNING_DIR / "datasets"
+DEFAULT_WORKSPACE = {"x": [0.0, 4.0], "y": [0.0, 4.0], "z": -0.25}
+DEFAULT_GOAL = {"x": 2.5, "y": 0.0, "z": -0.25}
+DEFAULT_CLEARANCE_M = 0.40
 DEFAULT_OUTPUT = DEFAULT_DATASET_DIR / "conformal_rrt_calibration_dataset_2001.csv"
 DEFAULT_VLLM_BASE_URL = "http://172.22.224.93:8000/v1"
 DEFAULT_LLAMA_MODEL_NAME = "rrt_planner"
-PACKAGE_DIR = Path(__file__).resolve().parents[2]
 REFINEMENT_PATH = PACKAGE_DIR / "scripts" / "refinment.py"
 VERIFIER_PATH = PACKAGE_DIR / "scripts" / "verifier.py"
 SOURCE_FIELDNAMES = [
@@ -42,6 +42,163 @@ SOURCE_FIELDNAMES = [
     "vllm_base_url",
     "prompt",
 ]
+
+
+def load_prompt_generator():
+    spec = importlib.util.spec_from_file_location("offline_prompt_generator", PROMPT_GENERATOR_PATH)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def prompt_from_current_generator(prompt_module, start, goal, workspace, obstacles):
+    formatter = object.__new__(prompt_module.PromptGenerator)
+    formatter.workspace_x = tuple(workspace["x"])
+    formatter.workspace_y = tuple(workspace["y"])
+    formatter.fixed_z = float(workspace["z"])
+    formatter.clearance_m = DEFAULT_CLEARANCE_M
+    obstacle_lines = []
+    for index, obstacle in enumerate(obstacles, start=1):
+        min_corner = obstacle["min_corner"]
+        max_corner = obstacle["max_corner"]
+        obstacle_lines.append(
+            f"{index} obstacle: x=[{min_corner[0]:.2f},{max_corner[0]:.2f}], "
+            f"y=[{min_corner[1]:.2f},{max_corner[1]:.2f}]."
+        )
+    obstacle_text = " ".join(obstacle_lines) if obstacle_lines else "No obstacles currently detected."
+    distance = math.hypot(goal["x"] - start["x"], goal["y"] - start["y"])
+    nl_env = (
+        "Mission state: the UAV has already taken off and is holding hover at the start position. "
+        "Use this hover position as the first waypoint/reference for planning. "
+        f"Workspace: x=[{workspace['x'][0]:.2f},{workspace['x'][1]:.2f}]m, "
+        f"y=[{workspace['y'][0]:.2f},{workspace['y'][1]:.2f}]m, z={workspace['z']:.2f} fixed. "
+        f"Start: ({start['x']:.2f},{start['y']:.2f},{workspace['z']:.2f}), "
+        f"Goal: ({goal['x']:.2f},{goal['y']:.2f},{goal['z']:.2f}), "
+        f"distance≈{distance:.2f}m. Obstacles with x-y spans: {obstacle_text}"
+    )
+    prompt = "\n".join([prompt_module.INSTRUCTIONS, nl_env, prompt_module.PromptGenerator.constraints(formatter)])
+    return prompt, nl_env
+
+
+def obstacle_template(index, min_x, min_y, width, depth, fixed_z):
+    return {
+        "id": index,
+        "label": f"box_{index}",
+        "shape": "box",
+        "min_corner": [round(min_x, 2), round(min_y, 2), round(fixed_z - 0.5, 2)],
+        "max_corner": [round(min_x + width, 2), round(min_y + depth, 2), round(fixed_z + 0.5, 2)],
+        "size": [round(width, 2), round(depth, 2), 1.0],
+    }
+
+
+def random_point(workspace):
+    return {
+        "x": round(random.uniform(float(workspace["x"][0]), float(workspace["x"][1])), 2),
+        "y": round(random.uniform(float(workspace["y"][0]), float(workspace["y"][1])), 2),
+        "z": float(workspace["z"]),
+    }
+
+
+def sample_obstacles(workspace, start, goal, count, clearance_m):
+    obstacles = []
+    fixed_z = float(workspace["z"])
+    for index in range(1, count + 1):
+        for _ in range(100):
+            width = random.uniform(0.25, 0.75)
+            depth = random.uniform(0.25, 0.75)
+            min_x = random.uniform(float(workspace["x"][0]), float(workspace["x"][1]) - width)
+            min_y = random.uniform(float(workspace["y"][0]), float(workspace["y"][1]) - depth)
+            obstacle = obstacle_template(index, min_x, min_y, width, depth, fixed_z)
+            candidate = obstacles + [obstacle]
+            if point_clear(start, candidate, workspace, clearance_m) and point_clear(goal, candidate, workspace, clearance_m):
+                obstacles.append(obstacle)
+                break
+    return obstacles
+
+
+def sample_environment(workspace, fixed_goal, clearance_m):
+    for _ in range(200):
+        start = random_point(workspace)
+        goal = dict(fixed_goal) if fixed_goal else random_point(workspace)
+        obstacle_count = random.randint(0, 4)
+        obstacles = sample_obstacles(workspace, start, goal, obstacle_count, clearance_m)
+        if math.hypot(goal["x"] - start["x"], goal["y"] - start["y"]) < 1.0:
+            continue
+        if segment_clear(start, goal, obstacles, workspace, clearance_m):
+            return start, goal, obstacles
+        return start, goal, obstacles
+    raise RuntimeError("Failed to sample a usable environment.")
+
+
+def completion_from_path(path):
+    return {
+        "reasoning": "RRT expert route selected to avoid inflated obstacle boxes while progressing to the goal.",
+        "waypoints": path,
+    }
+
+
+def write_rows(rows, output_csv):
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    tmp_output = output_csv.with_suffix(output_csv.suffix + ".tmp")
+    with tmp_output.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+    tmp_output.replace(output_csv)
+
+
+def generate_training_dataset(samples, output_csv, seed, use_fixed_goal):
+    random.seed(seed)
+    prompt_module = load_prompt_generator()
+    workspace = dict(DEFAULT_WORKSPACE)
+    fixed_goal = DEFAULT_GOAL if use_fixed_goal else None
+    rows = []
+    attempts = 0
+
+    while len(rows) < samples and attempts < samples * 25:
+        attempts += 1
+        start, goal, obstacles = sample_environment(workspace, fixed_goal, DEFAULT_CLEARANCE_M)
+        try:
+            path = plan_rrt(
+                start,
+                goal,
+                obstacles,
+                workspace=workspace,
+                clearance_m=DEFAULT_CLEARANCE_M,
+                seed=seed + attempts,
+            )
+        except (RuntimeError, ValueError):
+            continue
+
+        prompt, nl_env = prompt_from_current_generator(prompt_module, start, goal, workspace, obstacles)
+        completion = completion_from_path(path)
+        rows.append(
+            {
+                "sample_id": len(rows),
+                "prompt": prompt,
+                "completion": json.dumps(completion, separators=(",", ":")),
+                "messages": json.dumps(
+                    [
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": json.dumps(completion, separators=(",", ":"))},
+                    ],
+                    separators=(",", ":"),
+                ),
+                "nl_env": nl_env,
+                "start": json.dumps(start, separators=(",", ":")),
+                "goal": json.dumps(goal, separators=(",", ":")),
+                "workspace": json.dumps(workspace, separators=(",", ":")),
+                "obstacles": json.dumps(obstacles, separators=(",", ":")),
+                "waypoints": json.dumps(path, separators=(",", ":")),
+            }
+        )
+        write_rows(rows, output_csv)
+
+    if len(rows) < samples:
+        raise RuntimeError(f"Generated {len(rows)} samples after {attempts} attempts; requested {samples}.")
+
+    return output_csv
 
 
 class Waypoint(BaseModel):
@@ -228,11 +385,13 @@ def build_dataset(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate verified RRT/Llama prediction pairs without trajectories or conformal scores."
+        description="Generate verified RRT/Llama prediction pairs or RRT instruction-training data."
     )
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--samples", type=int, default=2001)
-    parser.add_argument("--seed", type=int, default=20260618)
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--samples", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--rrt-training", action="store_true", help="Generate RRT instruction-training data without contacting vLLM.")
+    parser.add_argument("--random-goal", action="store_true", help="Sample random goals in RRT training mode.")
     parser.add_argument("--llama-model-name", default=DEFAULT_LLAMA_MODEL_NAME)
     parser.add_argument("--vllm-base-url", default=DEFAULT_VLLM_BASE_URL)
     parser.add_argument("--vllm-api-key", default="EMPTY")
@@ -240,8 +399,18 @@ def main():
     parser.add_argument("--llm-retries", type=int, default=2)
     args = parser.parse_args()
 
-    output = build_dataset(args)
-    print(f"Wrote verified RRT/Llama prediction pairs to {output}")
+    if args.rrt_training:
+        args.samples = args.samples or 100
+        args.seed = args.seed if args.seed is not None else 7
+        args.output = args.output or (DEFAULT_DATASET_DIR / "rrt_expert_dataset.csv")
+        output = generate_training_dataset(args.samples, args.output, args.seed, use_fixed_goal=not args.random_goal)
+        print(f"Wrote RRT instruction-training data to {output}")
+    else:
+        args.samples = args.samples or 2001
+        args.seed = args.seed if args.seed is not None else 20260618
+        args.output = args.output or DEFAULT_OUTPUT
+        output = build_dataset(args)
+        print(f"Wrote verified RRT/Llama prediction pairs to {output}")
 
 
 if __name__ == "__main__":

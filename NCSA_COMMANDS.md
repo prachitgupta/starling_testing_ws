@@ -77,7 +77,7 @@ Update an existing clone.
 
 ```bash
 cd ~/Desktop/starling_testing_ws/src
-python3 llm_vision_planner/fine_tuning/scripts/dataset_generator.py --samples 20000 --random-goal --seed 7
+python3 llm_vision_planner/fine_tuning/scripts/conformal_rrt_dataset.py --rrt-training --samples 20000 --random-goal --seed 7
 ```
 Generate the RRT expert dataset locally.
 

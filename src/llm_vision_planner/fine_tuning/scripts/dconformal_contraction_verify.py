@@ -34,10 +34,11 @@ from conformal_rrt_dataset import (
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATASET_DIR = SCRIPT_DIR.parent / "datasets"
-PLOTS_DIR = SCRIPT_DIR.parent / "plots"
+PLOTS_DIR = SCRIPT_DIR.parent / "plots" / "contraction"
+RESULTS_DIR = SCRIPT_DIR.parent / "results" / "contraction"
 DEFAULT_CALIBRATION_CSV = DATASET_DIR / "calibration_min_control_qp_position_score_2000.csv"
-DEFAULT_OUTPUT_PNG = PLOTS_DIR / "dconformal_qp_position_verification.png"
-DEFAULT_REPORT_JSON = PLOTS_DIR / "dconformal_qp_position_verification.json"
+DEFAULT_OUTPUT_PNG = PLOTS_DIR / "offline_certificate.png"
+DEFAULT_REPORT_JSON = RESULTS_DIR / "offline_certificate.json"
 DEFAULT_CONTROL_LAW_TOPIC = "/llm_vision/dconformal_control_law"
 DEFAULT_POSE_TOPIC = "/fmu/out/vehicle_odometry"
 

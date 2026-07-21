@@ -48,7 +48,7 @@ class ContractionVisualizer(Node):
         super().__init__("verify_contraction")
         self.declare_parameter("verified_plan_topic", "/llm_vision/plan_verified")
         self.declare_parameter("pose_topic", "/fmu/out/vehicle_odometry")
-        self.declare_parameter("output_png", "/tmp/llm_vision_contraction.png")
+        self.declare_parameter("output_png", "src/llm_vision_planner/plots/contraction/live_contraction.png")
         self.declare_parameter("show_window", True)
         self.declare_parameter("plot_period_s", 0.2)
         self.declare_parameter("pose_trail_limit", 1000)

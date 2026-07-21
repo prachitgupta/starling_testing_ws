@@ -129,10 +129,10 @@ planner_visualizer:
     obstacle_topic: /llm_vision/obstacles
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
     pose_topic: /fmu/out/vehicle_odometry
-    output_png: /tmp/llm_vision_plot.png
+    output_png: src/llm_vision_planner/plots/planner/live_planner.png
     show_window: true
     save_static_plots: true
-    static_plot_dir: src/llm_vision_planner/plots
+    static_plot_dir: src/llm_vision_planner/plots/planner/snapshots
     static_plot_dpi: 180
     static_plot_prefix: simulated_test
     fixed_z: -0.25
@@ -149,7 +149,7 @@ verify_contraction:
   ros__parameters:
     verified_plan_topic: /llm_vision/plan_verified
     pose_topic: /fmu/out/vehicle_odometry
-    output_png: /tmp/llm_vision_contraction.png
+    output_png: src/llm_vision_planner/plots/contraction/live_contraction.png
     show_window: true
     plot_period_s: 0.2
     pose_trail_limit: 1000

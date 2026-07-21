@@ -19,7 +19,7 @@ VERIFIED_PLAN_TOPIC = "/llm_vision/plan_verified"
 OBSTACLE_TOPIC = "/llm_vision/obstacles"
 SEMANTIC_OBSTACLE_TOPIC = "/llm_vision/semantic_obstacles"
 POSE_TOPIC = "/fmu/out/vehicle_odometry"
-DEFAULT_OUTPUT_PNG = "/tmp/llm_vision_plot.png"
+DEFAULT_OUTPUT_PNG = "src/llm_vision_planner/plots/planner/live_planner.png"
 DEFAULT_Z = -0.25
 DEFAULT_RRT_CLEARANCE_M = 0.40
 
@@ -71,7 +71,7 @@ class PlannerVisualizer(Node):
         self.declare_parameter("output_png", DEFAULT_OUTPUT_PNG)
         self.declare_parameter("show_window", True)
         self.declare_parameter("save_static_plots", True)
-        self.declare_parameter("static_plot_dir", "src/llm_vision_planner/plots")
+        self.declare_parameter("static_plot_dir", "src/llm_vision_planner/plots/planner/snapshots")
         self.declare_parameter("static_plot_dpi", 180)
         self.declare_parameter("static_plot_prefix", "simulated_test")
         self.declare_parameter("fixed_z", DEFAULT_Z)

@@ -32,6 +32,6 @@ source /opt/ros/humble/setup.bash
 python3 fine_tuning/scripts/dconformal_contraction_verify.py \
   --calibration-csv fine_tuning/datasets/calibration_min_control_qp_position_score_2000.csv \
   --calibration-samples 2000 --sample-id 998 \
-  --output-png /tmp/qp_position_verify.png \
-  --report-json /tmp/qp_position_verify.json
+  --output-png fine_tuning/plots/contraction/qp_position_verify.png \
+  --report-json fine_tuning/results/contraction/qp_position_verify.json
 ```

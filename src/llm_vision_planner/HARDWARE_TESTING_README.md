@@ -145,6 +145,8 @@ ros2 launch llm_vision_planner full_plot.launch.py mode:=semantic
 `control_law_executer.py` is launched automatically and is the sole PX4 offboard
 owner. Do not also run `mission_takeoff.py`, `trajectory_follower.py`, or
 `trajectory_follower_continuous.py`.
+Their obsolete parameter sections are intentionally absent from the unified-launch
+configuration file.
 
 For the live contraction plot instead of the standard planner plot, launch:
 

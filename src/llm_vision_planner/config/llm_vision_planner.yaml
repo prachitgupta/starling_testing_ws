@@ -145,6 +145,22 @@ planner_visualizer:
     rrt_seed: 7
     debug: False
 
+verify_contraction:
+  ros__parameters:
+    verified_plan_topic: /llm_vision/plan_verified
+    pose_topic: /fmu/out/vehicle_odometry
+    output_png: /tmp/llm_vision_contraction.png
+    show_window: true
+    plot_period_s: 0.2
+    pose_trail_limit: 1000
+    trajectory_dt: 0.1
+    q_p: 0.241187
+    delta_p: 0.10
+    projected_position_radius_m: 0.602299
+    state_radius_4d: 1.481553
+    drone_radius_m: 0.10
+    debug: false
+
 llm_vision_mission_takeoff:
   ros__parameters:
     mission_state_topic: /llm_vision/mission_state

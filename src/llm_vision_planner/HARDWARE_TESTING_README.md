@@ -134,7 +134,7 @@ voxl-inspect-cam tflite
 
 Offboard setup note: disable the default Figure 8 sequence before running this mission by setting `offboard` from `figure8` to `off` IN vi /etc/modalai/voxl-vision-hub.conf
 
-Start the planner:
+Start the unified planner and offboard controller:
 
 ```bash
 cd ~/Desktop/starling_testing_ws
@@ -142,23 +142,34 @@ source install/setup.bash
 ros2 launch llm_vision_planner full_plot.launch.py mode:=semantic
 ```
 
-Start the offboard follower:
+`control_law_executer.py` is launched automatically and is the sole PX4 offboard
+owner. Do not also run `mission_takeoff.py`, `trajectory_follower.py`, or
+`trajectory_follower_continuous.py`.
+
+For the live contraction plot instead of the standard planner plot, launch:
 
 ```bash
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
-ros2 run llm_vision_planner trajectory_follower.py --ros-args \
-  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
+ros2 launch llm_vision_planner full_plot.launch.py \
+  mode:=semantic visualizer:=contraction
 ```
 
 Mission sequence:
 
-1. Follower primes PX4 Offboard setpoints.
-2. Vehicle arms and climbs to `takeoff_z`.
-3. Follower publishes `/llm_vision/mission_state` as `HOLDING_FOR_PLAN`.
+1. Control executor waits for PX4 odometry/status, then primes Offboard setpoints.
+2. Control executor arms the vehicle and climbs to `takeoff_z`.
+3. Control executor publishes `/llm_vision/mission_state` as `HOLDING_FOR_PLAN`.
 4. Prompt generator latches the hover pose and current obstacle snapshot.
 5. Failed verification results are appended to the next prompt.
-6. First `passed=true` trajectory is latched and tracked with Bezier position/velocity setpoints.
-7. Vehicle lands if `land_after_mission: true`.
+6. The first `passed=true` trajectory is converted to a minimum-control QP reference.
+7. The executor tracks `u = u_reference - K(x - x_reference)`, holds the goal, and requests PX4 auto-land.
+
+The contraction visualizer latches the same passed plan, reconstructs its QP
+reference, and subscribes directly to `/fmu/out/vehicle_odometry`. It shows the
+live vehicle as a disk, retains its measured trajectory, and overlays the 90%
+cross-track tube and projected 2D state radius. It does not propagate a simulated
+"true" state. Quantiles and radii are configured under `verify_contraction` in
+`config/llm_vision_planner.yaml`.
 
 Abort with the RC kill switch or a PX4/QGroundControl mode change.

@@ -41,6 +41,7 @@ PLAN_QOS = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1,
 )
+PLOT_WORKSPACE = {"x": [0.0, 4.0], "y": [0.0, 4.0]}
 
 
 class ContractionVisualizer(Node):
@@ -187,6 +188,7 @@ class ContractionVisualizer(Node):
         axis.set_ylabel("y [m] (PX4 local NED)")
         axis.set_title("Live PX4 contraction verification")
         axis.grid(True, color="#94a3b8", alpha=0.30)
+        self.configure_workspace(axis, PLOT_WORKSPACE)
 
         if self.plan is not None:
             self.draw_obstacles(axis, self.plan.get("obstacles", []))
@@ -202,9 +204,6 @@ class ContractionVisualizer(Node):
             goal = self.reference_xy[-1]
             axis.scatter(*start, color="#0ea5e9", marker="s", s=70, label="verified start")
             axis.scatter(*goal, color="#ef4444", marker="*", s=130, label="verified goal")
-            self.configure_workspace(axis, self.plan.get("workspace", {}))
-        else:
-            self.configure_live_view(axis)
 
         if self.pose_trail:
             xs = [point[0] for point in self.pose_trail]
@@ -258,26 +257,6 @@ class ContractionVisualizer(Node):
         y_limits = workspace.get("y", [0.0, 4.0])
         axis.set_xlim(float(x_limits[0]) - 0.25, float(x_limits[1]) + 0.25)
         axis.set_ylim(float(y_limits[0]) - 0.25, float(y_limits[1]) + 0.25)
-
-    def configure_live_view(self, axis):
-        if self.pose_trail:
-            center_x, center_y = self.pose_trail[-1]
-            half_span = 2.0
-            axis.set_xlim(center_x - half_span, center_x + half_span)
-            axis.set_ylim(center_y - half_span, center_y + half_span)
-        else:
-            axis.set_xlim(-2.0, 2.0)
-            axis.set_ylim(-2.0, 2.0)
-        axis.text(
-            0.5,
-            0.98,
-            "Waiting for a passed verified plan",
-            transform=axis.transAxes,
-            ha="center",
-            va="top",
-            color="#475569",
-        )
-
 
 def main():
     rclpy.init()

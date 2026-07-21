@@ -11,6 +11,7 @@ install(PROGRAMS
   scripts/refinment.py
   scripts/verifier.py
   scripts/visualize.py
+  scripts/verify_contraction.py
   scripts/mission_takeoff.py
   scripts/trajectory_follower.py
   scripts/trajectory_follower_continuous.py

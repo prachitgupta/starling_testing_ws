@@ -130,6 +130,19 @@ source install/setup.bash
 ros2 launch llm_vision_planner full_plot.launch.py
 ```
 
+Select the live PX4 contraction plot instead of the standard planner plot with:
+
+```bash
+ros2 launch llm_vision_planner full_plot.launch.py visualizer:=contraction
+```
+
+The contraction view latches the passed verified plan, reconstructs the same QP
+reference used by the executor, and draws the calibrated cross-track quantile and
+projected 2D safety radius. Its moving vehicle and trail come directly from
+`/fmu/out/vehicle_odometry`; no simulated state is propagated. Configure its
+quantiles, radii, output path, and update period in the `verify_contraction`
+section of `config/llm_vision_planner.yaml`.
+
 `control_law_executer.py` is the sole offboard owner. It primes PX4, arms, takes off, holds until the prompt/vLLM/refinement/verifier chain returns a passed plan, generates the shared-clock minimum-control QP reference, tracks it, holds the goal, and requests PX4 auto-land. The launch does not use `mission_takeoff.py` or either trajectory follower.
 
 Monitor the pipeline with:

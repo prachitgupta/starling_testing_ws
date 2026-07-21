@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Plot a verified QP reference, conformal tube, and live PX4 odometry."""
+
+import json
+import math
+import os
+import sys
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Rectangle
+import rclpy
+from px4_msgs.msg import VehicleOdometry
+from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+from std_msgs.msg import String
+
+try:
+    from min_control_qp import generate_trajectory
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
+    from min_control_qp import generate_trajectory
+
+
+ODOM_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=10,
+)
+PLAN_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+)
+
+
+class ContractionVisualizer(Node):
+    def __init__(self):
+        super().__init__("verify_contraction")
+        self.declare_parameter("verified_plan_topic", "/llm_vision/plan_verified")
+        self.declare_parameter("pose_topic", "/fmu/out/vehicle_odometry")
+        self.declare_parameter("output_png", "/tmp/llm_vision_contraction.png")
+        self.declare_parameter("show_window", True)
+        self.declare_parameter("plot_period_s", 0.2)
+        self.declare_parameter("pose_trail_limit", 1000)
+        self.declare_parameter("trajectory_dt", 0.1)
+        self.declare_parameter("q_p", 0.241187)
+        self.declare_parameter("delta_p", 0.10)
+        self.declare_parameter("projected_position_radius_m", 0.602299)
+        self.declare_parameter("state_radius_4d", 1.481553)
+        self.declare_parameter("drone_radius_m", 0.10)
+        self.declare_parameter("debug", False)
+
+        self.output_png = str(self.get_parameter("output_png").value)
+        self.show_window = bool(self.get_parameter("show_window").value)
+        self.pose_trail_limit = int(self.get_parameter("pose_trail_limit").value)
+        self.q_p = float(self.get_parameter("q_p").value)
+        self.delta_p = float(self.get_parameter("delta_p").value)
+        self.projected_radius = float(self.get_parameter("projected_position_radius_m").value)
+        self.state_radius_4d = float(self.get_parameter("state_radius_4d").value)
+        self.drone_radius = float(self.get_parameter("drone_radius_m").value)
+
+        self.plan = None
+        self.reference_xy = []
+        self.pose_trail = []
+        self.dirty = True
+        self.figure, self.axis = plt.subplots(figsize=(8, 7))
+        if self.show_window:
+            plt.ion()
+            self.figure.show()
+
+        self.create_subscription(
+            String,
+            str(self.get_parameter("verified_plan_topic").value),
+            self.plan_callback,
+            PLAN_QOS,
+        )
+        self.create_subscription(
+            VehicleOdometry,
+            str(self.get_parameter("pose_topic").value),
+            self.pose_callback,
+            ODOM_QOS,
+        )
+        self.create_timer(float(self.get_parameter("plot_period_s").value), self.render)
+        self.get_logger().info("waiting for a passed verified plan and live PX4 odometry")
+
+    def plan_callback(self, msg):
+        if self.plan is not None:
+            return
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().error(f"invalid verified-plan JSON: {exc}")
+            return
+        if not payload.get("passed", False):
+            return
+        try:
+            trajectory = generate_trajectory(
+                payload.get("waypoints", []),
+                payload.get("workspace", {}),
+                payload.get("obstacles", []),
+                dt=float(self.get_parameter("trajectory_dt").value),
+            )
+        except (RuntimeError, ValueError) as exc:
+            self.get_logger().error(f"could not generate verified QP reference: {exc}")
+            return
+        self.plan = payload
+        self.reference_xy = [
+            (float(sample["x"][0]), float(sample["x"][1])) for sample in trajectory["samples"]
+        ]
+        self.dirty = True
+        self.get_logger().info(
+            f"latched passed plan_id={payload.get('plan_id')} with {len(self.reference_xy)} QP samples"
+        )
+
+    def pose_callback(self, msg):
+        if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
+            return
+        point = (float(msg.position[0]), float(msg.position[1]))
+        if not all(math.isfinite(value) for value in point):
+            return
+        if not self.pose_trail or math.dist(point, self.pose_trail[-1]) >= 0.002:
+            self.pose_trail.append(point)
+            self.pose_trail = self.pose_trail[-self.pose_trail_limit :]
+            self.dirty = True
+
+    def render(self):
+        if not self.dirty:
+            if self.show_window:
+                plt.pause(0.001)
+            return
+
+        axis = self.axis
+        axis.clear()
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_xlabel("x [m] (PX4 local NED)")
+        axis.set_ylabel("y [m] (PX4 local NED)")
+        axis.set_title("Live PX4 contraction verification")
+        axis.grid(True, alpha=0.25)
+
+        if self.plan is not None:
+            self.draw_obstacles(axis, self.plan.get("obstacles", []))
+            xs = [point[0] for point in self.reference_xy]
+            ys = [point[1] for point in self.reference_xy]
+            axis.plot(xs, ys, "--", color="#f97316", linewidth=2, label=r"LLM QP reference $\hat{x}_d$")
+            display_step = max(1, len(self.reference_xy) // 120)
+            for x, y in self.reference_xy[::display_step]:
+                axis.add_patch(Circle((x, y), self.q_p, color="#16a34a", alpha=0.025))
+            axis.plot([], [], color="#16a34a", alpha=0.35, linewidth=7,
+                      label=rf"cross-track conformal tube $q_p={self.q_p:.3f}$ m")
+            for x, y in self.reference_xy[:: max(1, len(self.reference_xy) // 35)]:
+                axis.add_patch(Circle((x, y), self.projected_radius, color="#2563eb", alpha=0.025))
+            axis.plot([], [], color="#2563eb", alpha=0.35, linewidth=7,
+                      label=rf"projected 2D state radius={self.projected_radius:.3f} m")
+            start = self.reference_xy[0]
+            goal = self.reference_xy[-1]
+            axis.scatter(*start, color="#0f172a", marker="s", s=60, label="verified start")
+            axis.scatter(*goal, color="#dc2626", marker="*", s=110, label="verified goal")
+            self.configure_workspace(axis, self.plan.get("workspace", {}))
+
+        if self.pose_trail:
+            xs = [point[0] for point in self.pose_trail]
+            ys = [point[1] for point in self.pose_trail]
+            axis.plot(xs, ys, color="#111827", linewidth=2.2, label="actual PX4 trajectory")
+            axis.add_patch(
+                Circle(self.pose_trail[-1], self.drone_radius, facecolor="#111827", edgecolor="white", linewidth=1.5,
+                       zorder=8, label="live drone")
+            )
+
+        axis.text(
+            0.02,
+            0.02,
+            f"coverage={100.0 * (1.0 - self.delta_p):.0f}%\n"
+            f"q_p={self.q_p:.6f} m\n"
+            f"projected 2D radius={self.projected_radius:.6f} m\n"
+            f"4D state radius={self.state_radius_4d:.6f} (mixed state units)",
+            transform=axis.transAxes,
+            bbox={"facecolor": "white", "edgecolor": "#d1d5db", "alpha": 0.9},
+        )
+        axis.legend(loc="upper right", fontsize=8)
+        self.figure.tight_layout()
+        output_dir = os.path.dirname(self.output_png)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        self.figure.savefig(self.output_png, dpi=160)
+        if self.show_window:
+            self.figure.canvas.draw_idle()
+            plt.pause(0.001)
+        self.dirty = False
+
+    @staticmethod
+    def draw_obstacles(axis, obstacles):
+        for obstacle in obstacles:
+            minimum = obstacle.get("min_corner", [0.0, 0.0, 0.0])
+            maximum = obstacle.get("max_corner", [0.0, 0.0, 0.0])
+            axis.add_patch(
+                Rectangle(
+                    (float(minimum[0]), float(minimum[1])),
+                    float(maximum[0]) - float(minimum[0]),
+                    float(maximum[1]) - float(minimum[1]),
+                    facecolor="#ef4444",
+                    edgecolor="#991b1b",
+                    alpha=0.28,
+                )
+            )
+
+    @staticmethod
+    def configure_workspace(axis, workspace):
+        x_limits = workspace.get("x", [0.0, 4.0])
+        y_limits = workspace.get("y", [0.0, 4.0])
+        axis.set_xlim(float(x_limits[0]) - 0.25, float(x_limits[1]) + 0.25)
+        axis.set_ylim(float(y_limits[0]) - 0.25, float(y_limits[1]) + 0.25)
+
+
+def main():
+    rclpy.init()
+    node = ContractionVisualizer()
+    try:
+        rclpy.spin(node)
+    finally:
+        plt.close(node.figure)
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

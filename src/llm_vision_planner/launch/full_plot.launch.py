@@ -31,6 +31,11 @@ def generate_launch_description():
         default_value="true",
         description="Overlay an RRT expert trajectory on the final verified plot",
     )
+    visualizer_arg = DeclareLaunchArgument(
+        "visualizer",
+        default_value="standard",
+        description="Live plot: standard or contraction",
+    )
     params_file = LaunchConfiguration("params_file")
 
     use_semantic = IfCondition(PythonExpression(["'", LaunchConfiguration("mode"), "' == 'semantic'"]))
@@ -100,6 +105,16 @@ def generate_launch_description():
         name="planner_visualizer",
         output="screen",
         parameters=[params_file, {"show_rrt": ParameterValue(LaunchConfiguration("show_rrt"), value_type=bool)}],
+        condition=UnlessCondition(PythonExpression(["'", LaunchConfiguration("visualizer"), "' == 'contraction'"])),
+    )
+
+    contraction_visualizer = Node(
+        package="llm_vision_planner",
+        executable="verify_contraction.py",
+        name="verify_contraction",
+        output="screen",
+        parameters=[params_file],
+        condition=IfCondition(PythonExpression(["'", LaunchConfiguration("visualizer"), "' == 'contraction'"])),
     )
 
     return LaunchDescription(
@@ -108,6 +123,7 @@ def generate_launch_description():
             params_file_arg,
             llm_provider_arg,
             show_rrt_arg,
+            visualizer_arg,
             semantic_perception,
             normal_perception,
             llm_planner,
@@ -116,5 +132,6 @@ def generate_launch_description():
             verifier,
             control_executor,
             visualizer,
+            contraction_visualizer,
         ]
     )

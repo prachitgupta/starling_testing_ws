@@ -15,7 +15,6 @@ from px4_msgs.msg import (
     VehicleCommand,
     VehicleLandDetected,
     VehicleOdometry,
-    VehicleStatus,
 )
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -33,7 +32,6 @@ PLAN_TOPIC = "/llm_vision/plan_verified"
 MISSION_STATE_TOPIC = "/llm_vision/mission_state"
 OWNER_TOPIC = "/llm_vision/offboard_owner"
 POSE_TOPIC = "/fmu/out/vehicle_odometry"
-STATUS_TOPIC = "/fmu/out/vehicle_status"
 LAND_DETECTED_TOPIC = "/fmu/out/vehicle_land_detected"
 FEEDBACK_K = np.array(
     [
@@ -69,11 +67,9 @@ class ControlLawExecuter(Node):
         self.declare_parameter("mission_state_topic", MISSION_STATE_TOPIC)
         self.declare_parameter("offboard_owner_topic", OWNER_TOPIC)
         self.declare_parameter("pose_topic", POSE_TOPIC)
-        self.declare_parameter("vehicle_status_topic", STATUS_TOPIC)
         self.declare_parameter("land_detected_topic", LAND_DETECTED_TOPIC)
         self.declare_parameter("publish_hz", 20.0)
         self.declare_parameter("pose_timeout_s", 1.0)
-        self.declare_parameter("status_timeout_s", 2.0)
         self.declare_parameter("prime_s", 1.5)
         self.declare_parameter("takeoff_z", -0.25)
         self.declare_parameter("takeoff_accept_m", 0.08)
@@ -91,7 +87,6 @@ class ControlLawExecuter(Node):
         self.mission_state_topic = str(self.get_parameter("mission_state_topic").value)
         self.owner_topic = str(self.get_parameter("offboard_owner_topic").value)
         self.pose_topic = str(self.get_parameter("pose_topic").value)
-        self.status_topic = str(self.get_parameter("vehicle_status_topic").value)
         self.land_detected_topic = str(self.get_parameter("land_detected_topic").value)
 
         self.offboard_pub = self.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
@@ -100,7 +95,6 @@ class ControlLawExecuter(Node):
         self.mission_state_pub = self.create_publisher(String, self.mission_state_topic, 10)
         self.owner_pub = self.create_publisher(String, self.owner_topic, LATCHED_QOS)
         self.odom_sub = self.create_subscription(VehicleOdometry, self.pose_topic, self.odom_callback, ODOM_QOS)
-        self.status_sub = self.create_subscription(VehicleStatus, self.status_topic, self.status_callback, ODOM_QOS)
         self.land_sub = self.create_subscription(
             VehicleLandDetected,
             self.land_detected_topic,
@@ -113,8 +107,6 @@ class ControlLawExecuter(Node):
         self.velocity = None
         self.yaw = math.nan
         self.last_odom_s = 0.0
-        self.vehicle_status = None
-        self.last_status_s = 0.0
         self.landed = None
         self.ground_z = None
         self.takeoff_target = None
@@ -143,10 +135,6 @@ class ControlLawExecuter(Node):
         self.velocity = [float(value) for value in msg.velocity]
         self.yaw = self.quat_to_yaw(float(msg.q[1]), float(msg.q[2]), float(msg.q[3]), float(msg.q[0]))
         self.last_odom_s = time.monotonic()
-
-    def status_callback(self, msg):
-        self.vehicle_status = msg
-        self.last_status_s = time.monotonic()
 
     def land_callback(self, msg):
         self.landed = bool(msg.landed)
@@ -206,7 +194,7 @@ class ControlLawExecuter(Node):
     def tick(self):
         now = time.monotonic()
         if self.state == "WAIT_ODOMETRY":
-            if self.odom_fresh(now) and self.status_fresh(now):
+            if self.odom_fresh(now):
                 self.ground_z = self.position[2]
                 self.takeoff_target = [
                     self.position[0],
@@ -221,10 +209,6 @@ class ControlLawExecuter(Node):
         if self.state not in ("COMPLETE", "FAILED", "LAND"):
             if not self.odom_fresh(now):
                 self.fail_or_land("odometry timeout")
-            elif not self.status_fresh(now):
-                self.fail_or_land("vehicle-status timeout")
-            elif self.vehicle_status is not None and bool(self.vehicle_status.failsafe):
-                self.fail_or_land("PX4 entered failsafe")
 
         if self.state == "PRIME_OFFBOARD":
             self.set_hold(self.takeoff_target)
@@ -234,10 +218,10 @@ class ControlLawExecuter(Node):
 
         elif self.state == "ARM_TAKEOFF":
             self.set_hold(self.takeoff_target)
-            if self.armed_and_offboard():
+            if self.elapsed(now) >= float(self.get_parameter("command_retry_s").value):
                 self.transition("TAKEOFF")
             elif self.elapsed(now) >= float(self.get_parameter("transition_timeout_s").value):
-                self.fail_or_land("arming/offboard confirmation timeout")
+                self.fail_or_land("arming/offboard command timeout")
             else:
                 self.request_offboard_and_arm(now)
 
@@ -285,10 +269,9 @@ class ControlLawExecuter(Node):
 
         elif self.state == "LAND":
             if self.landed is True:
-                if self.is_armed():
-                    self.request_disarm(now)
-                else:
-                    self.transition("COMPLETE")
+                self.last_command_s = -math.inf
+                self.request_disarm(now)
+                self.transition("COMPLETE")
             else:
                 self.request_land(now)
 
@@ -348,22 +331,7 @@ class ControlLawExecuter(Node):
             self.transition("FAILED")
             self.get_logger().error(reason)
 
-    def armed_and_offboard(self):
-        return bool(
-            self.vehicle_status is not None
-            and self.vehicle_status.arming_state == VehicleStatus.ARMING_STATE_ARMED
-            and self.vehicle_status.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD
-        )
-
-    def is_armed(self):
-        return bool(
-            self.vehicle_status is not None
-            and self.vehicle_status.arming_state == VehicleStatus.ARMING_STATE_ARMED
-        )
-
     def airborne(self):
-        if self.is_armed() and not self.landed:
-            return True
         return bool(
             self.position is not None
             and self.ground_z is not None
@@ -373,12 +341,6 @@ class ControlLawExecuter(Node):
     def odom_fresh(self, now=None):
         now = time.monotonic() if now is None else now
         return self.position is not None and now - self.last_odom_s <= float(self.get_parameter("pose_timeout_s").value)
-
-    def status_fresh(self, now=None):
-        now = time.monotonic() if now is None else now
-        return self.vehicle_status is not None and now - self.last_status_s <= float(
-            self.get_parameter("status_timeout_s").value
-        )
 
     def set_hold(self, position):
         self.last_setpoint_position = [float(value) for value in position]

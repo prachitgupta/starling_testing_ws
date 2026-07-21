@@ -159,7 +159,7 @@ ros2 launch llm_vision_planner full_plot.launch.py \
 
 Mission sequence:
 
-1. Control executor waits for PX4 odometry/status, then primes Offboard setpoints.
+1. Control executor waits for fresh PX4 local-NED odometry, then primes Offboard setpoints.
 2. Control executor arms the vehicle and climbs to `takeoff_z`.
 3. Control executor publishes `/llm_vision/mission_state` as `HOLDING_FOR_PLAN`.
 4. Prompt generator latches the hover pose and current obstacle snapshot.

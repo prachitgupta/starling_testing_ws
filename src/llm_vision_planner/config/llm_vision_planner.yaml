@@ -165,12 +165,10 @@ control_law_executer:
     plan_topic: /llm_vision/plan_verified
     mission_state_topic: /llm_vision/mission_state
     pose_topic: /fmu/out/vehicle_odometry
-    vehicle_status_topic: /fmu/out/vehicle_status
     land_detected_topic: /fmu/out/vehicle_land_detected
     offboard_owner_topic: /llm_vision/offboard_owner
     publish_hz: 20.0
     pose_timeout_s: 1.0
-    status_timeout_s: 2.0
     prime_s: 1.5
     takeoff_z: -0.25
     takeoff_accept_m: 0.08

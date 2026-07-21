@@ -152,7 +152,6 @@ ros2 topic echo /llm_vision/mission_state
 ros2 topic echo /llm_vision/plan_verified
 ros2 topic echo /llm_vision/offboard_owner
 ros2 topic echo /fmu/in/trajectory_setpoint
-ros2 topic echo /fmu/out/vehicle_status
 ros2 topic echo /fmu/out/vehicle_land_detected
 ```
 

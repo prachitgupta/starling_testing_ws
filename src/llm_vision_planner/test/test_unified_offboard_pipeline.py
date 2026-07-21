@@ -14,7 +14,6 @@ from px4_msgs.msg import (
     VehicleCommand,
     VehicleLandDetected,
     VehicleOdometry,
-    VehicleStatus,
 )
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
@@ -36,7 +35,6 @@ PARAMETERS = [
     "-p", "goal_settle_s:=0.12",
     "-p", "command_retry_s:=0.05",
     "-p", "pose_timeout_s:=0.15",
-    "-p", "status_timeout_s:=0.30",
     "-p", "transition_timeout_s:=2.0",
     "-p", "debug:=false",
 ]
@@ -46,7 +44,6 @@ class Px4Harness(Node):
     def __init__(self, suffix):
         super().__init__(f"px4_harness_{suffix}")
         self.odom_pub = self.create_publisher(VehicleOdometry, "/fmu/out/vehicle_odometry", ODOM_QOS)
-        self.status_pub = self.create_publisher(VehicleStatus, "/fmu/out/vehicle_status", ODOM_QOS)
         self.land_pub = self.create_publisher(VehicleLandDetected, "/fmu/out/vehicle_land_detected", ODOM_QOS)
         self.plan_pub = self.create_publisher(String, "/llm_vision/plan_verified", LATCHED_QOS)
         self.commands = []
@@ -59,11 +56,9 @@ class Px4Harness(Node):
         self.create_subscription(String, "/llm_vision/mission_state", self.mission_callback, 10)
         self.position = [0.0, 0.0, 0.0]
         self.velocity = [0.0, 0.0, 0.0]
-        self.armed = False
-        self.offboard = False
         self.landed = True
 
-    def publish_telemetry(self, odometry=True, status=True):
+    def publish_telemetry(self, odometry=True):
         if odometry:
             msg = VehicleOdometry()
             msg.pose_frame = VehicleOdometry.POSE_FRAME_NED
@@ -72,18 +67,6 @@ class Px4Harness(Node):
             msg.velocity = list(self.velocity)
             msg.q = [1.0, 0.0, 0.0, 0.0]
             self.odom_pub.publish(msg)
-        if status:
-            msg = VehicleStatus()
-            msg.arming_state = (
-                VehicleStatus.ARMING_STATE_ARMED if self.armed else VehicleStatus.ARMING_STATE_DISARMED
-            )
-            msg.nav_state = (
-                VehicleStatus.NAVIGATION_STATE_OFFBOARD
-                if self.offboard
-                else VehicleStatus.NAVIGATION_STATE_MANUAL
-            )
-            msg.failsafe = False
-            self.status_pub.publish(msg)
         msg = VehicleLandDetected()
         msg.landed = self.landed
         self.land_pub.publish(msg)
@@ -114,10 +97,10 @@ class Px4Harness(Node):
         self.mission_states.append(json.loads(msg.data)["state"])
 
 
-def spin_until(executor, node, harness, predicate, timeout, odometry=True, status=True):
+def spin_until(executor, node, harness, predicate, timeout, odometry=True):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        harness.publish_telemetry(odometry=odometry, status=status)
+        harness.publish_telemetry(odometry=odometry)
         executor.spin_once(timeout_sec=0.01)
         if predicate():
             return
@@ -157,8 +140,6 @@ def test_complete_mission():
             VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,
         }
 
-        harness.armed = True
-        harness.offboard = True
         harness.landed = False
         spin_until(executor, node, harness, lambda: node.state == "TAKEOFF", 0.5)
         harness.position = [0.0, 0.0, -0.25]
@@ -206,8 +187,6 @@ def test_complete_mission():
             ),
             0.5,
         )
-        harness.armed = False
-        harness.offboard = False
         spin_until(executor, node, harness, lambda: node.state == "COMPLETE", 0.5)
 
         heartbeat_gaps = [later - earlier for earlier, later in zip(harness.heartbeats, harness.heartbeats[1:])]
@@ -225,8 +204,6 @@ def test_invalid_plans_land_without_qp():
         executor, node, harness = make_nodes(suffix)
         try:
             spin_until(executor, node, harness, lambda: node.state == "ARM_TAKEOFF", 1.0)
-            harness.armed = True
-            harness.offboard = True
             harness.landed = False
             harness.position = [0.0, 0.0, -0.25]
             spin_until(executor, node, harness, lambda: node.state == "HOLDING_FOR_PLAN", 1.0)
@@ -249,11 +226,10 @@ def test_stale_odometry_lands():
     executor, node, harness = make_nodes("stale")
     try:
         spin_until(executor, node, harness, lambda: node.state == "ARM_TAKEOFF", 1.0)
-        harness.armed = True
-        harness.offboard = True
         harness.landed = False
         harness.position = [0.0, 0.0, -0.10]
         spin_until(executor, node, harness, lambda: node.state == "TAKEOFF", 0.5)
+        spin_until(executor, node, harness, lambda: node.position[2] < -0.05, 0.3)
         spin_until(
             executor,
             node,
@@ -261,7 +237,6 @@ def test_stale_odometry_lands():
             lambda: node.state == "LAND",
             0.6,
             odometry=False,
-            status=True,
         )
         assert node.failure_reason == "odometry timeout"
         spin_until(
@@ -271,7 +246,6 @@ def test_stale_odometry_lands():
             lambda: any(item[1] == VehicleCommand.VEHICLE_CMD_NAV_LAND for item in harness.commands),
             0.3,
             odometry=False,
-            status=True,
         )
     finally:
         destroy_nodes(executor, node, harness)

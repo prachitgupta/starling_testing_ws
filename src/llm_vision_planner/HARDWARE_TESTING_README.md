@@ -70,6 +70,62 @@ python3 fine_tuning/scripts/dconformal_contraction_verify.py \
   --report-json fine_tuning/plots/dconformal_contraction_verification_smoke.json
 ```
 
+## PX4 SITL obstacle-avoidance world (manual launch)
+
+Use this instead of `launch_obstacle_avoidance_x500.sh` when you want to start
+the same `obstacle_avoidance.sdf` world manually. Do not run the helper script
+or another `make px4_sitl ...` command at the same time: this manual sequence
+must have exactly one Gazebo server, one PX4 instance, and one XRCE agent.
+
+Terminal 1 — start the Gazebo world:
+
+```bash
+cd ~/PX4-Autopilot
+source build/px4_sitl_default/rootfs/gz_env.sh
+source Tools/simulation/gz/config/obstacle_avoidance_x500.env
+export GZ_SIM_RESOURCE_PATH="${GZ_SIM_RESOURCE_PATH}:$PWD/Tools/simulation/gz/models:$PWD/Tools/simulation/gz/worlds"
+unset GZ_SIM_SERVER_CONFIG_PATH
+gz sim -r -s Tools/simulation/gz/worlds/obstacle_avoidance.sdf
+```
+
+Terminal 2 — start the one standalone PX4 instance for that world:
+
+```bash
+cd ~/PX4-Autopilot
+source Tools/simulation/gz/config/obstacle_avoidance_x500.env
+PX4_GZ_STANDALONE=1 make px4_sitl "$PX4_SIM_MODEL"
+```
+
+Terminal 3 — start the single DDS agent:
+
+```bash
+MicroXRCEAgent udp4 -p 8888
+```
+
+Terminal 4 — bridge the simulated camera/depth data only when semantic
+perception requires it:
+
+```bash
+source /opt/ros/humble/setup.bash
+ros2 run ros_gz_bridge parameter_bridge \
+  /depth_camera@sensor_msgs/msg/Image[gz.msgs.Image \
+  /depth_camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked \
+  /world/obstacle_avoidance/model/x500_depth_0/link/camera_link/sensor/IMX214/image@sensor_msgs/msg/Image[gz.msgs.Image \
+  /world/obstacle_avoidance/model/x500_depth_0/link/camera_link/sensor/IMX214/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo \
+  /clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock
+```
+
+Before launching the planner, verify that each PX4 topic has one endpoint:
+
+```bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+ros2 topic info -v /fmu/out/vehicle_odometry
+ros2 topic info -v /fmu/in/vehicle_command
+```
+
+The expected counts are one odometry publisher and one vehicle-command
+subscriber. Then start `full_plot.launch.py` in a fifth terminal.
+
 ## Hardware Mission
 
 Connect to the Starling/VOXL over USB-C/Wi-Fi and start the ModalAI MPA-to-ROS 2 bridge on the vehicle:

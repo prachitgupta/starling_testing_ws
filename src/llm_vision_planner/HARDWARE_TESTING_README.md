@@ -168,8 +168,9 @@ Mission sequence:
 The contraction visualizer latches the same passed plan, reconstructs its QP
 reference, and subscribes directly to `/fmu/out/vehicle_odometry`. It shows the
 live vehicle as a disk, retains its measured trajectory, and overlays the 90%
-cross-track tube and projected 2D state radius. It does not propagate a simulated
-"true" state. Quantiles and radii are configured under `verify_contraction` in
-`config/llm_vision_planner.yaml`.
+projected 2D contraction tube. It does not propagate a simulated "true" state.
+The tube is computed at launch from the `s_w` scores in the calibration CSV named
+by `verify_contraction.calibration_csv`; set `calibration_samples` and `delta_w`
+there to select the finite-sample certificate.
 
 Abort with the RC kill switch or a PX4/QGroundControl mode change.

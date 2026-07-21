@@ -21,6 +21,7 @@ install(PROGRAMS
 
 install(FILES
   fine_tuning/scripts/min_control_qp.py
+  fine_tuning/scripts/lqr.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

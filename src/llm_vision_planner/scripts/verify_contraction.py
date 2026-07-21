@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Plot a verified QP reference, conformal tube, and live PX4 odometry."""
 
+import csv
 import json
 import math
 import os
@@ -8,6 +9,7 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.patches import Circle, Rectangle
 import rclpy
 from px4_msgs.msg import VehicleOdometry
@@ -20,6 +22,12 @@ try:
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
     from min_control_qp import generate_trajectory
+
+try:
+    from lqr import A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, certified_metric_alpha, solve_care
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
+    from lqr import A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, certified_metric_alpha, solve_care
 
 
 ODOM_QOS = QoSProfile(
@@ -45,20 +53,18 @@ class ContractionVisualizer(Node):
         self.declare_parameter("plot_period_s", 0.2)
         self.declare_parameter("pose_trail_limit", 1000)
         self.declare_parameter("trajectory_dt", 0.1)
-        self.declare_parameter("q_p", 0.241187)
-        self.declare_parameter("delta_p", 0.10)
-        self.declare_parameter("projected_position_radius_m", 0.602299)
-        self.declare_parameter("state_radius_4d", 1.481553)
+        self.declare_parameter("calibration_csv", "fine_tuning/datasets/calibration_min_control_qp_position_score_2000.csv")
+        self.declare_parameter("calibration_samples", 0)
+        self.declare_parameter("delta_w", 0.10)
         self.declare_parameter("drone_radius_m", 0.10)
         self.declare_parameter("debug", False)
 
         self.output_png = str(self.get_parameter("output_png").value)
         self.show_window = bool(self.get_parameter("show_window").value)
         self.pose_trail_limit = int(self.get_parameter("pose_trail_limit").value)
-        self.q_p = float(self.get_parameter("q_p").value)
-        self.delta_p = float(self.get_parameter("delta_p").value)
-        self.projected_radius = float(self.get_parameter("projected_position_radius_m").value)
-        self.state_radius_4d = float(self.get_parameter("state_radius_4d").value)
+        self.calibration_csv = self.resolve_calibration_csv(str(self.get_parameter("calibration_csv").value))
+        self.delta_w = float(self.get_parameter("delta_w").value)
+        self.q_w, self.state_radius_4d, self.projected_radius = self.load_certificate()
         self.drone_radius = float(self.get_parameter("drone_radius_m").value)
 
         self.plan = None
@@ -83,7 +89,49 @@ class ContractionVisualizer(Node):
             ODOM_QOS,
         )
         self.create_timer(float(self.get_parameter("plot_period_s").value), self.render)
-        self.get_logger().info("waiting for a passed verified plan and live PX4 odometry")
+        self.get_logger().info(
+            f"loaded contraction certificate from {self.calibration_csv}: q_w={self.q_w:.6f}, "
+            f"projected 2D radius={self.projected_radius:.6f} m; waiting for a passed verified plan and live PX4 odometry"
+        )
+
+    @staticmethod
+    def conformal_quantile(values, delta):
+        ordered = sorted(values)
+        rank = max(1, math.ceil((1.0 - delta) * (len(ordered) + 1)))
+        return ordered[min(rank, len(ordered)) - 1]
+
+    @staticmethod
+    def resolve_calibration_csv(value):
+        requested = Path(value).expanduser()
+        candidates = [requested, Path.cwd() / requested]
+        try:
+            from ament_index_python.packages import get_package_share_directory
+
+            candidates.append(Path(get_package_share_directory("llm_vision_planner")) / requested)
+        except Exception:
+            pass
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        raise FileNotFoundError(f"contraction calibration CSV does not exist: {value}")
+
+    def load_certificate(self):
+        with self.calibration_csv.open(newline="", encoding="utf-8") as stream:
+            rows = list(csv.DictReader(stream))
+        limit = int(self.get_parameter("calibration_samples").value)
+        rows = rows[:limit] if limit > 0 else rows
+        scores = [float(row["s_w"]) for row in rows if row.get("s_w")]
+        if not scores:
+            raise ValueError(f"{self.calibration_csv} must contain non-empty s_w calibration scores")
+        q_w = self.conformal_quantile(scores, self.delta_w)
+        p, gain, _ = solve_care()
+        alpha = certified_metric_alpha(A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, gain, p)
+        lambda_min = float(np.min(np.linalg.eigvalsh(p)))
+        position_output = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
+        projection_gain = math.sqrt(float(np.max(np.linalg.eigvalsh(position_output @ np.linalg.inv(p) @ position_output.T))))
+        state_radius = q_w / (alpha * math.sqrt(lambda_min))
+        projected_radius = projection_gain * q_w / alpha
+        return q_w, state_radius, projected_radius
 
     def plan_callback(self, msg):
         if self.plan is not None:
@@ -144,15 +192,11 @@ class ContractionVisualizer(Node):
             xs = [point[0] for point in self.reference_xy]
             ys = [point[1] for point in self.reference_xy]
             axis.plot(xs, ys, "--", color="#f97316", linewidth=2, label=r"LLM QP reference $\hat{x}_d$")
-            display_step = max(1, len(self.reference_xy) // 120)
+            display_step = max(1, len(self.reference_xy) // 35)
             for x, y in self.reference_xy[::display_step]:
-                axis.add_patch(Circle((x, y), self.q_p, color="#16a34a", alpha=0.025))
-            axis.plot([], [], color="#16a34a", alpha=0.35, linewidth=7,
-                      label=rf"cross-track conformal tube $q_p={self.q_p:.3f}$ m")
-            for x, y in self.reference_xy[:: max(1, len(self.reference_xy) // 35)]:
                 axis.add_patch(Circle((x, y), self.projected_radius, color="#2563eb", alpha=0.025))
             axis.plot([], [], color="#2563eb", alpha=0.35, linewidth=7,
-                      label=rf"projected 2D state radius={self.projected_radius:.3f} m")
+                      label=rf"projected contraction tube $\rho_{{2D}}={self.projected_radius:.3f}$ m")
             start = self.reference_xy[0]
             goal = self.reference_xy[-1]
             axis.scatter(*start, color="#0f172a", marker="s", s=60, label="verified start")
@@ -171,8 +215,8 @@ class ContractionVisualizer(Node):
         axis.text(
             0.02,
             0.02,
-            f"coverage={100.0 * (1.0 - self.delta_p):.0f}%\n"
-            f"q_p={self.q_p:.6f} m\n"
+            f"coverage={100.0 * (1.0 - self.delta_w):.0f}%\n"
+            f"q_w={self.q_w:.6f}\n"
             f"projected 2D radius={self.projected_radius:.6f} m\n"
             f"4D state radius={self.state_radius_4d:.6f} (mixed state units)",
             transform=axis.transAxes,

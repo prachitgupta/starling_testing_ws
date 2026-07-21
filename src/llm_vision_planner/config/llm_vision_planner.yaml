@@ -154,10 +154,9 @@ verify_contraction:
     plot_period_s: 0.2
     pose_trail_limit: 1000
     trajectory_dt: 0.1
-    q_p: 0.241187
-    delta_p: 0.10
-    projected_position_radius_m: 0.602299
-    state_radius_4d: 1.481553
+    calibration_csv: fine_tuning/datasets/calibration_min_control_qp_position_score_2000.csv
+    calibration_samples: 2000
+    delta_w: 0.10
     drone_radius_m: 0.10
     debug: false
 

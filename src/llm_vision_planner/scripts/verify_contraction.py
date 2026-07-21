@@ -71,7 +71,7 @@ class ContractionVisualizer(Node):
         self.reference_xy = []
         self.pose_trail = []
         self.dirty = True
-        self.figure, self.axis = plt.subplots(figsize=(8, 7))
+        self.figure, self.axis = plt.subplots(figsize=(8, 7), facecolor="#f8fafc")
         if self.show_window:
             plt.ion()
             self.figure.show()
@@ -181,34 +181,37 @@ class ContractionVisualizer(Node):
 
         axis = self.axis
         axis.clear()
+        axis.set_facecolor("#f8fafc")
         axis.set_aspect("equal", adjustable="box")
         axis.set_xlabel("x [m] (PX4 local NED)")
         axis.set_ylabel("y [m] (PX4 local NED)")
         axis.set_title("Live PX4 contraction verification")
-        axis.grid(True, alpha=0.25)
+        axis.grid(True, color="#94a3b8", alpha=0.30)
 
         if self.plan is not None:
             self.draw_obstacles(axis, self.plan.get("obstacles", []))
             xs = [point[0] for point in self.reference_xy]
             ys = [point[1] for point in self.reference_xy]
-            axis.plot(xs, ys, "--", color="#f97316", linewidth=2, label=r"LLM QP reference $\hat{x}_d$")
-            display_step = max(1, len(self.reference_xy) // 35)
+            axis.plot(xs, ys, "--", color="#f59e0b", linewidth=2.5, label=r"LLM QP reference $\hat{x}_d$")
+            display_step = max(1, len(self.reference_xy) // 14)
             for x, y in self.reference_xy[::display_step]:
-                axis.add_patch(Circle((x, y), self.projected_radius, color="#2563eb", alpha=0.025))
-            axis.plot([], [], color="#2563eb", alpha=0.35, linewidth=7,
+                axis.add_patch(Circle((x, y), self.projected_radius, color="#8b5cf6", alpha=0.06))
+            axis.plot([], [], color="#8b5cf6", alpha=0.65, linewidth=7,
                       label=rf"projected contraction tube $\rho_{{2D}}={self.projected_radius:.3f}$ m")
             start = self.reference_xy[0]
             goal = self.reference_xy[-1]
-            axis.scatter(*start, color="#0f172a", marker="s", s=60, label="verified start")
-            axis.scatter(*goal, color="#dc2626", marker="*", s=110, label="verified goal")
+            axis.scatter(*start, color="#0ea5e9", marker="s", s=70, label="verified start")
+            axis.scatter(*goal, color="#ef4444", marker="*", s=130, label="verified goal")
             self.configure_workspace(axis, self.plan.get("workspace", {}))
+        else:
+            self.configure_live_view(axis)
 
         if self.pose_trail:
             xs = [point[0] for point in self.pose_trail]
             ys = [point[1] for point in self.pose_trail]
-            axis.plot(xs, ys, color="#111827", linewidth=2.2, label="actual PX4 trajectory")
+            axis.plot(xs, ys, color="#06b6d4", linewidth=2.5, label="actual PX4 trajectory")
             axis.add_patch(
-                Circle(self.pose_trail[-1], self.drone_radius, facecolor="#111827", edgecolor="white", linewidth=1.5,
+                Circle(self.pose_trail[-1], self.drone_radius, facecolor="#f43f5e", edgecolor="#7f1d1d", linewidth=1.5,
                        zorder=8, label="live drone")
             )
 
@@ -255,6 +258,25 @@ class ContractionVisualizer(Node):
         y_limits = workspace.get("y", [0.0, 4.0])
         axis.set_xlim(float(x_limits[0]) - 0.25, float(x_limits[1]) + 0.25)
         axis.set_ylim(float(y_limits[0]) - 0.25, float(y_limits[1]) + 0.25)
+
+    def configure_live_view(self, axis):
+        if self.pose_trail:
+            center_x, center_y = self.pose_trail[-1]
+            half_span = 2.0
+            axis.set_xlim(center_x - half_span, center_x + half_span)
+            axis.set_ylim(center_y - half_span, center_y + half_span)
+        else:
+            axis.set_xlim(-2.0, 2.0)
+            axis.set_ylim(-2.0, 2.0)
+        axis.text(
+            0.5,
+            0.98,
+            "Waiting for a passed verified plan",
+            transform=axis.transAxes,
+            ha="center",
+            va="top",
+            color="#475569",
+        )
 
 
 def main():

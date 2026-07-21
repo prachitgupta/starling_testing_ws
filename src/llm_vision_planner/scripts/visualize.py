@@ -120,7 +120,7 @@ class PlannerVisualizer(Node):
         self.current_pose = None
         self.last_draw_signature = None
 
-        self.figure, self.axis = plt.subplots(figsize=(9, 7))
+        self.figure, self.axis = plt.subplots(figsize=(9, 7), facecolor="#f8fafc")
         if self.show_window:
             plt.ion()
             self.figure.show()
@@ -239,6 +239,7 @@ class PlannerVisualizer(Node):
             return
 
         self.axis.clear()
+        self.axis.set_facecolor("#f8fafc")
         self.draw_scene(
             self.axis,
             sparse_waypoints,
@@ -292,6 +293,7 @@ class PlannerVisualizer(Node):
         self.get_logger().info(f"Saved static plot: {output_path}")
 
     def draw_scene(self, axis, sparse_waypoints, refined_waypoints, rrt_waypoints, obstacles, goal, workspace, verified_latched, include_drone):
+        axis.set_facecolor("#f8fafc")
         self.draw_obstacles(obstacles, axis)
         if verified_latched:
             self.draw_path(

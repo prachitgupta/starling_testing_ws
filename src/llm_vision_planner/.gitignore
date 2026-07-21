@@ -1,0 +1,3 @@
+plots/**/*.png
+fine_tuning/plots/**/*.png
+fine_tuning/results/**/*.json

@@ -15,7 +15,6 @@ DEFAULT_FIXED_Z = -0.25
 DEFAULT_GOAL = (2.5, 0.0, -0.25)
 DEFAULT_CLEARANCE_M = 0.40
 DEFAULT_SEMANTIC_OBSTACLE_TOPIC = "/llm_vision/semantic_obstacles"
-DEFAULT_NORMAL_OBSTACLE_TOPIC = "/llm_vision/obstacles"
 DEFAULT_PROMPT_TOPIC = "/llm_vision/prompt"
 DEFAULT_VERIFIED_PLAN_TOPIC = "/llm_vision/plan_verified"
 DEFAULT_MISSION_STATE_TOPIC = "/llm_vision/mission_state"
@@ -44,7 +43,7 @@ INSTRUCTIONS = (
 class PromptGenerator(Node):
     def __init__(self):
         super().__init__("prompt_generator")
-        self.declare_parameter("mode", "semantic")
+        self.declare_parameter("environment", "real")
         self.declare_parameter("single_shot", True)
         self.declare_parameter("initial_plan_id", 1)
         self.declare_parameter("workspace_x_min", DEFAULT_WORKSPACE_X[0])
@@ -58,7 +57,7 @@ class PromptGenerator(Node):
         self.declare_parameter("clearance_m", DEFAULT_CLEARANCE_M)
         self.declare_parameter("goal_clearance_m", DEFAULT_CLEARANCE_M)
         self.declare_parameter("semantic_obstacle_topic", DEFAULT_SEMANTIC_OBSTACLE_TOPIC)
-        self.declare_parameter("normal_obstacle_topic", DEFAULT_NORMAL_OBSTACLE_TOPIC)
+        self.declare_parameter("sim_obstacle_topic", "/llm_vision/sim_obstacles")
         self.declare_parameter("prompt_topic", DEFAULT_PROMPT_TOPIC)
         self.declare_parameter("llm_provider", "llama")
         self.declare_parameter("chatgpt_model_name", "gpt-5-mini")
@@ -146,14 +145,11 @@ class PromptGenerator(Node):
             self.get_logger().warning(*args)
 
     def resolve_obstacle_topic(self):
-        mode = str(self.get_parameter("mode").value).strip().lower()
-        if mode == "semantic":
-            return str(self.get_parameter("semantic_obstacle_topic").value)
-        if mode == "normal":
-            return str(self.get_parameter("normal_obstacle_topic").value)
-        self.log_warning(
-            f"Unsupported mode '{mode}'. Expected 'semantic' or 'normal'. Defaulting to semantic obstacle topic."
-        )
+        environment = str(self.get_parameter("environment").value).strip().lower()
+        if environment == "sim":
+            return str(self.get_parameter("sim_obstacle_topic").value)
+        if environment != "real":
+            self.get_logger().warning(f"Unsupported environment '{environment}'. Defaulting to real perception.")
         return str(self.get_parameter("semantic_obstacle_topic").value)
 
     def pose_callback(self, msg):

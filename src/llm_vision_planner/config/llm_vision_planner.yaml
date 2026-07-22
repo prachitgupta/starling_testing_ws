@@ -52,7 +52,7 @@ obstacle_perception:
 
 prompt_generator:
   ros__parameters:
-    mode: semantic
+    environment: real
     llm_provider: llama
     chatgpt_model_name: gpt-5.4-nano
     llama_model_name: rrt_planner
@@ -69,7 +69,7 @@ prompt_generator:
     clearance_m: 0.40
     goal_clearance_m: 0.40
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
-    normal_obstacle_topic: /llm_vision/obstacles
+    sim_obstacle_topic: /llm_vision/sim_obstacles
     prompt_topic: /llm_vision/prompt
     verified_plan_topic: /llm_vision/plan_verified
     mission_state_topic: /llm_vision/mission_state
@@ -82,7 +82,7 @@ prompt_generator:
     feedback_enabled: True
     pose_topic: /fmu/out/vehicle_odometry
     fresh_data_timeout_s: 2.0
-    debug: False
+    debug: True
 
 llm_planner:
   ros__parameters:
@@ -158,7 +158,7 @@ verify_contraction:
     calibration_samples: 2000
     delta_w: 0.10
     drone_radius_m: 0.10
-    debug: false
+    debug: true
 
 control_law_executer:
   ros__parameters:
@@ -171,9 +171,9 @@ control_law_executer:
     pose_timeout_s: 1.0
     prime_s: 1.5
     takeoff_z: -0.25
-    takeoff_accept_m: 0.08
-    takeoff_settle_s: 2.0
-    hover_speed_accept_mps: 0.10
+    takeoff_accept_m: 0.15
+    takeoff_settle_s: 1.0
+    hover_speed_accept_mps: 0.20
     start_accept_m: 0.10
     goal_accept_m: 0.20
     goal_settle_s: 2.0

@@ -275,7 +275,7 @@ class ControlLawExecuter(Node):
             else:
                 self.request_land(now)
 
-        if self.state not in ("COMPLETE", "FAILED") and self.last_setpoint_position is not None:
+        if self.state not in ("COMPLETE", "FAILED", "LAND") and self.last_setpoint_position is not None:
             self.publish_owner()
             self.publish_setpoint(self.last_setpoint_position, self.last_setpoint_velocity)
         self.publish_mission_state()

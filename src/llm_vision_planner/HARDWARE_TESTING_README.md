@@ -8,16 +8,24 @@ colcon build --packages-select px4_msgs voxl_msgs starling_testing llm_vision_pl
 source install/setup.bash
 ```
 
+ROS Humble in this workspace requires system Python 3.10. If Conda is active,
+start launch commands from a clean shell, or use:
+
+```bash
+env -u PYTHONHOME -u PYTHONPATH PATH=/opt/ros/humble/bin:/usr/bin:/bin bash --noprofile --norc
+```
+
 ## Software-Only Planner Check
 
-Use this to exercise prompt generation, LLM planning, refinement, and verification without flying hardware. Set `OPENAI_API_KEY` before starting `llm_planner.py`.
+Use this to exercise prompt generation, LLM planning, refinement, and verification without flying hardware. The default provider is the configured `llama:rrt_planner`; set `llm_provider:=chatgpt` and `OPENAI_API_KEY` only when using OpenAI.
 
 ```bash
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
 
 ros2 run llm_vision_planner prompt_generator.py --ros-args \
-  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml &
+  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml \
+  -p environment:=sim &
 ros2 run llm_vision_planner llm_planner.py --ros-args \
   --params-file src/llm_vision_planner/config/llm_vision_planner.yaml &
 ros2 run llm_vision_planner refinment.py --ros-args \
@@ -36,7 +44,7 @@ ros2 topic pub /llm_vision/mission_state std_msgs/msg/String \
 
 ```bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
-ros2 topic pub /llm_vision/semantic_obstacles std_msgs/msg/String \
+ros2 topic pub /llm_vision/sim_obstacles std_msgs/msg/String \
   "{data: '{\"obstacles\":[{\"label\":\"chair\",\"min_corner\":[1.2,-0.3,-0.8],\"max_corner\":[1.7,0.3,0.0],\"size\":[0.5,0.6,0.8],\"distance_m\":1.3}],\"timestamp\":0.0}'}" -r 2
 ```
 
@@ -124,7 +132,9 @@ ros2 topic info -v /fmu/in/vehicle_command
 ```
 
 The expected counts are one odometry publisher and one vehicle-command
-subscriber. Then start `full_plot.launch.py` in a fifth terminal.
+subscriber. For simulator missions, do not start a perception node or bridge
+camera data: publish `/llm_vision/sim_obstacles` and launch with
+`environment:=sim` below.
 
 ## Hardware Mission
 
@@ -195,7 +205,7 @@ Start the unified planner and offboard controller:
 ```bash
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
-ros2 launch llm_vision_planner full_plot.launch.py mode:=semantic
+ros2 launch llm_vision_planner full_plot.launch.py environment:=real
 ```
 
 `control_law_executer.py` is launched automatically and is the sole PX4 offboard
@@ -210,7 +220,41 @@ For the live contraction plot instead of the standard planner plot, launch:
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
 ros2 launch llm_vision_planner full_plot.launch.py \
-  mode:=semantic visualizer:=contraction
+  environment:=real visualizer:=contraction
+```
+
+## Simulator mission
+
+Simulator mode deliberately does **not** start a perception node. Publish the
+simulated obstacle snapshot yourself on `/llm_vision/sim_obstacles`; its JSON
+format matches the semantic obstacle output and is latched by the prompt
+generator after takeoff:
+
+For the smallest end-to-end flight test, publish an explicit empty snapshot in
+one terminal. This is not perception; it tells the LLM that no obstacles are
+present in the simulated planning context.
+
+```bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
+  "{data: '{\"obstacles\":[],\"timestamp\":0.0}'}"
+```
+
+For a calibrated obstacle environment, use the `ros2_pub_command` column in
+`fine_tuning/datasets/env_ros_commands.csv` instead. It publishes the exact
+obstacle boxes for the selected calibration row.
+
+```bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
+  "{data: '{\"obstacles\":[{\"label\":\"sim_box\",\"min_corner\":[1.2,-0.3,-0.8],\"max_corner\":[1.7,0.3,0.0],\"size\":[0.5,0.6,0.8],\"distance_m\":1.3}],\"timestamp\":0.0}'}"
+```
+
+Then launch the unified stack. The LLM still generates the route; the simulator
+topic is only its obstacle context.
+
+```bash
+ros2 launch llm_vision_planner full_plot.launch.py environment:=sim
 ```
 
 Mission sequence:
@@ -221,7 +265,7 @@ Mission sequence:
 4. Prompt generator latches the hover pose and current obstacle snapshot.
 5. Failed verification results are appended to the next prompt.
 6. The first `passed=true` trajectory is converted to a minimum-control QP reference.
-7. The executor tracks `u = u_reference - K(x - x_reference)`, holds the goal, and requests PX4 auto-land.
+7. The executor tracks `u = u_reference - K(x - x_reference)`, holds the goal, stops Offboard setpoints, requests PX4 auto-land, and disarms after landing detection.
 
 The contraction visualizer latches the same passed plan, reconstructs its QP
 reference, and subscribes directly to `/fmu/out/vehicle_odometry`. It shows the

@@ -9,10 +9,10 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    mode_arg = DeclareLaunchArgument(
-        "mode",
-        default_value="semantic",
-        description="Obstacle source mode for prompt generator: semantic or normal",
+    environment_arg = DeclareLaunchArgument(
+        "environment",
+        default_value="real",
+        description="Mission environment: real uses TFLite/ToF perception; sim uses /llm_vision/sim_obstacles.",
     )
     params_file_arg = DeclareLaunchArgument(
         "params_file",
@@ -38,24 +38,14 @@ def generate_launch_description():
     )
     params_file = LaunchConfiguration("params_file")
 
-    use_semantic = IfCondition(PythonExpression(["'", LaunchConfiguration("mode"), "' == 'semantic'"]))
-    use_normal = UnlessCondition(PythonExpression(["'", LaunchConfiguration("mode"), "' == 'semantic'"]))
+    use_real_perception = IfCondition(PythonExpression(["'", LaunchConfiguration("environment"), "' == 'real'"]))
 
     semantic_perception = Node(
         package="llm_vision_planner",
         executable="perception_detection.py",
         name="semantic_obstacle_perception",
         output="screen",
-        condition=use_semantic,
-        parameters=[params_file],
-    )
-
-    normal_perception = Node(
-        package="llm_vision_planner",
-        executable="perception.py",
-        name="obstacle_perception",
-        output="screen",
-        condition=use_normal,
+        condition=use_real_perception,
         parameters=[params_file],
     )
 
@@ -64,7 +54,7 @@ def generate_launch_description():
         executable="prompt_generator.py",
         name="prompt_generator",
         output="screen",
-        parameters=[params_file, {"mode": LaunchConfiguration("mode"), "llm_provider": LaunchConfiguration("llm_provider")}],
+        parameters=[params_file, {"environment": LaunchConfiguration("environment"), "llm_provider": LaunchConfiguration("llm_provider")}],
     )
 
     llm_planner = Node(
@@ -119,13 +109,12 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            mode_arg,
+            environment_arg,
             params_file_arg,
             llm_provider_arg,
             show_rrt_arg,
             visualizer_arg,
             semantic_perception,
-            normal_perception,
             llm_planner,
             TimerAction(period=2.0, actions=[prompt_generator]),
             refinement,

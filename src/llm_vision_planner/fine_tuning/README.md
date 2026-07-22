@@ -122,18 +122,20 @@ planar model at a 20 Hz control rate.
 
 ## PX4 SITL and unified launch
 
-Start PX4 SITL and the Micro XRCE-DDS agent, then launch:
+Start PX4 SITL and the Micro XRCE-DDS agent, publish a simulator obstacle
+snapshot on `/llm_vision/sim_obstacles` as documented in
+`../HARDWARE_TESTING_README.md`, then launch:
 
 ```bash
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
-ros2 launch llm_vision_planner full_plot.launch.py
+ros2 launch llm_vision_planner full_plot.launch.py environment:=sim
 ```
 
 Select the live PX4 contraction plot instead of the standard planner plot with:
 
 ```bash
-ros2 launch llm_vision_planner full_plot.launch.py visualizer:=contraction
+ros2 launch llm_vision_planner full_plot.launch.py environment:=sim visualizer:=contraction
 ```
 
 The contraction view latches the passed verified plan, reconstructs the same QP

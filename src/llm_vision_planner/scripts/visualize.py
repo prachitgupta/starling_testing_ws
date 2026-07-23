@@ -298,10 +298,10 @@ class PlannerVisualizer(Node):
         if verified_latched:
             self.draw_path(
                 sparse_waypoints,
-                "Sparse LLM path used for verified plan",
-                color="#94a3b8",
+                "Sparse LLM waypoints",
+                color="#f59e0b",
                 marker="o",
-                linestyle="--",
+                linestyle="None",
                 axis=axis,
             )
             self.draw_path(
@@ -417,6 +417,23 @@ class PlannerVisualizer(Node):
                 label="Obstacle x-y span" if index == 1 else None,
             )
             axis.add_patch(rect)
+            if self.rrt_clearance_m > 0.0:
+                safety_rect = Rectangle(
+                    (x0 - self.rrt_clearance_m, y0 - self.rrt_clearance_m),
+                    width + 2.0 * self.rrt_clearance_m,
+                    height + 2.0 * self.rrt_clearance_m,
+                    fill=False,
+                    edgecolor="#f59e0b",
+                    linewidth=1.5,
+                    linestyle="--",
+                    alpha=0.9,
+                    label=(
+                        f"Safety clearance ({self.rrt_clearance_m:.2f} m)"
+                        if index == 1
+                        else None
+                    ),
+                )
+                axis.add_patch(safety_rect)
             axis.text(
                 x0 + width / 2.0,
                 y0 + height / 2.0,

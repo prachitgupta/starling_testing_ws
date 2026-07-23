@@ -6,7 +6,7 @@ semantic_obstacle_perception:
     obstacle_topic: /llm_vision/semantic_obstacles
     goal_x: 2.5
     goal_y: 0.0
-    goal_z: -0.25
+    goal_z: -1.0
     hires_fx: 459.25277454251415
     hires_fy: 459.77659154648927
     hires_cx: 656.1383163463607
@@ -40,7 +40,7 @@ obstacle_perception:
     obstacle_topic: /llm_vision/obstacles
     goal_x: 2.5
     goal_y: 0.0
-    goal_z: -0.25
+    goal_z: -1.0
     min_range_m: 0.20
     max_range_m: 4.5
     min_z_m: -2.0
@@ -62,10 +62,10 @@ prompt_generator:
     workspace_x_max: 4.0
     workspace_y_min: 0.0
     workspace_y_max: 4.0
-    fixed_z: -0.25
+    fixed_z: -1.0
     goal_x: 2.5
     goal_y: 0.0
-    goal_z: -0.25
+    goal_z: -1.0
     clearance_m: 0.40
     goal_clearance_m: 0.40
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
@@ -104,7 +104,7 @@ path_refinement:
     interpolation_spacing_m: 1.0
     safety_margin_m: 0.40
     nudge_epsilon_m: 0.02
-    fixed_z: -0.25
+    fixed_z: -1.0
     debug: False
 
 path_verifier:
@@ -135,7 +135,7 @@ planner_visualizer:
     static_plot_dir: src/llm_vision_planner/plots/planner/snapshots
     static_plot_dpi: 180
     static_plot_prefix: simulated_test
-    fixed_z: -0.25
+    fixed_z: -1.0
     workspace_x_min: 0.0
     workspace_x_max: 4.0
     workspace_y_min: 0.0
@@ -156,6 +156,7 @@ verify_contraction:
     trajectory_dt: 0.1
     calibration_csv: fine_tuning/datasets/calibration_min_control_qp_position_score_2000.csv
     calibration_samples: 2000
+    delta_p: 0.10
     delta_w: 0.10
     drone_radius_m: 0.10
     debug: true
@@ -170,7 +171,7 @@ control_law_executer:
     publish_hz: 20.0
     pose_timeout_s: 1.0
     prime_s: 1.5
-    takeoff_z: -0.25
+    takeoff_z: -1.0
     takeoff_accept_m: 0.15
     takeoff_settle_s: 1.0
     hover_speed_accept_mps: 0.20

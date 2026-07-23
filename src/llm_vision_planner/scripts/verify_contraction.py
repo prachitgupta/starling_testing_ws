@@ -18,10 +18,10 @@ from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReli
 from std_msgs.msg import String
 
 try:
-    from min_control_qp import generate_trajectory
+    from min_control_qp import evaluate_sample, generate_trajectory
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
-    from min_control_qp import generate_trajectory
+    from min_control_qp import evaluate_sample, generate_trajectory
 
 try:
     from lqr import A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, certified_metric_alpha, solve_care
@@ -56,6 +56,7 @@ class ContractionVisualizer(Node):
         self.declare_parameter("trajectory_dt", 0.1)
         self.declare_parameter("calibration_csv", "fine_tuning/datasets/calibration_min_control_qp_position_score_2000.csv")
         self.declare_parameter("calibration_samples", 0)
+        self.declare_parameter("delta_p", 0.10)
         self.declare_parameter("delta_w", 0.10)
         self.declare_parameter("drone_radius_m", 0.10)
         self.declare_parameter("debug", False)
@@ -64,15 +65,22 @@ class ContractionVisualizer(Node):
         self.show_window = bool(self.get_parameter("show_window").value)
         self.pose_trail_limit = int(self.get_parameter("pose_trail_limit").value)
         self.calibration_csv = self.resolve_calibration_csv(str(self.get_parameter("calibration_csv").value))
+        self.delta_p = float(self.get_parameter("delta_p").value)
         self.delta_w = float(self.get_parameter("delta_w").value)
-        self.q_w, self.state_radius_4d, self.projected_radius = self.load_certificate()
+        self.q_p, self.q_w, self.state_radius_4d, self.projected_radius = self.load_certificate()
         self.drone_radius = float(self.get_parameter("drone_radius_m").value)
 
         self.plan = None
+        self.reference_samples = []
         self.reference_xy = []
         self.pose_trail = []
+        self.latest_pose = None
+        self.reference_start_timestamp_us = None
+        self.latest_live_position_error = None
+        self.max_live_position_error = None
         self.dirty = True
-        self.figure, self.axis = plt.subplots(figsize=(8, 7), facecolor="#f8fafc")
+        self.figure, self.axis = plt.subplots(figsize=(8, 7))
+        self.status_text = self.figure.text(0.78, 0.16, "", fontsize=8, va="bottom")
         if self.show_window:
             plt.ion()
             self.figure.show()
@@ -91,8 +99,9 @@ class ContractionVisualizer(Node):
         )
         self.create_timer(float(self.get_parameter("plot_period_s").value), self.render)
         self.get_logger().info(
-            f"loaded contraction certificate from {self.calibration_csv}: q_w={self.q_w:.6f}, "
-            f"projected 2D radius={self.projected_radius:.6f} m; waiting for a passed verified plan and live PX4 odometry"
+            f"loaded contraction certificate from {self.calibration_csv}: q_p={self.q_p:.6f} m, "
+            f"q_w={self.q_w:.6f}, projected 2D radius={self.projected_radius:.6f} m; "
+            "waiting for a passed verified plan and live PX4 odometry"
         )
 
     @staticmethod
@@ -121,10 +130,12 @@ class ContractionVisualizer(Node):
             rows = list(csv.DictReader(stream))
         limit = int(self.get_parameter("calibration_samples").value)
         rows = rows[:limit] if limit > 0 else rows
-        scores = [float(row["s_w"]) for row in rows if row.get("s_w")]
-        if not scores:
-            raise ValueError(f"{self.calibration_csv} must contain non-empty s_w calibration scores")
-        q_w = self.conformal_quantile(scores, self.delta_w)
+        position_scores = [float(row["s_p"]) for row in rows if row.get("s_p")]
+        state_scores = [float(row["s_w"]) for row in rows if row.get("s_w")]
+        if not position_scores or not state_scores:
+            raise ValueError(f"{self.calibration_csv} must contain non-empty s_p and s_w calibration scores")
+        q_p = self.conformal_quantile(position_scores, self.delta_p)
+        q_w = self.conformal_quantile(state_scores, self.delta_w)
         p, gain, _ = solve_care()
         alpha = certified_metric_alpha(A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, gain, p)
         lambda_min = float(np.min(np.linalg.eigvalsh(p)))
@@ -132,7 +143,7 @@ class ContractionVisualizer(Node):
         projection_gain = math.sqrt(float(np.max(np.linalg.eigvalsh(position_output @ np.linalg.inv(p) @ position_output.T))))
         state_radius = q_w / (alpha * math.sqrt(lambda_min))
         projected_radius = projection_gain * q_w / alpha
-        return q_w, state_radius, projected_radius
+        return q_p, q_w, state_radius, projected_radius
 
     def plan_callback(self, msg):
         if self.plan is not None:
@@ -155,9 +166,14 @@ class ContractionVisualizer(Node):
             self.get_logger().error(f"could not generate verified QP reference: {exc}")
             return
         self.plan = payload
+        self.reference_samples = trajectory["samples"]
         self.reference_xy = [
-            (float(sample["x"][0]), float(sample["x"][1])) for sample in trajectory["samples"]
+            (float(sample["x"][0]), float(sample["x"][1])) for sample in self.reference_samples
         ]
+        self.pose_trail = []
+        self.reference_start_timestamp_us = None
+        self.latest_live_position_error = None
+        self.max_live_position_error = None
         self.dirty = True
         self.get_logger().info(
             f"latched passed plan_id={payload.get('plan_id')} with {len(self.reference_xy)} QP samples"
@@ -169,10 +185,24 @@ class ContractionVisualizer(Node):
         point = (float(msg.position[0]), float(msg.position[1]))
         if not all(math.isfinite(value) for value in point):
             return
+        self.latest_pose = point
+        if self.plan is None or not self.reference_samples:
+            self.dirty = True
+            return
         if not self.pose_trail or math.dist(point, self.pose_trail[-1]) >= 0.002:
             self.pose_trail.append(point)
             self.pose_trail = self.pose_trail[-self.pose_trail_limit :]
-            self.dirty = True
+        timestamp_us = int(msg.timestamp)
+        if self.reference_start_timestamp_us is None:
+            self.reference_start_timestamp_us = timestamp_us
+        elapsed_s = max(0.0, (timestamp_us - self.reference_start_timestamp_us) / 1_000_000.0)
+        reference_state, _ = evaluate_sample(
+            self.reference_samples,
+            min(elapsed_s, float(self.reference_samples[-1]["t"])),
+        )
+        self.latest_live_position_error = math.dist(point, (float(reference_state[0]), float(reference_state[1])))
+        self.max_live_position_error = max(self.max_live_position_error or 0.0, self.latest_live_position_error)
+        self.dirty = True
 
     def render(self):
         if not self.dirty:
@@ -182,50 +212,79 @@ class ContractionVisualizer(Node):
 
         axis = self.axis
         axis.clear()
-        axis.set_facecolor("#f8fafc")
         axis.set_aspect("equal", adjustable="box")
-        axis.set_xlabel("x [m] (PX4 local NED)")
-        axis.set_ylabel("y [m] (PX4 local NED)")
-        axis.set_title("Live PX4 contraction verification")
-        axis.grid(True, color="#94a3b8", alpha=0.30)
-        self.configure_workspace(axis, PLOT_WORKSPACE)
+        axis.set_xlabel("x position [m]")
+        axis.set_ylabel("y position [m]")
+        axis.set_title("QP tracking certificate comparison")
+        axis.grid(True, alpha=0.25)
+        self.configure_workspace(axis, self.plan.get("workspace", PLOT_WORKSPACE) if self.plan else PLOT_WORKSPACE)
 
         if self.plan is not None:
             self.draw_obstacles(axis, self.plan.get("obstacles", []))
             xs = [point[0] for point in self.reference_xy]
             ys = [point[1] for point in self.reference_xy]
-            axis.plot(xs, ys, "--", color="#f59e0b", linewidth=2.5, label=r"LLM QP reference $\hat{x}_d$")
-            display_step = max(1, len(self.reference_xy) // 14)
-            for x, y in self.reference_xy[::display_step]:
-                axis.add_patch(Circle((x, y), self.projected_radius, color="#8b5cf6", alpha=0.06))
-            axis.plot([], [], color="#8b5cf6", alpha=0.65, linewidth=7,
-                      label=rf"projected contraction tube $\rho_{{2D}}={self.projected_radius:.3f}$ m")
+            display_step = max(1, len(self.reference_xy) // 30)
+            for index, (x, y) in enumerate(self.reference_xy[::display_step]):
+                axis.add_patch(
+                    Circle(
+                        (x, y),
+                        self.projected_radius,
+                        facecolor="#c4b5fd",
+                        edgecolor="#7c3aed",
+                        linewidth=0.6,
+                        alpha=0.06,
+                        label=(
+                            rf"P2: $q_w={self.q_w:.2f}$, $\rho_p={self.projected_radius:.2f}$ m"
+                            if index == 0
+                            else None
+                        ),
+                    )
+                )
+            for index, (x, y) in enumerate(self.reference_xy[::display_step]):
+                axis.add_patch(
+                    Circle(
+                        (x, y),
+                        self.q_p,
+                        facecolor="#60a5fa",
+                        edgecolor="none",
+                        alpha=0.10,
+                        label=(
+                            rf"P: $q_p={self.q_p:.2f}$ m"
+                            if index == 0
+                            else None
+                        ),
+                    )
+                )
+            axis.plot(
+                [],
+                [],
+                ":",
+                color="#111827",
+                label=(
+                    rf"X4: $q_w={self.q_w:.2f}$, $\rho_{{4D}}={self.state_radius_4d:.2f}$"
+                ),
+            )
+            axis.plot(xs, ys, "--", color="#f97316", label=r"QP ref. $\hat{x}_d$")
             start = self.reference_xy[0]
             goal = self.reference_xy[-1]
-            axis.scatter(*start, color="#0ea5e9", marker="s", s=70, label="verified start")
-            axis.scatter(*goal, color="#ef4444", marker="*", s=130, label="verified goal")
+            axis.scatter(*start, color="#111827", marker="s", s=60, label="$x_0$")
+            axis.scatter(*goal, color="#7c3aed", marker="*", s=100, label="$x_g$")
 
         if self.pose_trail:
             xs = [point[0] for point in self.pose_trail]
             ys = [point[1] for point in self.pose_trail]
-            axis.plot(xs, ys, color="#06b6d4", linewidth=2.5, label="actual PX4 trajectory")
+            axis.plot(xs, ys, color="#16a34a", label=r"odom $x$")
+        if self.latest_pose is not None:
             axis.add_patch(
-                Circle(self.pose_trail[-1], self.drone_radius, facecolor="#f43f5e", edgecolor="#7f1d1d", linewidth=1.5,
-                       zorder=8, label="live drone")
+                Circle(self.latest_pose, self.drone_radius, facecolor="#f43f5e", edgecolor="#7f1d1d", linewidth=1.5,
+                       zorder=8, label="UAV")
             )
 
-        axis.text(
-            0.02,
-            0.02,
-            f"coverage={100.0 * (1.0 - self.delta_w):.0f}%\n"
-            f"q_w={self.q_w:.6f}\n"
-            f"projected 2D radius={self.projected_radius:.6f} m\n"
-            f"4D state radius={self.state_radius_4d:.6f} (mixed state units)",
-            transform=axis.transAxes,
-            bbox={"facecolor": "white", "edgecolor": "#d1d5db", "alpha": 0.9},
-        )
-        axis.legend(loc="upper right", fontsize=8)
-        self.figure.tight_layout()
+        live_error = "--" if self.latest_live_position_error is None else f"{self.latest_live_position_error:.2f} m"
+        max_live_error = "--" if self.max_live_position_error is None else f"{self.max_live_position_error:.2f} m"
+        self.status_text.set_text(f"ODOM\n$e_t$={live_error}\n$e_{{max}}$={max_live_error}")
+        axis.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0, fontsize=8)
+        self.figure.subplots_adjust(left=0.10, bottom=0.11, right=0.75, top=0.92)
         output_dir = os.path.dirname(self.output_png)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
@@ -247,7 +306,7 @@ class ContractionVisualizer(Node):
                     float(maximum[1]) - float(minimum[1]),
                     facecolor="#ef4444",
                     edgecolor="#991b1b",
-                    alpha=0.28,
+                    alpha=0.35,
                 )
             )
 

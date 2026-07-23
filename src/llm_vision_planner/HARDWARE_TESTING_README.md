@@ -269,10 +269,13 @@ Mission sequence:
 
 The contraction visualizer latches the same passed plan, reconstructs its QP
 reference, and subscribes directly to `/fmu/out/vehicle_odometry`. It shows the
-live vehicle as a disk, retains its measured trajectory, and overlays the 90%
-projected 2D contraction tube. It does not propagate a simulated "true" state.
-The tube is computed at launch from the `s_w` scores in the calibration CSV named
-by `verify_contraction.calibration_csv`; set `calibration_samples` and `delta_w`
-there to select the finite-sample certificate.
+live vehicle as a disk, retains its measured trajectory, and uses the same fixed
+workspace axes and certificate layers as the offline dconformal plot: the direct
+position tube from `q_p`, the exact 2D projection of the 4D `q_w` tube, and the
+4D-state radius legend (which is not a position circle). It intentionally omits
+the RRT trajectory and does not propagate a simulated "true" state. The values
+are computed at launch from `s_p` and `s_w` in the calibration CSV named by
+`verify_contraction.calibration_csv`; set `calibration_samples`, `delta_p`, and
+`delta_w` there to select the finite-sample certificate.
 
 Abort with the RC kill switch or a PX4/QGroundControl mode change.

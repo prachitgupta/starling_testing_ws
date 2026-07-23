@@ -103,15 +103,28 @@ from their input CSVs.
 
 ## Offline certificate check
 
+This command is offline: it reads one existing calibration row and does not
+contact the LLM, start PX4, or subscribe to odometry. All relevant certificate
+parameters are explicit below. The plot is written under `fine_tuning/plots/`
+and the numeric report under `fine_tuning/results/`.
+
 ```bash
 cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
-python3 fine_tuning/scripts/dconformal_contraction_verify.py \
+
+# Offline dconformal plot for calibration row 998.
+/usr/bin/python3 fine_tuning/scripts/dconformal_contraction_verify.py \
   --calibration-csv fine_tuning/datasets/calibration_min_control_qp_position_score_2000.csv \
   --calibration-samples 2000 \
   --sample-id 998 \
-  --report-json fine_tuning/results/contraction/qp_position_verify.json \
-  --output-png fine_tuning/plots/contraction/qp_position_verify.png
+  --delta-p 0.10 \
+  --delta-w 0.10 \
+  --dt 0.05 \
+  --output-png fine_tuning/plots/contraction/dconformal_sample_998.png \
+  --report-json fine_tuning/results/contraction/dconformal_sample_998.json
 ```
+
+Open `fine_tuning/plots/contraction/dconformal_sample_998.png` for the direct
+position tube, projected 2D tube, and 4D-certificate legend.
 
 The 90% finite-sample certificate uses rank 1801 and the direct closed-loop
 cross-track score. Its radius is the position quantile itself:
@@ -139,11 +152,11 @@ ros2 launch llm_vision_planner full_plot.launch.py environment:=sim visualizer:=
 ```
 
 The contraction view latches the passed verified plan, reconstructs the same QP
-reference used by the executor, and draws the projected 2D tube derived from the
-regular contraction score `s_w`. Its moving vehicle and trail come directly from
-`/fmu/out/vehicle_odometry`; no simulated state is propagated. Configure the
-calibration CSV, sample count, and `delta_w` in the `verify_contraction` section
-of `config/llm_vision_planner.yaml`.
+reference used by the executor, and draws the direct position tube from `s_p`
+plus the projected 2D tube derived from `s_w`. Its moving vehicle and trail come
+directly from `/fmu/out/vehicle_odometry`; no simulated state is propagated.
+Configure the calibration CSV, sample count, `delta_p`, and `delta_w` in the
+`verify_contraction` section of `config/llm_vision_planner.yaml`.
 
 `control_law_executer.py` is the sole offboard owner. It primes PX4, arms, takes off, holds until the prompt/vLLM/refinement/verifier chain returns a passed plan, generates the shared-clock minimum-control QP reference, tracks it, holds the goal, and requests PX4 auto-land. The launch does not use `mission_takeoff.py` or either trajectory follower.
 

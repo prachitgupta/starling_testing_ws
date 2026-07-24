@@ -114,8 +114,9 @@ path_verifier:
     safety_margin_m: 0.40
     interpolation_spacing_m: 1.0
     cruise_speed_mps: 0.3
-    max_velocity_mps: 1.5
-    max_acceleration_mps2: 1.5
+    # Shared conservative indoor planner, executor, and PX4 envelope.
+    max_velocity_mps: 0.5
+    max_acceleration_mps2: 0.5
     goal_tolerance_m: 0.05
     start_tolerance_m: 0.10
     progress_tolerance_m: 0.001
@@ -154,7 +155,9 @@ verify_contraction:
     plot_period_s: 0.2
     pose_trail_limit: 1000
     trajectory_dt: 0.1
-    calibration_csv: fine_tuning/datasets/calibration_min_control_qp_position_score_2000.csv
+    max_horizontal_speed_mps: 0.5
+    max_horizontal_acceleration_mps2: 0.5
+    calibration_csv: fine_tuning/datasets/calibration_min_control_qp_position_score_with_limits_2000.csv
     calibration_samples: 2000
     delta_p: 0.10
     delta_w: 0.10
@@ -181,4 +184,7 @@ control_law_executer:
     command_retry_s: 1.0
     transition_timeout_s: 15.0
     trajectory_dt: 0.1
+    # Hard horizontal bounds for the QP and outgoing Offboard velocity setpoints.
+    max_horizontal_speed_mps: 0.5
+    max_horizontal_acceleration_mps2: 0.5
     debug: true

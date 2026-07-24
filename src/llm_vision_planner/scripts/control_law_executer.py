@@ -81,6 +81,8 @@ class ControlLawExecuter(Node):
         self.declare_parameter("command_retry_s", 1.0)
         self.declare_parameter("transition_timeout_s", 15.0)
         self.declare_parameter("trajectory_dt", 0.1)
+        self.declare_parameter("max_horizontal_speed_mps", 0.5)
+        self.declare_parameter("max_horizontal_acceleration_mps2", 0.5)
         self.declare_parameter("debug", True)
 
         self.plan_topic = str(self.get_parameter("plan_topic").value)
@@ -117,6 +119,8 @@ class ControlLawExecuter(Node):
         self.last_command_s = -math.inf
         self.last_setpoint_position = None
         self.last_setpoint_velocity = None
+        self.last_track_command = None
+        self.last_track_command_s = None
         self.state = "WAIT_ODOMETRY"
         self.state_start_s = time.monotonic()
         self.failure_reason = None
@@ -178,6 +182,8 @@ class ControlLawExecuter(Node):
                 payload.get("workspace", {}),
                 payload.get("obstacles", []),
                 dt=float(self.get_parameter("trajectory_dt").value),
+                max_velocity_mps=float(self.get_parameter("max_horizontal_speed_mps").value),
+                max_acceleration_mps2=float(self.get_parameter("max_horizontal_acceleration_mps2").value),
             )
         except (RuntimeError, ValueError, np.linalg.LinAlgError) as exc:
             self.get_logger().error(f"minimum-control QP failed: {exc}")
@@ -186,6 +192,8 @@ class ControlLawExecuter(Node):
         self.samples = trajectory["samples"]
         self.goal_target = [waypoints[-1]["x"], waypoints[-1]["y"], waypoints[-1]["z"]]
         self.track_start_s = time.monotonic()
+        self.last_track_command = None
+        self.last_track_command_s = None
         self.transition("TRACK_QP")
         self.get_logger().info(
             f"accepted plan_id={payload.get('plan_id')} with {len(waypoints)} waypoints and {len(self.samples)} QP samples"
@@ -246,7 +254,7 @@ class ControlLawExecuter(Node):
             elapsed = now - self.track_start_s
             reference_state, reference_control = evaluate_sample(self.samples, elapsed)
             actual_state = [self.position[0], self.position[1], self.velocity[0], self.velocity[1]]
-            command = feedback_control(actual_state, reference_state, reference_control)
+            command = self.limit_tracking_command(feedback_control(actual_state, reference_state, reference_control), now)
             self.last_setpoint_position = [math.nan, math.nan, self.takeoff_target[2]]
             self.last_setpoint_velocity = [float(command[0]), float(command[1]), 0.0]
             if elapsed >= float(self.samples[-1]["t"]):
@@ -346,6 +354,32 @@ class ControlLawExecuter(Node):
         self.last_setpoint_position = [float(value) for value in position]
         self.last_setpoint_velocity = [0.0, 0.0, 0.0]
 
+    def limit_tracking_command(self, command, now):
+        """Apply the same indoor speed and acceleration envelope to PX4 commands."""
+        speed_limit = float(self.get_parameter("max_horizontal_speed_mps").value)
+        acceleration_limit = float(self.get_parameter("max_horizontal_acceleration_mps2").value)
+        if speed_limit <= 0.0 or acceleration_limit <= 0.0:
+            raise ValueError("horizontal speed and acceleration limits must be positive")
+        command = np.asarray(command, dtype=float)
+        speed = float(np.linalg.norm(command))
+        if speed > speed_limit:
+            command *= speed_limit / speed
+        previous = self.last_track_command
+        previous_time = self.last_track_command_s
+        if previous is None or previous_time is None:
+            previous = np.zeros(2, dtype=float)
+            interval = 1.0 / max(3.0, float(self.get_parameter("publish_hz").value))
+        else:
+            interval = max(1e-3, now - previous_time)
+        delta = command - previous
+        max_delta = acceleration_limit * interval
+        delta_norm = float(np.linalg.norm(delta))
+        if delta_norm > max_delta:
+            command = previous + delta * (max_delta / delta_norm)
+        self.last_track_command = command.copy()
+        self.last_track_command_s = now
+        return command
+
     def within_target(self, target, tolerance):
         return math.sqrt(sum((self.position[index] - target[index]) ** 2 for index in range(3))) <= tolerance
 
@@ -357,6 +391,9 @@ class ControlLawExecuter(Node):
             self.dwell_start_s = now
 
     def transition(self, state):
+        if state != "TRACK_QP":
+            self.last_track_command = None
+            self.last_track_command_s = None
         self.state = state
         self.state_start_s = time.monotonic()
         self.dwell_start_s = None

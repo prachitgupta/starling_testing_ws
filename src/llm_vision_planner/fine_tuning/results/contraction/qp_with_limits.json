@@ -1,0 +1,38 @@
+{
+  "score_type": "closed_loop_cross_track_position",
+  "sample_id": 998,
+  "calibration_samples": 2000,
+  "s_p": 0.202469,
+  "s_position_time": 0.212279,
+  "q_p": 0.235845,
+  "delta_p": 0.1,
+  "q_w": 1.153221,
+  "delta_w": 0.1,
+  "score_accepted": true,
+  "coverage": 0.9,
+  "K": [
+    [
+      3.162278,
+      0.0,
+      1.78381,
+      0.0
+    ],
+    [
+      0.0,
+      3.162278,
+      0.0,
+      1.78381
+    ]
+  ],
+  "damping": 1.1,
+  "control_dt": 0.05,
+  "max_velocity_mps": 0.5,
+  "max_acceleration_mps2": 0.5,
+  "radius_m": 0.235845,
+  "alpha_p": 1.09623,
+  "projection_gain": 0.519396,
+  "state_radius_4d": 1.344047,
+  "projected_position_radius_m": 0.546398,
+  "inside_position_tube": true,
+  "output_png": "fine_tuning/plots/contraction/qp_with_limits.png"
+}

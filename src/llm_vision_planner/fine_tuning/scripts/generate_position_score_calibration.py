@@ -13,8 +13,8 @@ from position_score import CONTROL_DT, position_scores, weighted_disturbance_sco
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_INPUT = SCRIPT_DIR.parent / "datasets" / "calibration_min_control_qp_shared_clock_2000.csv"
-DEFAULT_OUTPUT = SCRIPT_DIR.parent / "datasets" / "calibration_min_control_qp_position_score_2000.csv"
+DEFAULT_INPUT = SCRIPT_DIR.parent / "datasets" / "calibration_min_control_qp_shared_clock_with_limits_2000.csv"
+DEFAULT_OUTPUT = SCRIPT_DIR.parent / "datasets" / "calibration_min_control_qp_position_score_with_limits_2000.csv"
 EXTRA_FIELDS = [
     "s_p",
     "s_position_time",

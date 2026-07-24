@@ -54,7 +54,12 @@ class ContractionVisualizer(Node):
         self.declare_parameter("plot_period_s", 0.2)
         self.declare_parameter("pose_trail_limit", 1000)
         self.declare_parameter("trajectory_dt", 0.1)
-        self.declare_parameter("calibration_csv", "fine_tuning/datasets/calibration_min_control_qp_position_score_2000.csv")
+        self.declare_parameter("max_horizontal_speed_mps", 0.5)
+        self.declare_parameter("max_horizontal_acceleration_mps2", 0.5)
+        self.declare_parameter(
+            "calibration_csv",
+            "fine_tuning/datasets/calibration_min_control_qp_position_score_with_limits_2000.csv",
+        )
         self.declare_parameter("calibration_samples", 0)
         self.declare_parameter("delta_p", 0.10)
         self.declare_parameter("delta_w", 0.10)
@@ -134,6 +139,18 @@ class ContractionVisualizer(Node):
         state_scores = [float(row["s_w"]) for row in rows if row.get("s_w")]
         if not position_scores or not state_scores:
             raise ValueError(f"{self.calibration_csv} must contain non-empty s_p and s_w calibration scores")
+        expected_limits = {
+            "max_velocity_mps": float(self.get_parameter("max_horizontal_speed_mps").value),
+            "max_acceleration_mps2": float(
+                self.get_parameter("max_horizontal_acceleration_mps2").value
+            ),
+        }
+        for field, expected in expected_limits.items():
+            observed = {float(row[field]) for row in rows if row.get(field)}
+            if observed and any(not math.isclose(value, expected) for value in observed):
+                raise ValueError(
+                    f"{self.calibration_csv} uses {field}={sorted(observed)}, expected {expected}"
+                )
         q_p = self.conformal_quantile(position_scores, self.delta_p)
         q_w = self.conformal_quantile(state_scores, self.delta_w)
         p, gain, _ = solve_care()
@@ -161,6 +178,8 @@ class ContractionVisualizer(Node):
                 payload.get("workspace", {}),
                 payload.get("obstacles", []),
                 dt=float(self.get_parameter("trajectory_dt").value),
+                max_velocity_mps=float(self.get_parameter("max_horizontal_speed_mps").value),
+                max_acceleration_mps2=float(self.get_parameter("max_horizontal_acceleration_mps2").value),
             )
         except (RuntimeError, ValueError) as exc:
             self.get_logger().error(f"could not generate verified QP reference: {exc}")

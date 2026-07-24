@@ -81,8 +81,8 @@
 # Increase gradually once takeoff is stable
 ################################################################################
 
-# Max horizontal velocity (m/s) - keep low indoors
-1	1	MPC_XY_VEL_MAX	2.0	9
+# Max horizontal velocity (m/s) - matches the planner/executor safety envelope
+1	1	MPC_XY_VEL_MAX	0.5	9
 
 # Max vertical up/down velocity (m/s)
 # Reducing MPC_Z_VEL_MAX_UP directly limits takeoff ascent rate
@@ -113,19 +113,16 @@
 ################################################################################
 # EKF2_BARO_CTRL already set to 1 above - baro fused but not primary
 
-# Default: 12.0 m/s — way too fast indoors
-1	1	MPC_XY_VEL_MAX	1.5	9
-
 # Target cruise speed for position-only setpoints (no velocity feedforward)
 # Relevant during your TAKEOFF state where node sends position only
 # Must be <= MPC_XY_VEL_MAX
 # Default: 5.0 m/s
-1	1	MPC_XY_CRUISE	1.0	9
+1	1	MPC_XY_CRUISE	0.5	9
 
 # Horizontal acceleration limit - controls ramp up to target speed
 # Lower values = smoother acceleration, less VIO disturbance during wp approach
 # Default: 3.0 m/s²
-1	1	MPC_ACC_HOR	1.0	9
+1	1	MPC_ACC_HOR	0.5	9
 
 
 

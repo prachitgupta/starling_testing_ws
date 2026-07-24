@@ -36,7 +36,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DATASET_DIR = SCRIPT_DIR.parent / "datasets"
 PLOTS_DIR = SCRIPT_DIR.parent / "plots" / "contraction"
 RESULTS_DIR = SCRIPT_DIR.parent / "results" / "contraction"
-DEFAULT_CALIBRATION_CSV = DATASET_DIR / "calibration_min_control_qp_position_score_2000.csv"
+DEFAULT_CALIBRATION_CSV = DATASET_DIR / "calibration_min_control_qp_position_score_with_limits_2000.csv"
 DEFAULT_OUTPUT_PNG = PLOTS_DIR / "offline_certificate.png"
 DEFAULT_REPORT_JSON = RESULTS_DIR / "offline_certificate.json"
 DEFAULT_CONTROL_LAW_TOPIC = "/llm_vision/dconformal_control_law"
@@ -137,7 +137,14 @@ def query_live_llm(args, row):
             )
             prompt = feedback_prompt(base_prompt, last_metrics)
             continue
-        trajectory = generate_trajectory(verified, row["workspace"], row["obstacles"], dt=args.trajectory_dt)
+        trajectory = generate_trajectory(
+            verified,
+            row["workspace"],
+            row["obstacles"],
+            dt=args.trajectory_dt,
+            max_velocity_mps=args.max_velocity_mps,
+            max_acceleration_mps2=args.max_acceleration_mps2,
+        )
         print(f"[live attempt {attempt}] verified waypoints={len(verified)}, QP samples={len(trajectory['samples'])}", flush=True)
         return raw, verified, metrics, trajectory, prompt
 
@@ -430,6 +437,8 @@ def main():
     parser.add_argument("--llm-retries", type=int, default=2)
     parser.add_argument("--llm-attempts", type=int, default=3)
     parser.add_argument("--trajectory-dt", type=float, default=0.1)
+    parser.add_argument("--max-velocity-mps", type=float, default=0.5)
+    parser.add_argument("--max-acceleration-mps2", type=float, default=0.5)
     parser.add_argument("--plot-period-s", type=float, default=0.5)
     parser.add_argument("--pose-trail-limit", type=int, default=300)
     parser.add_argument("--show-rrt", action="store_true", help="In live mode, compute RRT only for final-plan visualization.")
@@ -441,6 +450,14 @@ def main():
     calibration_rows = rows[: args.calibration_samples] if args.calibration_samples else rows
     if not all(row.get("s_p") and row.get("s_w") for row in calibration_rows):
         raise ValueError("The QP conformal verifier requires calibration columns s_p and s_w.")
+    expected_limits = {
+        "max_velocity_mps": args.max_velocity_mps,
+        "max_acceleration_mps2": args.max_acceleration_mps2,
+    }
+    for field, expected in expected_limits.items():
+        observed = {float(row[field]) for row in calibration_rows if row.get(field)}
+        if observed and any(not math.isclose(value, expected) for value in observed):
+            raise ValueError(f"Calibration uses {field}={sorted(observed)}, expected {expected}")
     p, k, _ = solve_care()
     q_p = conformal_quantile([item["s_p"] for item in calibration_rows], args.delta_p)
     q_w = conformal_quantile([item["s_w"] for item in calibration_rows], args.delta_w)
@@ -482,7 +499,14 @@ def main():
             )
             try:
                 verified_rrt, _ = refine_and_verify(make_refiner(), make_verifier(), raw_rrt, row)
-                verified_rrt_trajectory = generate_trajectory(verified_rrt, row["workspace"], row["obstacles"], dt=args.trajectory_dt)
+                verified_rrt_trajectory = generate_trajectory(
+                    verified_rrt,
+                    row["workspace"],
+                    row["obstacles"],
+                    dt=args.trajectory_dt,
+                    max_velocity_mps=args.max_velocity_mps,
+                    max_acceleration_mps2=args.max_acceleration_mps2,
+                )
                 print(f"[live RRT] verified waypoints={len(verified_rrt)}, QP samples={len(verified_rrt_trajectory['samples'])}", flush=True)
             except ValueError as exc:
                 print(f"[live RRT] verification failed, plotting raw markers only: {exc}", flush=True)
@@ -532,6 +556,8 @@ def main():
             parse_json_field(row["workspace"]),
             parse_json_field(row["obstacles"]),
             dt=args.trajectory_dt,
+            max_velocity_mps=args.max_velocity_mps,
+            max_acceleration_mps2=args.max_acceleration_mps2,
         )
     closed_loop = propagate_controller(rrt_trajectory, llm_trajectory, k, args.dt)
     calculated_scores = position_scores(rrt_trajectory, llm_trajectory, k, args.dt)
@@ -553,6 +579,8 @@ def main():
         "K": k.round(6).tolist(),
         "damping": DAMPING,
         "control_dt": args.dt,
+        "max_velocity_mps": args.max_velocity_mps,
+        "max_acceleration_mps2": args.max_acceleration_mps2,
         "radius_m": round(q_p, 6),
         "alpha_p": round(alpha_p, 6),
         "projection_gain": round(projection_gain, 6),

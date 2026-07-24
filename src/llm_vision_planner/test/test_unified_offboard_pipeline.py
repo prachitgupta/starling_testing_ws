@@ -162,8 +162,20 @@ def test_complete_mission():
         assert any(math.isnan(item[1][0]) and math.isnan(item[1][1]) for item in tracking)
         assert all(math.isfinite(item[1][2]) for item in tracking)
         assert any(all(math.isfinite(value) for value in item[2]) for item in tracking)
+        horizontal_commands = [item for item in tracking if all(math.isfinite(value) for value in item[2][:2])]
+        assert max(math.hypot(item[2][0], item[2][1]) for item in horizontal_commands) <= 0.5 + 1e-6
 
-        spin_until(executor, node, harness, lambda: node.state == "GOAL_HOLD", 1.0)
+        node.last_track_command = None
+        node.last_track_command_s = None
+        first = node.limit_tracking_command([2.0, 0.0], 100.0)
+        second = node.limit_tracking_command([2.0, 0.0], 100.02)
+        assert math.hypot(*first) <= 0.5 + 1e-6
+        assert math.hypot(*second) <= 0.5 + 1e-6
+        assert math.hypot(*(second - first)) <= 0.5 * 0.02 + 1e-6
+        node.last_track_command = None
+        node.last_track_command_s = None
+
+        spin_until(executor, node, harness, lambda: node.state == "GOAL_HOLD", 2.0)
         harness.position = [0.10, 0.0, -0.25]
         harness.velocity = [0.0, 0.0, 0.0]
         spin_until(executor, node, harness, lambda: node.state == "LAND", 1.0)

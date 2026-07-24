@@ -57,7 +57,9 @@ ros2 topic echo /llm_vision/plan_verified
 
 ## Double-Integrator Conformal Calibration Smoke Test
 
-Generate a small calibration CSV with RRT labels, Llama 8B waypoint predictions, min-snap trajectories, and the PDF scores `s_u` and `s_x`:
+Generate a small prediction-pair CSV with RRT labels and Llama waypoint
+predictions, then build bounded minimum-control QP trajectories and position
+scores:
 
 ```bash
 cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
@@ -66,16 +68,29 @@ python3 fine_tuning/scripts/conformal_rrt_dataset.py \
   --output fine_tuning/datasets/conformal_rrt_calibration_smoke.csv \
   --vllm-base-url http://172.22.224.93:8000/v1 \
   --llama-model-name rrt_planner
+
+python3 fine_tuning/scripts/generate_qp_calibration_dataset.py \
+  --input fine_tuning/datasets/conformal_rrt_calibration_smoke.csv \
+  --output fine_tuning/datasets/calibration_min_control_qp_shared_clock_with_limits_smoke.csv \
+  --samples 2 --dt 0.1 \
+  --max-velocity-mps 0.5 --max-acceleration-mps2 0.5
+
+python3 fine_tuning/scripts/generate_position_score_calibration.py \
+  --input fine_tuning/datasets/calibration_min_control_qp_shared_clock_with_limits_smoke.csv \
+  --output fine_tuning/datasets/calibration_min_control_qp_position_score_with_limits_smoke.csv \
+  --samples 2 --delta-p 0.10 --delta-w 0.10 --control-dt 0.05
 ```
 
 Run the double-integrator controller verification and plot the RRT reference, LLM reference, controlled trajectory, and conformal tube:
 
 ```bash
 python3 fine_tuning/scripts/dconformal_contraction_verify.py \
-  --calibration-csv fine_tuning/datasets/conformal_rrt_calibration_smoke.csv \
+  --calibration-csv fine_tuning/datasets/calibration_min_control_qp_position_score_with_limits_smoke.csv \
   --sample-id 0 \
-  --output-png fine_tuning/plots/dconformal_contraction_verification_smoke.png \
-  --report-json fine_tuning/plots/dconformal_contraction_verification_smoke.json
+  --trajectory-dt 0.1 \
+  --max-velocity-mps 0.5 --max-acceleration-mps2 0.5 \
+  --output-png fine_tuning/plots/contraction/qp_with_limits_smoke.png \
+  --report-json fine_tuning/results/contraction/qp_with_limits_smoke.json
 ```
 
 ## PX4 SITL obstacle-avoidance world (manual launch)
@@ -266,6 +281,25 @@ Mission sequence:
 5. Failed verification results are appended to the next prompt.
 6. The first `passed=true` trajectory is converted to a minimum-control QP reference.
 7. The executor tracks `u = u_reference - K(x - x_reference)`, holds the goal, stops Offboard setpoints, requests PX4 auto-land, and disarms after landing detection.
+
+### Indoor horizontal-motion envelope
+
+The live QP and the outgoing PX4 velocity setpoint both use hard horizontal
+limits from `config/llm_vision_planner.yaml`:
+
+- `max_horizontal_speed_mps: 0.5`
+- `max_horizontal_acceleration_mps2: 0.5`
+
+The QP generator checks its reference state velocity, reference velocity
+command, and modeled acceleration against these hard bounds; when needed, it
+lengthens the horizon and resolves before accepting the plan. The executor then
+applies the same vector speed cap and a per-message velocity slew-rate cap
+before publishing to PX4. These are deliberately below the indoor PX4 parameter envelope in
+`starling_testing/params/indoor_vio_missing_gps.params`
+(`MPC_XY_VEL_MAX=0.5`, `MPC_XY_CRUISE=0.5`, `MPC_ACC_HOR=0.5`). This keeps
+PX4's position-only takeoff and hold behaviour inside the same envelope. Keep
+the planner verifier limits at the same or stricter values; they are now
+`0.5 m/s` and `0.5 m/s^2`.
 
 The contraction visualizer latches the same passed plan, reconstructs its QP
 reference, and subscribes directly to `/fmu/out/vehicle_odometry`. It shows the

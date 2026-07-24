@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--input",
-        default="fine_tuning/datasets/calibration_min_control_qp_position_score_2000.csv",
+        default="fine_tuning/datasets/calibration_min_control_qp_position_score_with_limits_2000.csv",
     )
     parser.add_argument(
         "--output",
@@ -29,6 +29,7 @@ def main():
         writer = csv.DictWriter(
             output_file,
             fieldnames=["sample_id", "environment", "ros2_pub_command", "raw_rrt", "raw_llm", "s_u", "s_x"],
+            lineterminator="\n",
         )
         writer.writeheader()
         for row in reader:

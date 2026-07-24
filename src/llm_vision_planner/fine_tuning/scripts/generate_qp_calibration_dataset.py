@@ -12,7 +12,7 @@ from min_control_qp import evaluate_sample, generate_shared_pair
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_INPUT = SCRIPT_DIR.parent / "datasets" / "conformal_rrt_calibration_dataset_2001.csv"
-DEFAULT_OUTPUT = SCRIPT_DIR.parent / "datasets" / "calibration_min_control_qp_shared_clock_2000.csv"
+DEFAULT_OUTPUT = SCRIPT_DIR.parent / "datasets" / "calibration_min_control_qp_shared_clock_with_limits_2000.csv"
 REQUIRED_SOURCE_FIELDS = {
     "sample_id",
     "workspace",
@@ -29,6 +29,8 @@ CALIBRATION_FIELDS = [
     "q_x",
     "delta_u",
     "delta_x",
+    "max_velocity_mps",
+    "max_acceleration_mps2",
     "accepted",
 ]
 
@@ -75,12 +77,22 @@ def build(args):
         obstacles = json.loads(source["obstacles"])
         rrt_waypoints = json.loads(source["rrt_verified_waypoints"])
         llm_waypoints = json.loads(source["llm_verified_waypoints"])
-        rrt, llm = generate_shared_pair(rrt_waypoints, llm_waypoints, workspace, obstacles, args.dt)
+        rrt, llm = generate_shared_pair(
+            rrt_waypoints,
+            llm_waypoints,
+            workspace,
+            obstacles,
+            args.dt,
+            max_velocity_mps=args.max_velocity_mps,
+            max_acceleration_mps2=args.max_acceleration_mps2,
+        )
         scores = score_trajectories(rrt, llm)
         row = dict(source)
         row["rrt_trajectory"] = json.dumps(rrt, separators=(",", ":"))
         row["llm_trajectory"] = json.dumps(llm, separators=(",", ":"))
         row["s_u"], row["s_x"] = scores["s_u"], scores["s_x"]
+        row["max_velocity_mps"] = args.max_velocity_mps
+        row["max_acceleration_mps2"] = args.max_acceleration_mps2
         output_rows.append(row)
         print(f"[{index + 1}/{args.samples}] sample_id={row['sample_id']} s_u={row['s_u']} s_x={row['s_x']}", flush=True)
     q_u = conformal_quantile([float(row["s_u"]) for row in output_rows], args.delta_u)
@@ -107,6 +119,8 @@ def main():
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--samples", type=int, default=2000)
     parser.add_argument("--dt", type=float, default=0.1)
+    parser.add_argument("--max-velocity-mps", type=float, default=0.5)
+    parser.add_argument("--max-acceleration-mps2", type=float, default=0.5)
     parser.add_argument("--delta-u", type=float, default=0.05)
     parser.add_argument("--delta-x", type=float, default=0.05)
     args = parser.parse_args()

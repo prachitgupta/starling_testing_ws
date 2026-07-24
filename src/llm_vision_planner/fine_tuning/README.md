@@ -74,16 +74,18 @@ source /opt/ros/humble/setup.bash
 
 /usr/bin/python3 fine_tuning/scripts/generate_qp_calibration_dataset.py \
   --input fine_tuning/datasets/conformal_rrt_prediction_pairs_5000.csv \
-  --output fine_tuning/datasets/calibration_min_control_qp_shared_clock_5000.csv \
+  --output fine_tuning/datasets/calibration_min_control_qp_shared_clock_with_limits_5000.csv \
   --samples 5000 \
   --dt 0.1 \
+  --max-velocity-mps 0.5 \
+  --max-acceleration-mps2 0.5 \
   --delta-u 0.05 \
   --delta-x 0.05 \
   2>&1 | tee /tmp/qp5000_trajectories.log
 
 /usr/bin/python3 fine_tuning/scripts/generate_position_score_calibration.py \
-  --input fine_tuning/datasets/calibration_min_control_qp_shared_clock_5000.csv \
-  --output fine_tuning/datasets/calibration_min_control_qp_position_score_5000.csv \
+  --input fine_tuning/datasets/calibration_min_control_qp_shared_clock_with_limits_5000.csv \
+  --output fine_tuning/datasets/calibration_min_control_qp_position_score_with_limits_5000.csv \
   --samples 5000 \
   --delta-p 0.10 \
   --delta-w 0.10 \
@@ -113,25 +115,29 @@ cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
 
 # Offline dconformal plot for calibration row 998.
 /usr/bin/python3 fine_tuning/scripts/dconformal_contraction_verify.py \
-  --calibration-csv fine_tuning/datasets/calibration_min_control_qp_position_score_2000.csv \
+  --calibration-csv fine_tuning/datasets/calibration_min_control_qp_position_score_with_limits_2000.csv \
   --calibration-samples 2000 \
   --sample-id 998 \
   --delta-p 0.10 \
   --delta-w 0.10 \
   --dt 0.05 \
-  --output-png fine_tuning/plots/contraction/dconformal_sample_998.png \
-  --report-json fine_tuning/results/contraction/dconformal_sample_998.json
+  --trajectory-dt 0.1 \
+  --max-velocity-mps 0.5 \
+  --max-acceleration-mps2 0.5 \
+  --output-png fine_tuning/plots/contraction/qp_with_limits.png \
+  --report-json fine_tuning/results/contraction/qp_with_limits.json
 ```
 
-Open `fine_tuning/plots/contraction/dconformal_sample_998.png` for the direct
+Open `fine_tuning/plots/contraction/qp_with_limits.png` for the direct
 position tube, projected 2D tube, and 4D-certificate legend.
 
 The 90% finite-sample certificate uses rank 1801 and the direct closed-loop
 cross-track score. Its radius is the position quantile itself:
-`radius = q_p = 0.241187 m`. The equal-time position error is retained only as
-a diagnostic. The verifier plot also compares the current-speed 4D state radius
-`1.481553` and its exact 2D projection `0.602299 m`. All scores use the calibrated
-planar model at a 20 Hz control rate.
+`radius = q_p = 0.235845 m`. The equal-time position error is retained only as
+a diagnostic. The verifier plot also compares the bounded-QP 4D state radius
+`1.344047` and its exact 2D projection `0.546398 m`. All scores use the calibrated
+planar model at a 20 Hz control rate, a `0.5 m/s` velocity limit, and a
+`0.5 m/s^2` acceleration limit.
 
 ## PX4 SITL and unified launch
 

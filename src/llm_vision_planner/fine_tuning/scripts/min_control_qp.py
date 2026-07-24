@@ -9,6 +9,7 @@ import numpy as np
 DAMPING = 1.1
 DT = 0.1
 CRUISE_SPEED_MPS = 0.3
+_BOUNDED_DURATION_SCALES = (1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)
 
 
 def segment_durations(waypoints, cruise_speed_mps=CRUISE_SPEED_MPS):
@@ -107,18 +108,75 @@ def _solve_controls(waypoints, waypoint_knots, total_steps, dt):
     return controls
 
 
-def generate_trajectory(waypoints, workspace=None, obstacles=None, dt=DT, durations=None, total_steps=None):
-    """Solve the minimum-control QP and return the existing trajectory structure."""
+def _positive_limit(name, value):
+    if value is None:
+        return None
+    value = float(value)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f"{name} must be a positive finite value when provided")
+    return value
+
+
+def _controls_respect_limits(controls, dt, max_velocity_mps, max_acceleration_mps2):
+    """Check state velocity, velocity-command, and modeled acceleration bounds."""
+    max_velocity_mps = _positive_limit("max_velocity_mps", max_velocity_mps)
+    max_acceleration_mps2 = _positive_limit("max_acceleration_mps2", max_acceleration_mps2)
+    state = np.array([[0.0, 0.0], [0.0, 0.0]], dtype=float)
+    a, b = discrete_dynamics(dt)
+    for control in controls:
+        if max_velocity_mps is not None and float(np.linalg.norm(control)) > max_velocity_mps + 1e-8:
+            return False
+        acceleration = DAMPING * (control - state[1])
+        if max_acceleration_mps2 is not None and float(np.linalg.norm(acceleration)) > max_acceleration_mps2 + 1e-8:
+            return False
+        state = a @ state + b[:, None] * control[None, :]
+        if max_velocity_mps is not None and float(np.linalg.norm(state[1])) > max_velocity_mps + 1e-8:
+            return False
+    return True
+
+
+def generate_trajectory(
+    waypoints,
+    workspace=None,
+    obstacles=None,
+    dt=DT,
+    durations=None,
+    total_steps=None,
+    max_velocity_mps=None,
+    max_acceleration_mps2=None,
+):
+    """Solve a minimum-control QP whose accepted reference meets hard motion bounds."""
     usable_waypoints = list(waypoints)
     if len(usable_waypoints) < 2:
         raise ValueError("Minimum-control QP requires at least two verified waypoints.")
     natural_durations = segment_durations(usable_waypoints) if durations is None else [float(value) for value in durations]
     if len(natural_durations) != len(usable_waypoints) - 1 or min(natural_durations) <= 0.0:
         raise ValueError("durations must contain one positive value per waypoint segment")
-    steps = allocate_steps(natural_durations, dt=dt, total_steps=total_steps)
-    waypoint_knots = np.concatenate(([0], np.cumsum(steps))).astype(int).tolist()
-    total_steps = waypoint_knots[-1]
-    controls = _solve_controls(usable_waypoints, waypoint_knots, total_steps, dt)
+    max_velocity_mps = _positive_limit("max_velocity_mps", max_velocity_mps)
+    max_acceleration_mps2 = _positive_limit("max_acceleration_mps2", max_acceleration_mps2)
+    initial_steps = allocate_steps(natural_durations, dt=dt, total_steps=total_steps)
+    initial_total_steps = int(sum(initial_steps))
+    bounded = max_velocity_mps is not None or max_acceleration_mps2 is not None
+    last_error = None
+    for scale in (_BOUNDED_DURATION_SCALES if bounded else (1.0,)):
+        candidate_total_steps = max(len(natural_durations), int(math.ceil(initial_total_steps * scale)))
+        steps = allocate_steps(natural_durations, dt=dt, total_steps=candidate_total_steps)
+        waypoint_knots = np.concatenate(([0], np.cumsum(steps))).astype(int).tolist()
+        total_steps = waypoint_knots[-1]
+        controls = _solve_controls(usable_waypoints, waypoint_knots, total_steps, dt)
+        if not bounded or _controls_respect_limits(
+            controls,
+            dt,
+            max_velocity_mps,
+            max_acceleration_mps2,
+        ):
+            break
+        last_error = "requested horizon exceeds a horizontal safety bound"
+    else:
+        raise RuntimeError(
+            "Bounded minimum-control QP remains infeasible after lengthening the horizon: "
+            f"{last_error}"
+        )
     a, b = discrete_dynamics(dt)
     states = np.array(
         [[float(usable_waypoints[0]["x"]), float(usable_waypoints[0]["y"])], [0.0, 0.0]],
@@ -136,32 +194,56 @@ def generate_trajectory(waypoints, workspace=None, obstacles=None, dt=DT, durati
         )
         if step < total_steps:
             states = a @ states + b[:, None] * controls[step][None, :]
-    return {
+    trajectory = {
         "waypoints": usable_waypoints,
         "durations": [round(step * dt, 6) for step in steps],
         "waypoint_knots": waypoint_knots,
         "samples": samples,
     }
+    if max_velocity_mps is not None or max_acceleration_mps2 is not None:
+        trajectory["limits"] = {
+            "max_velocity_mps": _positive_limit("max_velocity_mps", max_velocity_mps),
+            "max_acceleration_mps2": _positive_limit("max_acceleration_mps2", max_acceleration_mps2),
+        }
+    return trajectory
 
 
-def generate_shared_pair(rrt_waypoints, llm_waypoints, workspace=None, obstacles=None, dt=DT):
-    """Solve RRT and LLM QPs with one total horizon and independent waypoint knots."""
+def generate_shared_pair(
+    rrt_waypoints,
+    llm_waypoints,
+    workspace=None,
+    obstacles=None,
+    dt=DT,
+    max_velocity_mps=None,
+    max_acceleration_mps2=None,
+):
+    """Solve RRT and LLM QPs with one bounded shared horizon."""
     rrt_natural = segment_durations(rrt_waypoints)
     total_steps = max(len(rrt_natural), int(round(sum(rrt_natural) / dt)))
-    rrt = generate_trajectory(
-        rrt_waypoints,
-        workspace,
-        obstacles,
-        dt=dt,
-        durations=rrt_natural,
-        total_steps=total_steps,
-    )
-    llm = generate_trajectory(
-        llm_waypoints,
-        workspace,
-        obstacles,
-        dt=dt,
-        durations=segment_durations(llm_waypoints),
-        total_steps=total_steps,
-    )
-    return rrt, llm
+    llm_natural = segment_durations(llm_waypoints)
+    for _ in range(len(_BOUNDED_DURATION_SCALES) + 1):
+        rrt = generate_trajectory(
+            rrt_waypoints,
+            workspace,
+            obstacles,
+            dt=dt,
+            durations=rrt_natural,
+            total_steps=total_steps,
+            max_velocity_mps=max_velocity_mps,
+            max_acceleration_mps2=max_acceleration_mps2,
+        )
+        llm = generate_trajectory(
+            llm_waypoints,
+            workspace,
+            obstacles,
+            dt=dt,
+            durations=llm_natural,
+            total_steps=total_steps,
+            max_velocity_mps=max_velocity_mps,
+            max_acceleration_mps2=max_acceleration_mps2,
+        )
+        required_steps = max(rrt["waypoint_knots"][-1], llm["waypoint_knots"][-1])
+        if rrt["waypoint_knots"][-1] == llm["waypoint_knots"][-1] == total_steps:
+            return rrt, llm
+        total_steps = required_steps
+    raise RuntimeError("Could not establish one bounded shared horizon for the RRT and LLM QPs.")

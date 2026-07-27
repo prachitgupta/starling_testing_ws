@@ -246,6 +246,9 @@ Load:
 ~/Desktop/starling_testing_ws/src/llm_vision_planner/params/vicon_voxl.params
 ```
 
+Load this file after any QVIO parameter profile; loading the QVIO profile
+afterward will overwrite the required Vicon settings.
+
 Reboot PX4. If the QGroundControl reboot action fails, disarm, remove vehicle
 power, wait 10 seconds, and power it on again. Keep Vicon and MAVROS streaming
 during PX4 initialization.
@@ -253,12 +256,16 @@ during PX4 initialization.
 Verify these parameters in QGroundControl:
 
 ```text
+SYS_HAS_GPS      = 0
+SYS_HAS_MAG      = 0
+COM_ARM_WO_GPS   = 1
+EKF2_AID_MASK    = 0
 EKF2_EV_CTRL     = 11    # horizontal position, vertical position, Vicon yaw
 EKF2_HGT_REF     = 3     # vision height reference
 EKF2_GPS_CTRL    = 0     # indoor GNSS disabled
 EKF2_OF_CTRL     = 0
 EKF2_RNG_CTRL    = 0
-EKF2_MAG_TYPE    = 6     # magnetometer initializes yaw only
+EKF2_MAG_TYPE    = 5     # magnetometer disabled; Vicon supplies yaw
 EKF2_EV_QMIN     = 0
 EKF2_EV_NOISE_MD = 1
 EKF2_EVP_NOISE   = 0.10 m
@@ -266,8 +273,9 @@ EKF2_EVA_NOISE   = 0.05 rad
 EKF2_EV_DELAY    = 0 ms initially
 ```
 
-`EKF2_MAG_TYPE=6` is not continuous 3-axis magnetometer fusion. It initializes
-heading, after which Vicon yaw is the continuing heading reference.
+On PX4 v1.14, `EKF2_MAG_TYPE=5` disables magnetometer fusion. With the yaw bit
+enabled in `EKF2_EV_CTRL`, Vicon initializes and supplies the continuing yaw
+reference. `EKF2_MAG_TYPE=6` is not defined in PX4 v1.14.
 
 ## 8. Verify frame alignment and EKF2 fusion
 
@@ -311,7 +319,7 @@ If `vehicle_visual_odometry` is correct but these flags remain false, check in
 this order:
 
 1. Vision gaps are below `0.2 s`.
-2. `EKF2_MAG_TYPE=6` allowed initial yaw alignment.
+2. `EKF2_MAG_TYPE=5` is set and the Vicon quaternion allows yaw alignment.
 3. `EKF2_EV_CTRL=11` and `EKF2_HGT_REF=3`.
 4. `innovation_rejected` and `test_ratio` in the three aid-source topics.
 5. Vicon yaw is aligned and its quaternion is valid.

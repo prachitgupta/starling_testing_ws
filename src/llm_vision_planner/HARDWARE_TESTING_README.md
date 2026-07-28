@@ -22,11 +22,32 @@ On the ground station:
 ```bash
 export Starling2=10.117.229.1
 export VICON_COMPUTER_IP=10.117.229.124
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export FASTDDS_DEFAULT_PROFILES_FILE="$HOME/Desktop/starling_testing_ws/install/llm_vision_planner/share/llm_vision_planner/config/fastdds_wifi.xml"
+export FASTRTPS_DEFAULT_PROFILES_FILE="$FASTDDS_DEFAULT_PROFILES_FILE"
 
 ping -c 3 "$Starling2"
 ping -c 3 "$VICON_COMPUTER_IP"
 nc -vz "$VICON_COMPUTER_IP" 801
 ```
+
+The Fast DDS profile pins ROS 2 UDP traffic to the ground-station Wi-Fi
+address `10.193.80.217` (interface `wlp6s0`) so a VPN cannot become the DDS
+interface. If DHCP changes that address, update `config/fastdds_wifi.xml`,
+rebuild, and source the workspace again. Restart the ROS 2 daemon after
+changing the profile:
+
+```bash
+ros2 daemon stop
+ros2 daemon start
+ip route get "$Starling2"
+```
+
+The route check must report `dev wlp6s0 src 10.193.80.217`. The complete
+planner launch loads this profile automatically. The exports above are still
+required for separately started ROS 2 commands such as MAVROS and the ROS CLI.
+If the VPN client has a local-LAN blocking option, local network access must
+also be enabled there.
 
 TCP port `801` must be reachable for the Vicon DataStream SDK. Allow Vicon
 Tracker/DataStream through the Windows firewall if this check fails.

@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable, TimerAction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import PathJoinSubstitution
 from launch.substitutions import LaunchConfiguration, PythonExpression
@@ -37,6 +37,9 @@ def generate_launch_description():
         description="Live plot: standard or contraction",
     )
     params_file = LaunchConfiguration("params_file")
+    fastdds_profiles_file = PathJoinSubstitution(
+        [FindPackageShare("llm_vision_planner"), "config", "fastdds_wifi.xml"]
+    )
 
     use_real_perception = IfCondition(PythonExpression(["'", LaunchConfiguration("environment"), "' == 'real'"]))
 
@@ -114,6 +117,9 @@ def generate_launch_description():
             llm_provider_arg,
             show_rrt_arg,
             visualizer_arg,
+            SetEnvironmentVariable("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp"),
+            SetEnvironmentVariable("FASTDDS_DEFAULT_PROFILES_FILE", fastdds_profiles_file),
+            SetEnvironmentVariable("FASTRTPS_DEFAULT_PROFILES_FILE", fastdds_profiles_file),
             semantic_perception,
             llm_planner,
             TimerAction(period=2.0, actions=[prompt_generator]),

@@ -354,6 +354,20 @@ If that executable is not listed, use:
 ros2 run voxl_mpa_to_ros2 voxl_mpa_to_ros2
 ```
 
+Set the TFLite input pipe to `hires_small_color`:
+
+```bash
+vi /etc/modalai/voxl-tflite-server.conf
+```
+
+```json
+"input_pipe": "hires_small_color",
+```
+
+```bash
+systemctl restart voxl-tflite-server
+```
+
 On the ground station, verify both MPA and PX4 DDS topics:
 
 ```bash

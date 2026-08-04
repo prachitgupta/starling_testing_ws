@@ -685,6 +685,304 @@ limit, and the result was saved on VOXL as
 is enabled. Validate the configured RGB-to-body transform against measured
 object positions before flight.
 
+### Reproduce the accepted calibration and perception result (August 4, 2026)
+
+#### 1. Check VOXL services
+
+Command:
+
+```bash
+voxl-inspect-services
+```
+
+Expected result:
+
+```text
+voxl-camera-server and voxl-portal are running.
+```
+
+#### 2. Prepare VOXL for calibration
+
+Command:
+
+```bash
+voxl-set-cpu-mode perf
+systemctl stop voxl-tflite-server voxl-qvio-server voxl-tag-detector voxl-dfs-server voxl-streamer 2>/dev/null || true
+systemctl restart voxl-camera-server voxl-portal
+```
+
+Expected result:
+
+```text
+Performance mode is enabled; camera server and portal are active; competing camera clients are stopped.
+```
+
+#### 3. Confirm the paired hires pipes
+
+Command:
+
+```bash
+voxl-list-pipes | grep -E '^hires_small_(color|grey)$'
+```
+
+Expected result:
+
+```text
+hires_small_color
+hires_small_grey
+```
+
+#### 4. Calibrate the 1024x768 grey stream
+
+Command:
+
+```bash
+voxl-calibrate-camera hires_small_grey -s 5x6 -l 0.030
+```
+
+Expected result:
+
+```text
+Matrix
+[501.5315609739347, 0, 508.1806484040712;
+ 0, 502.8286520347511, 380.6556051674785;
+ 0, 0, 1]
+Distortion
+[-0.2865590895338794;
+ 0.0817899422501154;
+ 0.0005237405528961263;
+ 0.0007115622455112405;
+ -0.01017242004578325]
+distortion_model: plumb_bob
+Re-projection error reported by calibrateCamera: 0.703523
+Calibration Succeded!
+Writing data to: /data/modalai/opencv_hires_small_grey_intrinsics.yml
+Saved!
+```
+
+#### 5. Verify and back up the calibration
+
+Command:
+
+```bash
+sed -n '1,100p' /data/modalai/opencv_hires_small_grey_intrinsics.yml
+cp -p /data/modalai/opencv_hires_small_grey_intrinsics.yml \
+  /data/modalai/opencv_hires_small_grey_intrinsics.yml.accepted
+ls -l /data/modalai/opencv_hires_small_grey_intrinsics.yml*
+```
+
+Expected result:
+
+```text
+width: 1024
+height: 768
+distortion_model: plumb_bob
+reprojection_error: 0.703523
+Both opencv_hires_small_grey_intrinsics.yml and its .accepted copy exist.
+```
+
+#### 6. Restore perception services
+
+Command:
+
+```bash
+systemctl restart voxl-camera-server
+systemctl start voxl-qvio-server voxl-tflite-server
+voxl-inspect-services | grep -E 'camera|qvio|tflite|mpa-to-ros2'
+```
+
+Expected result:
+
+```text
+voxl-camera-server, voxl-qvio-server, and voxl-tflite-server are running.
+voxl-mpa-to-ros2 is running as a service or as the existing manual bridge process.
+```
+
+#### 7. Build and source the ROS 2 package
+
+Command:
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select llm_vision_planner
+source install/setup.bash
+```
+
+Expected result:
+
+```text
+Finished <<< llm_vision_planner
+Summary: 1 package finished
+```
+
+#### 8. Confirm required ROS 2 topics
+
+Command:
+
+```bash
+ros2 topic list | grep -E '^/(tflite|tflite_data|tof_pc|fmu/out/vehicle_odometry)$'
+```
+
+Expected result:
+
+```text
+/fmu/out/vehicle_odometry
+/tflite
+/tflite_data
+/tof_pc
+```
+
+#### 9. Confirm live source rates
+
+Command:
+
+```bash
+timeout 12s ros2 topic hz /tflite
+timeout 12s ros2 topic hz /tof_pc
+timeout 12s ros2 topic hz /fmu/out/vehicle_odometry
+```
+
+Expected result:
+
+```text
+/tflite: nonzero rate; approximately 3.2 Hz was observed through the bridge.
+/tof_pc: nonzero rate; approximately 4.7 Hz was observed through the bridge.
+/fmu/out/vehicle_odometry: approximately 100-120 Hz.
+```
+
+#### 10. Start semantic perception
+
+Command:
+
+```bash
+ros2 run llm_vision_planner perception_detection.py --ros-args \
+  --params-file ~/Desktop/starling_testing_ws/src/llm_vision_planner/config/llm_vision_planner.yaml
+```
+
+Expected result:
+
+```text
+/semantic_obstacle_perception starts and publishes /llm_vision/semantic_obstacles.
+```
+
+#### 11. Verify the loaded calibration and synchronization parameters
+
+Command:
+
+```bash
+ros2 param get /semantic_obstacle_perception hires_fx
+ros2 param get /semantic_obstacle_perception hires_fy
+ros2 param get /semantic_obstacle_perception hires_cx
+ros2 param get /semantic_obstacle_perception hires_cy
+ros2 param get /semantic_obstacle_perception hires_width
+ros2 param get /semantic_obstacle_perception hires_height
+ros2 param get /semantic_obstacle_perception camera_calibration_valid
+ros2 param get /semantic_obstacle_perception detection_camera
+ros2 param get /semantic_obstacle_perception max_sync_slop_s
+```
+
+Expected result:
+
+```text
+Double value is: 501.5315609739347
+Double value is: 502.8286520347511
+Double value is: 508.1806484040712
+Double value is: 380.6556051674785
+Integer value is: 1024
+Integer value is: 768
+Boolean value is: True
+String value is: hires_small_color
+Double value is: 0.35
+```
+
+#### 12. Sanity-check TFLite detections
+
+Command:
+
+```bash
+ros2 topic echo /tflite_data --once
+```
+
+Expected result:
+
+```text
+With a supported object visible: cam is hires_small_color, confidence is nonzero, and the bounding box lies within 1024x768.
+No message is expected while the detector has no accepted object.
+```
+
+#### 13. Sanity-check fused semantic obstacles
+
+Command:
+
+```bash
+ros2 topic echo --full-length /llm_vision/semantic_obstacles --once
+```
+
+Expected result:
+
+```text
+healthy: true
+range_is_measured: true
+camera: hires_small_color
+no_depth_detections: []
+depth_source begins with tof_projected
+distance_m is positive
+min_corner, max_corner, and size are present for prompt_generator.py
+sync_delta_s is no greater than 0.35
+```
+
+#### 14. Confirm the accepted live fusion result
+
+Command:
+
+```bash
+ros2 topic echo --full-length /llm_vision/semantic_obstacles --once | \
+  grep -E 'healthy|range_is_measured|label|distance_m|depth_source|sync_delta_s'
+```
+
+Expected result:
+
+```text
+healthy: true
+range_is_measured: true
+label: bed
+distance_m: approximately 1.94
+depth_source: tof_projected_1270of1367pts
+sync_delta_s: approximately 0.022
+```
+
+#### 15. Open the live perception-only plot
+
+Command:
+
+```bash
+ros2 run llm_vision_planner debug_perception.py
+```
+
+Expected result:
+
+```text
+A live 2D window shows the drone, object label, measured distance, and bounding-box dimensions.
+No image file is saved.
+No flight command is published.
+```
+
+#### 16. Save a plot only when requested
+
+Command:
+
+```bash
+ros2 run llm_vision_planner debug_perception.py --ros-args \
+  -p output_png:=/tmp/debug_perception.png
+```
+
+Expected result:
+
+```text
+The live window remains active and /tmp/debug_perception.png is written.
+```
+
 Before the perception flight:
 
 ```bash

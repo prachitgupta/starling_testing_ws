@@ -38,6 +38,11 @@ Use this section only while campus Ethernet reaches the GPU through a VPN. ROS
 DataStream also remains on Wi-Fi. The GPU does not need this DDS profile unless
 it runs ROS 2 directly.
 
+Connect the VPN only after the Starling/Vicon checks pass and the Wi-Fi-only
+DDS profile below is enabled, but before connecting to the GPU or launching the
+planner. Select `1 Split Tunnel` (`OpenConnect1 (Split)` on Linux), not
+`2 Tunnel All`.
+
 The profile is opt-in and terminal-local. It allows Fast DDS UDP only on
 loopback and the selected Wi-Fi IPv4 address, excluding campus Ethernet and VPN
 interfaces. It does not modify NetworkManager, routes, `.bashrc`, or systemd.

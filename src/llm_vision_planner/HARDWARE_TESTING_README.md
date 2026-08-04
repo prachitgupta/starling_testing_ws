@@ -595,6 +595,26 @@ from `/tof_pc`. The output topic is
 `/llm_vision/semantic_obstacles`, which is consumed by
 `prompt_generator.py`.
 
+### Frames and key parameters
+
+Use camera optical frames for RGB/ToF projection and local NED for the final
+obstacle coordinates. Image bounding boxes are matched to ToF points, converted
+to body FRD with the camera mounts, then converted to NED with synchronized PX4
+odometry. NED is x North, y East, z Down.
+
+| Parameter | Reproduction value | Adjust only when |
+| --- | --- | --- |
+| `detection_camera` | `hires_small_color` | The TFLite input pipe changes |
+| `hires_width`, `hires_height` | `1024`, `768` | The input resolution or crop changes |
+| `hires_fx`, `hires_fy`, `hires_cx`, `hires_cy` | `501.5316`, `502.8287`, `508.1806`, `380.6556` | A new calibration is accepted for the exact stream and resolution |
+| `point_cloud_frame` | `tof_optical` | Use `local_ned` only for an already transformed cloud |
+| `detection_cam_body_*` | `[0.068, 0.012, -0.015]` m; RPY `[0, 90, 90]` deg | The RGB mount changes or is remeasured |
+| `depth_cam_body_*` | `[0.066, 0.009, -0.012]` m; RPY `[0, 90, 180]` deg | The ToF mount changes or is remeasured |
+| `max_sync_slop_s` | `0.35` | Use the smallest value that still fuses RGB and ToF; lower it for motion |
+| `min_confidence` | `0.60` | Raise it for false detections; lower it for missed detections |
+| `min_tof_depth_m`, `max_tof_depth_m` | `0.20`, `6.0` | The usable ToF range changes |
+| `bbox_inner_margin_fraction` | `0.25` | Increase it to reject box-edge background; decrease it when too few ToF points remain |
+
 ### Calibrate the hires camera
 
 Use the grey stream paired with the TFLite color stream:
@@ -617,11 +637,8 @@ systemctl restart voxl-camera-server voxl-portal
 Reduce exposure under bright lighting:
 
 ```bash
-voxl-send-command hires_small_grey set_exp_gain 200 150
+voxl-send-command hires_small_grey set_exp_gain 3.0 400
 ```
-
-If the board is too dark, increase the exposure value gradually while keeping
-the corners sharp.
 
 Open the calibration overlay in VOXL Portal, then run:
 
@@ -661,16 +678,6 @@ cd ~/Desktop/starling_testing_ws
 source /opt/ros/humble/setup.bash
 colcon build --packages-select llm_vision_planner
 source install/setup.bash
-```
-
-### Check live inputs
-
-```bash
-ros2 topic list | grep -E '^/(tflite|tflite_data|tof_pc|fmu/out/vehicle_odometry)$'
-timeout 12s ros2 topic hz /tflite
-timeout 12s ros2 topic hz /tof_pc
-timeout 12s ros2 topic hz /fmu/out/vehicle_odometry
-ros2 topic echo /tflite_data --once
 ```
 
 ### Run perception only

@@ -727,7 +727,7 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
   environment:=real \
   llm_provider:=llama \
-  visualizer:=standard \
+  visualizer:=contraction \
   show_rrt:=true
 ```
 

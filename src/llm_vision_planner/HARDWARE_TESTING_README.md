@@ -38,11 +38,6 @@ Use this section only while campus Ethernet reaches the GPU through a VPN. ROS
 DataStream also remains on Wi-Fi. The GPU does not need this DDS profile unless
 it runs ROS 2 directly.
 
-Connect the VPN only after the Starling/Vicon checks pass and the Wi-Fi-only
-DDS profile below is enabled, but before connecting to the GPU or launching the
-planner. Select `1 Split Tunnel` (`OpenConnect1 (Split)` on Linux), not
-`2 Tunnel All`.
-
 The profile is opt-in and terminal-local. It allows Fast DDS UDP only on
 loopback and the selected Wi-Fi IPv4 address, excluding campus Ethernet and VPN
 interfaces. It does not modify NetworkManager, routes, `.bashrc`, or systemd.
@@ -100,7 +95,12 @@ systemctl show voxl-microdds-agent voxl-mpa-to-ros2 \
 systemd override until the connected vehicle's actual service has been
 identified.
 
-#### Sanity checks before and after connecting the VPN
+#### Connect the VPN now
+
+On the laptop, connect Cisco Secure Client using `1 Split Tunnel`
+(`OpenConnect1 (Split)` on Linux). Do not use `2 Tunnel All`.
+
+#### Verify routes after connecting the VPN
 
 On the laptop, replace the example with the GPU server's campus IPv4 address:
 

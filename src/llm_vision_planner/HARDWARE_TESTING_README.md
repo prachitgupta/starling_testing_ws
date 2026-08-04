@@ -225,6 +225,45 @@ environment. Verify the required geoid:
 ls -lh /usr/share/GeographicLib/geoids/egm96-5.pgm
 ```
 
+## Launching Llama on the GPU
+
+Run these commands on the GPU in the same shell.
+
+1. Check GPU processes:
+
+```bash
+for i in $(seq 0 $(($(nvidia-smi -L | wc -l)-1))); do
+    echo "===== GPU $i ====="
+    nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader -i $i | while read pid mem; do
+        pid=$(echo $pid | tr -d ',')
+        mem=$(echo $mem | tr -d ' MiB,')
+        user=$(ps -p $pid -o user= 2>/dev/null || echo "unknown")
+        cmd=$(ps -p $pid -o comm= 2>/dev/null || echo "unknown")
+        echo "$user | PID: $pid | Memory: $mem MiB | Process: $cmd"
+    done
+done
+```
+
+2. Configure the adapter:
+
+```bash
+ADAPTER=/home/prachit2/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora
+```
+
+3. Launch the LLM:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 vllm serve meta-llama/Meta-Llama-3.1-8B-Instruct \
+  --enable-lora \
+  --max-lora-rank 128 \
+  --lora-modules rrt_planner=$ADAPTER \
+  --served-model-name rrt_planner \
+  --dtype float16 \
+  --gpu-memory-utilization 0.80 \
+  --max-model-len 4096 \
+  --port 8000
+```
+
 ## 4. Start MAVROS
 
 On the ground station:

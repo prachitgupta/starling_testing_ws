@@ -588,219 +588,73 @@ ros2 topic echo /llm_vision/plan_verified
 ros2 topic echo /llm_vision/offboard_owner
 ```
 
-## 12. Hardware flight with TFLite perception
+## 12. TFLite and ToF perception
 
-The current configuration uses measured ToF range:
+TFLite detects object type from `hires_small_color`. ToF supplies distance
+from `/tof_pc`. The output topic is
+`/llm_vision/semantic_obstacles`, which is consumed by
+`prompt_generator.py`.
 
-```yaml
-semantic_obstacle_perception:
-  ros__parameters:
-    detection_topic: /tflite_data
-    detector_image_topic: /tflite
-    point_cloud_topic: /tof_pc
-    point_cloud_frame: tof_optical
-    z_estimation_mode: depth
-```
+### Calibrate the hires camera
 
-TFLite supplies the object label, confidence, source-camera name, and bounding
-box. The perception node transforms raw ToF points from the ToF optical frame
-into body FRD, projects them into the configured detection-camera image, rejects
-far background points in the box, and transforms the resulting obstacle into
-local NED using the synchronized PX4 pose. The published
-`/llm_vision/semantic_obstacles` JSON keeps the `min_corner`, `max_corner`, and
-`size` fields consumed by `prompt_generator.py`, and adds measured
-`distance_m`, `camera`, `sync_delta_s`, and health diagnostics.
+Use the grey stream paired with the TFLite color stream:
+`hires_small_grey`. Do not use a tracking-camera pipe.
 
-Do not trust the raw `/tof_pc` header when it says `frame_id: world`.
-`voxl-mpa-to-ros2` currently assigns that name to every point-cloud pipe, while
-raw ToF points remain sensor-relative. `point_cloud_frame: tof_optical` makes
-the intended interpretation explicit. Use `local_ned` only with an already
-aligned point cloud such as a mapper output.
+The successful board had 5x6 internal corners and 30 mm squares. Keep it flat,
+well lit, and sharp.
 
-`Aidetection.frame_id` is the inference server's processed-frame counter and
-its timestamp is generated during post-processing, so neither can be compared
-directly with ToF. The node associates each detection batch with the adjacent
-`/tflite` image instead. That image preserves the RGB source header timestamp,
-which is in the same converted clock domain as `/tof_pc` and PX4 odometry.
-Fusion then uses source timestamps and falls back to receipt time only when a
-header is unavailable. Keep the vehicle holding still during the planning
-snapshot because the RGB and ToF sensors are not exposure-synchronized.
-`detection_to_depth_offset_s` shifts the RGB source time when a measured
-systematic offset exists; do not guess this value.
-
-Before flight, make these parameters match the actual TFLite `input_pipe`:
-
-- `detection_camera` and `detection_camera_aliases`
-- `hires_width` and `hires_height`
-- `hires_fx`, `hires_fy`, `hires_cx`, and `hires_cy`
-- both camera-to-body translations and intrinsic-XYZ rotations
-
-One perception-node instance represents one RGB camera calibration. Do not mix
-front/down/rear tracking or multiple hires detections onto the same detection
-topic. With `voxl-tflite-server allow_multiple`, give each model a unique output
-prefix and use a separately calibrated fusion instance (and a downstream
-obstacle merger) for each camera. The `Aidetection.cam` check intentionally
-rejects a different camera instead of applying the wrong intrinsics.
-
-The Starling 2 IMX412 is not factory-calibrated. Calibrate this vehicle and the
-exact stream/crop used by TFLite; do not reuse ToF or tracking-camera
-intrinsics. Confirm the configured files and live dimensions on VOXL:
-
-```bash
-cat /etc/modalai/voxl-tflite-server.conf
-voxl-inspect-cam -a
-voxl-inspect-extrinsics
-voxl-inspect-points tof_pc
-```
-
-Live sanity check on this vehicle (July 29, 2026):
-
-- `voxl-suite 1.3.5`, `voxl-tflite-server 0.3.4`, and
-  `voxl-mpa-to-ros2 0.0.4`
-- TFLite input `hires_small_color`, `1024x768`, RGB8, approximately 28 Hz with
-  21 ms displayed inference time
-- the RGB feed was well exposed and geometrically coherent, but stock SSDLite
-  labeled the green chair correctly only intermittently and labeled the
-  foreground cardboard container as `couch`; use a custom detector when class
-  identity affects planning
-- ToF `240x180` at 10 Hz; the rotated ROS depth image is `180x240`
-- 11,961-13,375 valid metric returns out of 43,200 in the sampled indoor scene
-- source-stamp RGB/ToF separation observed at 0.042-0.063 s and pose matching at
-  approximately 0.002-0.003 s
-- `/tof_pc.header.frame_id` is `world` even though this is raw optical-frame
-  data
-- `/etc/modalai/extrinsics.conf` reports ToF translation
-  `[0.066, 0.009, -0.012]` m and intrinsic-XYZ RPY `[0, 90, 180]` degrees
-- no IMX412 intrinsics file and no `hires` extrinsics entry were present
-- the bridge was a manually launched process although its systemd service was
-  inactive; `wlan0` was not connected, so camera topics were visible only from
-  the VOXL ROS graph through `adb shell`, not from the workstation ROS graph
-
-The `hires_small_grey` stream was subsequently calibrated successfully at
-1024x768 with `fx=501.5316`, `fy=502.8287`, `cx=508.1806`, and `cy=380.6556`.
-The reported reprojection error was `0.703523` px, below the tool's `0.75` px
-limit, and the result was saved on VOXL as
-`/data/modalai/opencv_hires_small_grey_intrinsics.yml`. The paired
-`hires_small_color` stream is the TFLite input, so `camera_calibration_valid`
-is enabled. Validate the configured RGB-to-body transform against measured
-object positions before flight.
-
-### Reproduce the accepted calibration and perception result (August 4, 2026)
-
-#### 1. Check VOXL services
-
-Command:
+Run on VOXL:
 
 ```bash
 voxl-inspect-services
-```
+voxl-list-pipes | grep -E '^hires_small_(color|grey)$'
 
-Expected result:
-
-```text
-voxl-camera-server and voxl-portal are running.
-```
-
-#### 2. Prepare VOXL for calibration
-
-Command:
-
-```bash
 voxl-set-cpu-mode perf
 systemctl stop voxl-tflite-server voxl-qvio-server voxl-tag-detector voxl-dfs-server voxl-streamer 2>/dev/null || true
 systemctl restart voxl-camera-server voxl-portal
 ```
 
-Expected result:
-
-```text
-Performance mode is enabled; camera server and portal are active; competing camera clients are stopped.
-```
-
-#### 3. Confirm the paired hires pipes
-
-Command:
+Reduce exposure under bright lighting:
 
 ```bash
-voxl-list-pipes | grep -E '^hires_small_(color|grey)$'
+voxl-send-command hires_small_grey set_exp_gain 200 150
 ```
 
-Expected result:
+If the board is too dark, increase the exposure value gradually while keeping
+the corners sharp.
 
-```text
-hires_small_color
-hires_small_grey
-```
-
-#### 4. Calibrate the 1024x768 grey stream
-
-Command:
+Open the calibration overlay in VOXL Portal, then run:
 
 ```bash
 voxl-calibrate-camera hires_small_grey -s 5x6 -l 0.030
 ```
 
-Expected result:
+The accepted calibration had a 0.703523 px reprojection error and was saved to:
 
 ```text
-Matrix
-[501.5315609739347, 0, 508.1806484040712;
- 0, 502.8286520347511, 380.6556051674785;
- 0, 0, 1]
-Distortion
-[-0.2865590895338794;
- 0.0817899422501154;
- 0.0005237405528961263;
- 0.0007115622455112405;
- -0.01017242004578325]
-distortion_model: plumb_bob
-Re-projection error reported by calibrateCamera: 0.703523
-Calibration Succeded!
-Writing data to: /data/modalai/opencv_hires_small_grey_intrinsics.yml
-Saved!
+/data/modalai/opencv_hires_small_grey_intrinsics.yml
 ```
 
-#### 5. Verify and back up the calibration
-
-Command:
+Check and back it up:
 
 ```bash
 sed -n '1,100p' /data/modalai/opencv_hires_small_grey_intrinsics.yml
 cp -p /data/modalai/opencv_hires_small_grey_intrinsics.yml \
   /data/modalai/opencv_hires_small_grey_intrinsics.yml.accepted
-ls -l /data/modalai/opencv_hires_small_grey_intrinsics.yml*
 ```
 
-Expected result:
-
-```text
-width: 1024
-height: 768
-distortion_model: plumb_bob
-reprojection_error: 0.703523
-Both opencv_hires_small_grey_intrinsics.yml and its .accepted copy exist.
-```
-
-#### 6. Restore perception services
-
-Command:
+Restore automatic exposure and perception services:
 
 ```bash
+voxl-send-command hires_small_grey start_ae
 systemctl restart voxl-camera-server
 systemctl start voxl-qvio-server voxl-tflite-server
 voxl-inspect-services | grep -E 'camera|qvio|tflite|mpa-to-ros2'
 ```
 
-Expected result:
+### Build
 
-```text
-voxl-camera-server, voxl-qvio-server, and voxl-tflite-server are running.
-voxl-mpa-to-ros2 is running as a service or as the existing manual bridge process.
-```
-
-#### 7. Build and source the ROS 2 package
-
-Command:
+Run on the ground station:
 
 ```bash
 cd ~/Desktop/starling_testing_ws
@@ -809,218 +663,54 @@ colcon build --packages-select llm_vision_planner
 source install/setup.bash
 ```
 
-Expected result:
-
-```text
-Finished <<< llm_vision_planner
-Summary: 1 package finished
-```
-
-#### 8. Confirm required ROS 2 topics
-
-Command:
+### Check live inputs
 
 ```bash
 ros2 topic list | grep -E '^/(tflite|tflite_data|tof_pc|fmu/out/vehicle_odometry)$'
-```
-
-Expected result:
-
-```text
-/fmu/out/vehicle_odometry
-/tflite
-/tflite_data
-/tof_pc
-```
-
-#### 9. Confirm live source rates
-
-Command:
-
-```bash
 timeout 12s ros2 topic hz /tflite
 timeout 12s ros2 topic hz /tof_pc
 timeout 12s ros2 topic hz /fmu/out/vehicle_odometry
+ros2 topic echo /tflite_data --once
 ```
 
-Expected result:
+### Run perception only
 
-```text
-/tflite: nonzero rate; approximately 3.2 Hz was observed through the bridge.
-/tof_pc: nonzero rate; approximately 4.7 Hz was observed through the bridge.
-/fmu/out/vehicle_odometry: approximately 100-120 Hz.
-```
-
-#### 10. Start semantic perception
-
-Command:
+Terminal 1:
 
 ```bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
 ros2 run llm_vision_planner perception_detection.py --ros-args \
   --params-file ~/Desktop/starling_testing_ws/src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
 
-Expected result:
-
-```text
-/semantic_obstacle_perception starts and publishes /llm_vision/semantic_obstacles.
-```
-
-#### 11. Verify the loaded calibration and synchronization parameters
-
-Command:
+Terminal 2:
 
 ```bash
-ros2 param get /semantic_obstacle_perception hires_fx
-ros2 param get /semantic_obstacle_perception hires_fy
-ros2 param get /semantic_obstacle_perception hires_cx
-ros2 param get /semantic_obstacle_perception hires_cy
-ros2 param get /semantic_obstacle_perception hires_width
-ros2 param get /semantic_obstacle_perception hires_height
-ros2 param get /semantic_obstacle_perception camera_calibration_valid
-ros2 param get /semantic_obstacle_perception detection_camera
-ros2 param get /semantic_obstacle_perception max_sync_slop_s
+source ~/Desktop/starling_testing_ws/install/setup.bash
+ros2 topic echo --full-length /llm_vision/semantic_obstacles
 ```
 
-Expected result:
-
-```text
-Double value is: 501.5315609739347
-Double value is: 502.8286520347511
-Double value is: 508.1806484040712
-Double value is: 380.6556051674785
-Integer value is: 1024
-Integer value is: 768
-Boolean value is: True
-String value is: hires_small_color
-Double value is: 0.35
-```
-
-#### 12. Sanity-check TFLite detections
-
-Command:
+### Open the live perception plot
 
 ```bash
-ros2 topic echo /tflite_data --once
-```
-
-Expected result:
-
-```text
-With a supported object visible: cam is hires_small_color, confidence is nonzero, and the bounding box lies within 1024x768.
-No message is expected while the detector has no accepted object.
-```
-
-#### 13. Sanity-check fused semantic obstacles
-
-Command:
-
-```bash
-ros2 topic echo --full-length /llm_vision/semantic_obstacles --once
-```
-
-Expected result:
-
-```text
-healthy: true
-range_is_measured: true
-camera: hires_small_color
-no_depth_detections: []
-depth_source begins with tof_projected
-distance_m is positive
-min_corner, max_corner, and size are present for prompt_generator.py
-sync_delta_s is no greater than 0.35
-```
-
-#### 14. Confirm the accepted live fusion result
-
-Command:
-
-```bash
-ros2 topic echo --full-length /llm_vision/semantic_obstacles --once | \
-  grep -E 'healthy|range_is_measured|label|distance_m|depth_source|sync_delta_s'
-```
-
-Expected result:
-
-```text
-healthy: true
-range_is_measured: true
-label: bed
-distance_m: approximately 1.94
-depth_source: tof_projected_1270of1367pts
-sync_delta_s: approximately 0.022
-```
-
-#### 15. Open the live perception-only plot
-
-Command:
-
-```bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
 ros2 run llm_vision_planner debug_perception.py
 ```
 
-Expected result:
+This only subscribes and plots. It does not save an image or send flight
+commands.
 
-```text
-A live 2D window shows the drone, object label, measured distance, and bounding-box dimensions.
-No image file is saved.
-No flight command is published.
-```
-
-#### 16. Save a plot only when requested
-
-Command:
+Save a plot only when needed:
 
 ```bash
 ros2 run llm_vision_planner debug_perception.py --ros-args \
   -p output_png:=/tmp/debug_perception.png
 ```
 
-Expected result:
+### Launch the real mission
 
-```text
-The live window remains active and /tmp/debug_perception.png is written.
-```
-
-Before the perception flight:
-
-```bash
-ros2 topic hz /tflite
-ros2 topic hz /tflite_data
-ros2 topic hz /tof_pc
-ros2 topic hz /fmu/out/vehicle_odometry
-```
-
-`/tflite_data` can be quiet when no objects are detected. `/tflite` is used as
-the detector heartbeat and must continue publishing at the configured inference
-rate. Its dimensions must match `hires_width` x `hires_height`; otherwise the
-perception payload is unhealthy and `prompt_generator.py` will not latch it.
-
-Inspect the generated obstacles:
-
-```bash
-ros2 topic echo /llm_vision/semantic_obstacles
-```
-
-Require `"healthy": true`, `"range_is_measured": true`, the expected camera,
-and a small `sync_delta_s` before flight. Any confident detection without
-projected ToF points makes the snapshot unhealthy instead of silently using a
-guessed distance.
-
-Known ToF limitations:
-
-- the PMD sensor is intended for indoor depth up to 6 m and becomes noisy in
-  sunlight;
-- `/tof_depth` is an 8-bit visualization, not a metric depth image, and its
-  bridged `CameraInfo` may contain zero intrinsics; use `/tof_pc`;
-- SDK/configuration regressions can reduce the requested ToF frame rate through
-  the camera-server `decimator`;
-- a black/static depth stream can indicate focus, connector, thermal, or camera
-  configuration problems even when `/tof_ir` is present;
-- MPA-to-ROS topics publish data only while subscribed.
-
-Launch the real-perception mission:
+This command starts real flight control. Run it only when the vehicle is ready
+to fly.
 
 ```bash
 cd ~/Desktop/starling_testing_ws
@@ -1034,12 +724,4 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   show_rrt:=true
 ```
 
-For the contraction visualizer, replace `visualizer:=standard` with:
-
-```text
-visualizer:=contraction
-```
-
-Use the RC kill switch or an intentional PX4/QGroundControl mode change to
-abort. Never stop Vicon, MAVROS, MPA-to-ROS 2, or PX4 DDS while the vehicle is
-airborne.
+Use the RC kill switch or change PX4/QGroundControl mode to abort.

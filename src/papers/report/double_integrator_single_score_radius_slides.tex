@@ -45,23 +45,67 @@
   \titlepage
 \end{frame}
 
-\begin{frame}{Scope: One Model, One Calibration Score}
-\begin{itemize}
-  \item Plant: planar damped double integrator, exactly as used by the repository.
-  \item Reference gap: RRT expert $(\xd,\ud)$ versus LLM prediction $(\xh,\uh)$.
-  \item Controller: LQR feedback around the LLM reference.
-  \item Certificate: one conformal score for the \alert{combined disturbance entering the error dynamics}.
-\end{itemize}
-
-\vspace{0.5em}
-\begin{block}{Target statement}
-Construct $\rho(t)$ such that, for a fresh exchangeable test environment,
+\begin{frame}{Tracking Problem}
+\begin{columns}[T]
+\column{0.47\textwidth}
 \[
-\mathbb P\!\left[\|x(t)-\xd(t)\|_2\leq \rho(t),\ \forall t\in[0,T]\right]\geq 1-\delta.
+x(t)\in\mathbb R^4
 \]
-\end{block}
+\[
+(\xd(t),\ud(t))
+\]
+\[
+(\xh(t),\uh(t))
+\]
 
-No nonlinear quadrotor model and no separate $q_u,q_x$ union bound are used.
+\column{0.49\textwidth}
+\textbf{Actual state}\\[-0.2em]
+measured online
+
+\vspace{0.6em}
+\textbf{RRT expert}\\[-0.2em]
+calibration only
+
+\vspace{0.6em}
+\textbf{LLM QP reference}\\[-0.2em]
+available online
+\end{columns}
+
+\vspace{0.7em}
+\[
+e(t):=x(t)-\xd(t),
+\qquad
+\mathbb P\!\left[\|e(t)\|_2\leq\rho(t),\ \forall t\in[0,T]\right]\geq1-\delta.
+\]
+\end{frame}
+
+\begin{frame}{Available Signals}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\textbf{Calibration}
+\[
+A,\ B,\ K,\ P
+\]
+\[
+\big\{(x_{d,i},u_{d,i},\hat{x}_{d,i},\hat{u}_{d,i})\big\}_{i=1}^{N}
+\]
+
+\column{0.48\textwidth}
+\textbf{Online}
+\[
+x(t),\quad \xh(t),\quad \uh(t)
+\]
+\[
+\xd(t),\quad \ud(t)\quad\text{unobserved}
+\]
+\end{columns}
+
+\vspace{0.7em}
+\[
+d_x:=\xh-\xd,
+\qquad
+d_u:=\uh-\ud.
+\]
 \end{frame}
 
 \begin{frame}{Damped Double-Integrator Dynamics}
@@ -93,8 +137,92 @@ B=\begin{bmatrix}
 The model assumes the low-level flight stack realizes the commanded planar input $u$.
 \end{frame}
 
-\begin{frame}{Expert, LLM Reference, and Implementable Controller}
-Expert and predicted reference dynamics:
+\begin{frame}{Calibration QP: Exact ZOH Model}
+\[
+x^q_{k+1}=A_d x^q_k+B_d u^q_k,
+\qquad
+q\in\{\mathsf R,\mathsf L\}.
+\]
+\[
+\begin{gathered}
+a=e^{-d\Delta t},\qquad
+g=\frac{1-a}{d},\qquad
+h=\Delta t-g,\\[0.4em]
+A_d=
+\begin{bmatrix}
+1&0&g&0\\
+0&1&0&g\\
+0&0&a&0\\
+0&0&0&a
+\end{bmatrix},
+\qquad
+B_d=
+\begin{bmatrix}
+h&0\\
+0&h\\
+1-a&0\\
+0&1-a
+\end{bmatrix}.
+\end{gathered}
+\]
+\[
+d=1.1,\qquad \Delta t=0.1\ \mathrm{s}.
+\]
+\end{frame}
+
+\begin{frame}{Calibration QP: Shared Clock and Knots}
+\small
+\[
+r_j^q=\begin{bmatrix}p_{x,j}^q&p_{y,j}^q\end{bmatrix}^{\!\top},
+\qquad q\in\{\mathsf R,\mathsf L\}.
+\]
+\[
+T_j^q=\max\!\left\{
+\frac{\lVert r_{j+1}^q-r_j^q\rVert_2}{v_c},\ 0.5
+\right\},
+\qquad v_c=0.30\ \mathrm{m/s}.
+\]
+\[
+H=\max\!\left\{m_{\mathsf R},\
+\operatorname{round}\!\left(\frac{\sum_{j=0}^{m_{\mathsf R}-1}T_j^{\mathsf R}}{\Delta t}\right)\right\},
+\qquad
+\sum_{j=0}^{m_q-1}n_j^q=H.
+\]
+\[
+\kappa_0^q=0,\qquad
+\kappa_j^q=\sum_{\ell=0}^{j-1}n_\ell^q,\qquad
+t_k=k\Delta t,\quad k=0,\ldots,H.
+\]
+\end{frame}
+
+\begin{frame}{Calibration QP: Minimum-Control Solution}
+\small
+\[
+\begin{aligned}
+\min_{u_0^q,\ldots,u_{H-1}^q}\quad
+&\frac{1}{2}\sum_{k=0}^{H-1}\lVert u_k^q\rVert_2^2\\
+\mathrm{s.t.}\quad
+&x^q_{k+1}=A_d x^q_k+B_d u^q_k,
+&&k=0,\ldots,H-1,\\
+&x_0^q=\begin{bmatrix}(r_0^q)^\top&0&0\end{bmatrix}^{\!\top},\\
+&\begin{bmatrix}I_2&0\end{bmatrix}x^q_{\kappa_j^q}=r_j^q,
+&&j=1,\ldots,m_q,\\
+&\begin{bmatrix}0&I_2\end{bmatrix}x^q_H=0.
+\end{aligned}
+\]
+\[
+U^q=\begin{bmatrix}(u_0^q)^\top&\cdots&(u_{H-1}^q)^\top\end{bmatrix}^{\!\top}.
+\]
+\[
+\min_{U^q}\ \frac12\lVert U^q\rVert_2^2
+\quad\mathrm{s.t.}\quad C^qU^q=b^q.
+\]
+\[
+\boxed{(U^q)^\star=(C^q)^\top\big(C^q(C^q)^\top\big)^{-1}b^q.}
+\]
+\end{frame}
+
+\begin{frame}{Implementable Control Law}
 \[
 \dot \xd=A\xd+B\ud,
 \qquad
@@ -103,8 +231,8 @@ Expert and predicted reference dynamics:
 
 Define true tracking error and prediction gaps:
 \[
-e:=x-\xd,qquad
-d_x:=\xh-\xd,qquad
+e:=x-\xd,\qquad
+d_x:=\xh-\xd,\qquad
 d_u:=\uh-\ud.
 \]
 
@@ -115,9 +243,11 @@ The implementable controller tracks the available LLM reference:
 u=-K\hat e+\uh=-K(e-d_x)+\uh.
 \]
 
-\begin{alertblock}{Important}
-$\xd$ and $\ud$ are required during calibration, but they are not required online.
-\end{alertblock}
+\[
+\underbrace{\xd,\ud}_{\text{calibration only}},
+\qquad
+\underbrace{x,\xh,\uh}_{\text{online}}.
+\]
 \end{frame}
 
 \begin{frame}{Error Dynamics: Combine the Two Gaps First}

@@ -11,8 +11,8 @@ from std_msgs.msg import String
 
 DEFAULT_WORKSPACE_X = (0.0, 4.0)
 DEFAULT_WORKSPACE_Y = (0.0, 4.0)
-DEFAULT_FIXED_Z = -0.25
-DEFAULT_GOAL = (2.5, 0.0, -0.25)
+DEFAULT_FIXED_Z = -0.5
+DEFAULT_GOAL = (2.5, 0.0, -0.5)
 DEFAULT_CLEARANCE_M = 0.40
 DEFAULT_SEMANTIC_OBSTACLE_TOPIC = "/llm_vision/semantic_obstacles"
 DEFAULT_PROMPT_TOPIC = "/llm_vision/prompt"
@@ -69,6 +69,7 @@ class PromptGenerator(Node):
         self.declare_parameter("snapshot_after_hover_s", 1.0)
         self.declare_parameter("prefer_nonempty_obstacle_snapshot", True)
         self.declare_parameter("nonempty_obstacle_wait_s", 3.0)
+        self.declare_parameter("require_healthy_perception", True)
         self.declare_parameter("start_drift_replan_m", 0.25)
         self.declare_parameter("feedback_enabled", True)
         self.declare_parameter("pose_topic", DEFAULT_POSE_TOPIC)
@@ -116,6 +117,7 @@ class PromptGenerator(Node):
         self.snapshot_after_hover_s = float(self.get_parameter("snapshot_after_hover_s").value)
         self.prefer_nonempty_obstacle_snapshot = bool(self.get_parameter("prefer_nonempty_obstacle_snapshot").value)
         self.nonempty_obstacle_wait_s = float(self.get_parameter("nonempty_obstacle_wait_s").value)
+        self.require_healthy_perception = bool(self.get_parameter("require_healthy_perception").value)
         self.start_drift_replan_m = float(self.get_parameter("start_drift_replan_m").value)
         self.feedback_enabled = bool(self.get_parameter("feedback_enabled").value)
         self.pose_topic = str(self.get_parameter("pose_topic").value)
@@ -329,6 +331,16 @@ class PromptGenerator(Node):
                 throttle_duration_sec=5.0,
             )
             return False
+        if (
+            needs_obstacle_snapshot
+            and self.require_healthy_perception
+            and self.latest_obstacle_msg.get("healthy") is False
+        ):
+            self.log_warning(
+                f"Perception is not healthy: {self.latest_obstacle_msg.get('status', {})}",
+                throttle_duration_sec=2.0,
+            )
+            return False
         if needs_obstacle_snapshot and self.should_wait_for_nonempty_obstacles(now):
             self.log_info(
                 f"Waiting briefly for a non-empty obstacle snapshot on {self.obstacle_topic}.",
@@ -510,9 +522,16 @@ class PromptGenerator(Node):
             max_corner = obstacle.get("max_corner", [0.0, 0.0, 0.0])
             label = obstacle.get("label") or obstacle.get("shape") or "unknown"
             size_phrase = self.size_phrase(obstacle)
+            distance = obstacle.get("distance_m")
+            distance_text = (
+                f", measured distance={float(distance):.2f}m"
+                if distance is not None
+                else ""
+            )
             descriptions.append(
                 f"{index} {label}: x=[{min_corner[0]:.2f},{max_corner[0]:.2f}], "
-                f"y=[{min_corner[1]:.2f},{max_corner[1]:.2f}], size {size_phrase}."
+                f"y=[{min_corner[1]:.2f},{max_corner[1]:.2f}]"
+                f"{distance_text}, size {size_phrase}."
             )
         relations = self.describe_obstacle_relations(obstacles)
         if relations:

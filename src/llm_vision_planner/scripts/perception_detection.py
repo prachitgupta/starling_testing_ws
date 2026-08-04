@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
+from collections import deque
 import json
 import math
 import time
 
 import numpy as np
 import rclpy
-import sensor_msgs_py.point_cloud2 as pc2
 from px4_msgs.msg import VehicleOdometry
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import Image, PointCloud2, PointField
 from std_msgs.msg import String
 
 try:
@@ -21,12 +21,12 @@ except ImportError:
 BEST_EFFORT_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.BEST_EFFORT,
     history=QoSHistoryPolicy.KEEP_LAST,
-    depth=10,
+    depth=1,
 )
 DETECTION_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.BEST_EFFORT,
     history=QoSHistoryPolicy.KEEP_LAST,
-    depth=50,
+    depth=10,
 )
 
 DYNAMIC_LABELS = {"person", "dog", "suitcase", "cat", "bicycle", "motorcycle", "car", "truck", "bus"}
@@ -54,31 +54,53 @@ class SemanticObstaclePerception(Node):
             namespace="",
             parameters=[
                 ("detection_topic", "/tflite_data"),
+                ("detector_image_topic", "/tflite"),
                 ("point_cloud_topic", "/tof_pc"),
                 ("pose_topic", "/fmu/out/vehicle_odometry"),
                 ("obstacle_topic", "/llm_vision/semantic_obstacles"),
                 ("goal_x", 2.5),
                 ("goal_y", 0.0),
-                ("goal_z", -0.25),
-                ("hires_fx", 459.25277454251415),
-                ("hires_fy", 459.77659154648927),
-                ("hires_cx", 656.1383163463607),
-                ("hires_cy", 424.58097964738005),
-                ("hires_width", 1280),
+                ("goal_z", -0.5),
+                ("hires_fx", 501.5315609739347),
+                ("hires_fy", 502.8286520347511),
+                ("hires_cx", 508.1806484040712),
+                ("hires_cy", 380.6556051674785),
+                ("hires_width", 1024),
                 ("hires_height", 768),
-                ("cam_body_x_m", 0.0665),
-                ("cam_body_y_m", -0.0065),
-                ("cam_body_z_m", -0.0154),
-                ("cam_roll_deg", 0.0),
-                ("cam_pitch_deg", -90.0),
-                ("cam_yaw_deg", -90.0),
+                ("camera_calibration_valid", True),
+                ("detection_camera", "hires_small_color"),
+                (
+                    "detection_camera_aliases",
+                    ["hires_small_color"],
+                ),
+                ("detection_cam_body_x_m", 0.068),
+                ("detection_cam_body_y_m", 0.012),
+                ("detection_cam_body_z_m", -0.015),
+                ("detection_cam_roll_deg", 0.0),
+                ("detection_cam_pitch_deg", 90.0),
+                ("detection_cam_yaw_deg", 90.0),
+                ("depth_cam_body_x_m", 0.066),
+                ("depth_cam_body_y_m", 0.009),
+                ("depth_cam_body_z_m", -0.012),
+                ("depth_cam_roll_deg", 0.0),
+                ("depth_cam_pitch_deg", 90.0),
+                ("depth_cam_yaw_deg", 180.0),
+                ("point_cloud_frame", "tof_optical"),
                 ("min_confidence", 0.60),
                 ("detection_timeout_s", 1.0),
-                ("z_estimation_mode", "hardcoded"),
+                ("detector_timeout_s", 1.0),
+                ("point_cloud_timeout_s", 1.0),
+                ("pose_timeout_s", 1.0),
+                ("max_sync_slop_s", 0.08),
+                ("detection_to_depth_offset_s", 0.0),
+                ("z_estimation_mode", "depth"),
                 ("min_tof_depth_m", 0.20),
                 ("max_tof_depth_m", 6.0),
-                ("frustum_margin_deg", 5.0),
-                ("min_frustum_points", 3),
+                ("min_valid_point_cloud_points", 100),
+                ("min_frustum_points", 10),
+                ("bbox_inner_margin_fraction", 0.25),
+                ("depth_near_percentile", 25.0),
+                ("depth_cluster_tolerance_m", 0.35),
                 ("obstacle_hold_s", 3.0),
                 ("obstacle_match_distance_m", 0.75),
                 ("publish_hz", 2.0),
@@ -98,28 +120,47 @@ class SemanticObstaclePerception(Node):
         self.cy = float(self.get_parameter("hires_cy").value)
         self.image_width = int(self.get_parameter("hires_width").value)
         self.image_height = int(self.get_parameter("hires_height").value)
-        self.camera_translation_body = np.array(
+        self.detection_camera_translation_body = np.array(
             [
-                float(self.get_parameter("cam_body_x_m").value),
-                float(self.get_parameter("cam_body_y_m").value),
-                float(self.get_parameter("cam_body_z_m").value),
+                float(self.get_parameter("detection_cam_body_x_m").value),
+                float(self.get_parameter("detection_cam_body_y_m").value),
+                float(self.get_parameter("detection_cam_body_z_m").value),
             ],
             dtype=float,
         )
-
-        self.rotation_camera_to_body = self.modalai_intrinsic_xyz_matrix(
-            math.radians(float(self.get_parameter("cam_roll_deg").value)),
-            math.radians(float(self.get_parameter("cam_pitch_deg").value)),
-            math.radians(float(self.get_parameter("cam_yaw_deg").value)),
+        self.depth_camera_translation_body = np.array(
+            [
+                float(self.get_parameter("depth_cam_body_x_m").value),
+                float(self.get_parameter("depth_cam_body_y_m").value),
+                float(self.get_parameter("depth_cam_body_z_m").value),
+            ],
+            dtype=float,
+        )
+        self.rotation_detection_camera_to_body = self.modalai_intrinsic_xyz_matrix(
+            math.radians(float(self.get_parameter("detection_cam_roll_deg").value)),
+            math.radians(float(self.get_parameter("detection_cam_pitch_deg").value)),
+            math.radians(float(self.get_parameter("detection_cam_yaw_deg").value)),
+        )
+        self.rotation_depth_camera_to_body = self.modalai_intrinsic_xyz_matrix(
+            math.radians(float(self.get_parameter("depth_cam_roll_deg").value)),
+            math.radians(float(self.get_parameter("depth_cam_pitch_deg").value)),
+            math.radians(float(self.get_parameter("depth_cam_yaw_deg").value)),
         )
 
         self.detections = []
-        self.point_cloud_msg = None
-        self.point_cloud_points_world = None
+        self.detector_image_samples = deque(maxlen=50)
+        self.point_cloud_samples = deque(maxlen=20)
+        self.pose_samples = deque(maxlen=100)
         self.pose = None
         self.detection_count = 0
         self.last_detection_stamp = None
         self.last_point_cloud_stamp = None
+        self.last_pose_stamp = None
+        self.last_detector_image_stamp = None
+        self.detector_image_size = None
+        self.last_sync_basis = "unavailable"
+        self.last_point_cloud_sync_delta_s = None
+        self.last_pose_sync_delta_s = None
         self.last_log_stamp = 0.0
         self.obstacle_tracks = []
 
@@ -129,6 +170,14 @@ class SemanticObstaclePerception(Node):
             self.detection_callback,
             DETECTION_QOS,
         )
+        detector_image_topic = str(self.get_parameter("detector_image_topic").value).strip()
+        if detector_image_topic:
+            self.create_subscription(
+                Image,
+                detector_image_topic,
+                self.detector_image_callback,
+                BEST_EFFORT_QOS,
+            )
         self.create_subscription(
             PointCloud2,
             str(self.get_parameter("point_cloud_topic").value),
@@ -150,28 +199,103 @@ class SemanticObstaclePerception(Node):
         self.create_timer(1.0 / publish_hz, self.publish_obstacles)
 
     def detection_callback(self, msg):
-        now = time.time()
+        now = time.monotonic()
         self.detections.append((msg, now))
         self.detection_count += 1
         self.last_detection_stamp = now
         self.prune_detections()
 
+    def detector_image_callback(self, msg):
+        now = time.monotonic()
+        self.last_detector_image_stamp = now
+        self.detector_image_size = (int(msg.width), int(msg.height))
+        self.detector_image_samples.append(
+            {
+                "arrival_s": now,
+                "source_stamp_ns": self.ros_stamp_ns(msg.header.stamp),
+            }
+        )
+
     def point_cloud_callback(self, msg):
-        self.point_cloud_msg = msg
-        self.point_cloud_points_world = None
-        self.last_point_cloud_stamp = time.time()
+        now = time.monotonic()
+        raw_points = self.point_cloud_xyz(msg)
+        if raw_points.size == 0:
+            raw_points = np.empty((0, 3), dtype=float)
+        else:
+            raw_points = raw_points.reshape((-1, 3))
+            raw_points = raw_points[np.all(np.isfinite(raw_points), axis=1)]
+        ranges = np.linalg.norm(raw_points, axis=1)
+        valid_depth_count = int(
+            np.sum(
+                (ranges >= float(self.get_parameter("min_tof_depth_m").value))
+                & (ranges <= float(self.get_parameter("max_tof_depth_m").value))
+            )
+        )
+        self.point_cloud_samples.append(
+            {
+                "points": raw_points,
+                "valid_depth_count": valid_depth_count,
+                "arrival_s": now,
+                "source_stamp_ns": self.ros_stamp_ns(msg.header.stamp),
+                "frame_id": str(msg.header.frame_id),
+                "width": int(msg.width),
+                "height": int(msg.height),
+            }
+        )
+        self.last_point_cloud_stamp = now
+
+    @staticmethod
+    def point_cloud_xyz(msg):
+        fields = {field.name: field for field in msg.fields}
+        if any(name not in fields for name in ("x", "y", "z")):
+            return np.empty((0, 3), dtype=float)
+        if any(fields[name].datatype != PointField.FLOAT32 for name in ("x", "y", "z")):
+            return np.empty((0, 3), dtype=float)
+
+        endian = ">" if msg.is_bigendian else "<"
+        dtype = np.dtype(
+            {
+                "names": ["x", "y", "z"],
+                "formats": [f"{endian}f4", f"{endian}f4", f"{endian}f4"],
+                "offsets": [fields[name].offset for name in ("x", "y", "z")],
+                "itemsize": msg.point_step,
+            }
+        )
+        rows = []
+        for row in range(msg.height):
+            start = row * msg.row_step
+            rows.append(
+                np.frombuffer(
+                    msg.data,
+                    dtype=dtype,
+                    count=msg.width,
+                    offset=start,
+                )
+            )
+        if not rows:
+            return np.empty((0, 3), dtype=float)
+        data = np.concatenate(rows)
+        return np.column_stack((data["x"], data["y"], data["z"])).astype(
+            float,
+            copy=False,
+        )
 
     def pose_callback(self, msg):
         if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
             return
-        q = msg.q
-        self.pose = {
+        rotation_body_to_world = self.quaternion_body_to_world_matrix(msg.q)
+        if rotation_body_to_world is None:
+            return
+        now = time.monotonic()
+        pose = {
             "position": np.array(msg.position[:3], dtype=float),
-            "yaw": math.atan2(
-                2.0 * (q[0] * q[3] + q[1] * q[2]),
-                1.0 - 2.0 * (q[2] * q[2] + q[3] * q[3]),
-            ),
+            "rotation_body_to_world": rotation_body_to_world,
+            "arrival_s": now,
+            "source_stamp_ns": int(msg.timestamp_sample) * 1000,
         }
+        self.pose = pose
+        self.pose_samples.append(pose)
+        self.last_pose_stamp = now
 
     def publish_obstacles(self):
         self.prune_detections()
@@ -179,17 +303,27 @@ class SemanticObstaclePerception(Node):
         no_depth = []
         low_confidence = []
         labels = []
+        detections = self.current_detections()
+        frame_arrival_s = max((stamp for _, stamp in detections), default=None)
+        point_cloud_sample, sync_reason = self.match_point_cloud(frame_arrival_s)
+        pose = self.match_pose(point_cloud_sample, frame_arrival_s)
 
-        for detection, _ in self.current_detections():
+        for detection, _ in detections:
             label = str(detection.class_name)
-            confidence = self.yolo_confidence(detection)
+            confidence = self.detection_confidence(detection)
             if label not in labels:
                 labels.append(label)
             if confidence < float(self.get_parameter("min_confidence").value):
                 low_confidence.append(label)
                 continue
 
-            obstacle, reason = self.build_obstacle(detection, confidence)
+            obstacle, reason = self.build_obstacle(
+                detection,
+                confidence,
+                point_cloud_sample,
+                pose,
+                sync_reason,
+            )
             if obstacle is None:
                 no_depth.append({"label": label, "reason": reason})
             else:
@@ -197,6 +331,7 @@ class SemanticObstaclePerception(Node):
 
         obstacles = self.update_obstacle_tracks(obstacles)
         obstacles.sort(key=lambda obstacle: obstacle["distance_m"])
+        status = self.health_status(no_depth)
         payload = {
             "pose": self.pose_tuple(),
             "obstacles": obstacles,
@@ -206,12 +341,16 @@ class SemanticObstaclePerception(Node):
             "goal": self.goal,
             "timestamp": time.time(),
             "source": self.perception_source(),
+            "healthy": status["healthy"],
+            "range_is_measured": status["range_is_measured"],
+            "status": status,
+            "frame": "local_ned",
         }
         self.obstacle_pub.publish(String(data=json.dumps(payload)))
-        self.log_summary(obstacles, len(no_depth), len(low_confidence))
+        self.log_summary(obstacles, len(no_depth), len(low_confidence), status)
 
     def update_obstacle_tracks(self, observed):
-        now = time.time()
+        now = time.monotonic()
         hold_s = float(self.get_parameter("obstacle_hold_s").value)
         match_distance = float(self.get_parameter("obstacle_match_distance_m").value)
         used_tracks = set()
@@ -239,7 +378,7 @@ class SemanticObstaclePerception(Node):
             obstacle["last_seen_age_s"] = round(float(age), 2)
             obstacle["held"] = age > 0.05
             if obstacle["held"]:
-                obstacle["source"] = f"{obstacle.get('source', 'yolo_tof_frustum')}_held"
+                obstacle["source"] = f"{obstacle.get('source', 'tflite_tof_projected')}_held"
             merged.append(obstacle)
         return merged
 
@@ -264,9 +403,21 @@ class SemanticObstaclePerception(Node):
             return best_index
         return None
 
-    def build_obstacle(self, detection, confidence):
-        if self.pose is None:
-            return None, "no pose"
+    def build_obstacle(
+        self,
+        detection,
+        confidence,
+        point_cloud_sample,
+        pose,
+        sync_reason,
+    ):
+        if pose is None:
+            return None, "no synchronized pose"
+        if not self.detection_camera_matches(getattr(detection, "cam", "")):
+            return None, (
+                f"camera mismatch: got '{getattr(detection, 'cam', '')}', "
+                f"expected one of {sorted(self.accepted_detection_cameras())}"
+            )
 
         x1, y1, x2, y2 = self.normalized_box(detection)
         if x2 <= x1 or y2 <= y1:
@@ -274,149 +425,237 @@ class SemanticObstaclePerception(Node):
 
         label = str(detection.class_name)
         if self.z_estimation_mode() == "hardcoded":
-            return self.build_hardcoded_obstacle(x1, y1, x2, y2, label, confidence), None
+            return self.build_hardcoded_obstacle(
+                x1,
+                y1,
+                x2,
+                y2,
+                label,
+                confidence,
+                pose,
+            ), None
+        if point_cloud_sample is None:
+            return None, sync_reason or "no synchronized point cloud"
 
-        u1, u2 = x1 * self.image_width, x2 * self.image_width
-        v1, v2 = y1 * self.image_height, y2 * self.image_height
-        margin = math.radians(float(self.get_parameter("frustum_margin_deg").value))
+        points_body, reason = self.point_cloud_points_body(point_cloud_sample, pose)
+        if points_body is None:
+            return None, reason
 
-        az_left = math.atan2(u1 - self.cx, self.fx) - margin
-        az_right = math.atan2(u2 - self.cx, self.fx) + margin
-        el_top = math.atan2(v1 - self.cy, self.fy) - margin
-        el_bottom = math.atan2(v2 - self.cy, self.fy) + margin
+        selected_body, selected_detection, candidate_count = self.depth_points_for_box(
+            points_body,
+            x1,
+            y1,
+            x2,
+            y2,
+        )
+        min_points = int(self.get_parameter("min_frustum_points").value)
+        if len(selected_body) < min_points:
+            return None, f"projected_tof_points={candidate_count}, clustered_points={len(selected_body)}"
 
-        ray_cam = np.array(
-            [((u1 + u2) * 0.5 - self.cx) / self.fx, ((v1 + v2) * 0.5 - self.cy) / self.fy, 1.0],
+        center_body = np.median(selected_body, axis=0)
+        optical_depth = float(np.median(selected_detection[:, 2]))
+        width_m = max(0.10, (x2 - x1) * self.image_width * optical_depth / self.fx)
+        height_m = max(0.10, (y2 - y1) * self.image_height * optical_depth / self.fy)
+        depth_m = max(
+            0.20,
+            float(np.percentile(selected_detection[:, 2], 90.0))
+            - float(np.percentile(selected_detection[:, 2], 10.0)),
+        )
+        corners_detection = np.array(
+            [
+                [x, y, z]
+                for x in (-0.5 * width_m, 0.5 * width_m)
+                for y in (-0.5 * height_m, 0.5 * height_m)
+                for z in (-0.5 * depth_m, 0.5 * depth_m)
+            ],
             dtype=float,
         )
-        ray_cam /= np.linalg.norm(ray_cam)
-        ray_body = self.rotation_camera_to_body @ ray_cam
-        ray_world = self.yaw_matrix(self.pose["yaw"]) @ ray_body
+        corners_body = (
+            center_body
+            + (self.rotation_detection_camera_to_body @ corners_detection.T).T
+        )
+        return self.obstacle_payload(
+            center_body,
+            corners_body,
+            pose,
+            label,
+            confidence,
+            f"tof_projected_{len(selected_body)}of{candidate_count}pts",
+            "tflite_tof_projected",
+            point_cloud_sample.get("sync_delta_s"),
+            str(getattr(detection, "cam", "")),
+        ), None
 
-        depth, point_count = self.depth_from_frustum(az_left, az_right, el_top, el_bottom)
-        if depth is None:
-            return None, f"tof_frustum_points={point_count}"
+    def build_hardcoded_obstacle(self, x1, y1, x2, y2, label, confidence, pose):
+        depth = self.hardcoded_depth(label)
+        u = 0.5 * (x1 + x2) * self.image_width
+        v = 0.5 * (y1 + y2) * self.image_height
+        ray_detection = np.array(
+            [(u - self.cx) / self.fx, (v - self.cy) / self.fy, 1.0],
+            dtype=float,
+        )
+        ray_detection /= np.linalg.norm(ray_detection)
+        center_body = (
+            self.detection_camera_translation_body
+            + self.rotation_detection_camera_to_body @ (ray_detection * depth)
+        )
+        optical_depth = max(0.1, depth * ray_detection[2])
+        width_m = max(0.10, (x2 - x1) * self.image_width * optical_depth / self.fx)
+        height_m = max(0.10, (y2 - y1) * self.image_height * optical_depth / self.fy)
+        depth_m = max(0.20, 0.25 * depth)
+        corners_detection = np.array(
+            [
+                [x, y, z]
+                for x in (-0.5 * width_m, 0.5 * width_m)
+                for y in (-0.5 * height_m, 0.5 * height_m)
+                for z in (-0.5 * depth_m, 0.5 * depth_m)
+            ],
+            dtype=float,
+        )
+        corners_body = (
+            center_body
+            + (self.rotation_detection_camera_to_body @ corners_detection.T).T
+        )
+        return self.obstacle_payload(
+            center_body,
+            corners_body,
+            pose,
+            label,
+            confidence,
+            "class_prior_not_measured",
+            "tflite_class_prior",
+            None,
+            str(self.get_parameter("detection_camera").value),
+        )
 
-        drone_pos = self.pose["position"]
-        camera_origin_world = drone_pos + self.yaw_matrix(self.pose["yaw"]) @ self.camera_translation_body
-        world_pos = camera_origin_world + ray_world * depth
-        width_m = max(0.1, (u2 - u1) * depth / self.fx)
-        height_m = max(0.1, (v2 - v1) * depth / self.fy)
-        half = np.array([0.5 * width_m, 0.5 * width_m, 0.5 * height_m], dtype=float)
-        delta = world_pos - drone_pos
-
-        return {
-            "centroid": np.round(world_pos, 2).tolist(),
-            "min_corner": np.round(world_pos - half, 2).tolist(),
-            "max_corner": np.round(world_pos + half, 2).tolist(),
-            "size": [round(width_m, 2), round(width_m, 2), round(height_m, 2)],
+    def obstacle_payload(
+        self,
+        center_body,
+        corners_body,
+        pose,
+        label,
+        confidence,
+        depth_source,
+        source,
+        sync_delta_s,
+        camera,
+    ):
+        rotation = pose["rotation_body_to_world"]
+        drone_pos = pose["position"]
+        centroid = drone_pos + rotation @ center_body
+        corners_world = drone_pos + (rotation @ corners_body.T).T
+        min_corner = corners_world.min(axis=0)
+        max_corner = corners_world.max(axis=0)
+        size = max_corner - min_corner
+        delta = centroid - drone_pos
+        payload = {
+            "centroid": np.round(centroid, 2).tolist(),
+            "min_corner": np.round(min_corner, 2).tolist(),
+            "max_corner": np.round(max_corner, 2).tolist(),
+            "size": np.round(size, 2).tolist(),
             "distance_m": round(float(np.linalg.norm(delta)), 2),
             "bearing_deg": round(float(np.degrees(math.atan2(delta[1], delta[0]))), 1),
             "label": label,
             "shape": label,
             "confidence": round(confidence, 2),
-            "is_dynamic": label in DYNAMIC_LABELS,
-            "depth_source": f"tof_{point_count}pts",
-            "source": "yolo_tof_frustum",
-        }, None
-
-    def build_hardcoded_obstacle(self, x1, y1, x2, y2, label, confidence):
-        depth = self.hardcoded_depth(label)
-        x_thickness = max(0.2, 0.25 * depth)
-        y_left = (x1 - 0.5) * depth
-        y_right = (x2 - 0.5) * depth
-        z_top = (y1 - 0.5) * depth
-        z_bottom = (y2 - 0.5) * depth
-
-        min_body = np.array([depth - 0.5 * x_thickness, min(y_left, y_right), min(z_top, z_bottom)], dtype=float)
-        max_body = np.array([depth + 0.5 * x_thickness, max(y_left, y_right), max(z_top, z_bottom)], dtype=float)
-        centroid_body = 0.5 * (min_body + max_body)
-
-        drone_pos = self.pose["position"]
-        centroid = drone_pos + centroid_body
-        corners_body = np.array(
-            [
-                [x, y, z]
-                for x in (min_body[0], max_body[0])
-                for y in (min_body[1], max_body[1])
-                for z in (min_body[2], max_body[2])
-            ],
-            dtype=float,
-        )
-        corners_world = drone_pos + corners_body
-        min_corner = corners_world.min(axis=0)
-        max_corner = corners_world.max(axis=0)
-        size = max_corner - min_corner
-        delta = centroid - drone_pos
-
-        return {
-            "centroid": np.round(centroid, 2).tolist(),
-            "min_corner": np.round(min_corner, 2).tolist(),
-            "max_corner": np.round(max_corner, 2).tolist(),
-            "size": np.round(size, 2).tolist(),
-            "distance_m": round(depth, 2),
-            "bearing_deg": round(float(np.degrees(math.atan2(delta[1], delta[0]))), 1),
-            "label": label,
-            "shape": label,
-            "confidence": round(confidence, 2),
-            "is_dynamic": label in DYNAMIC_LABELS,
-            "depth_source": "hardcoded_bbox",
-            "source": "yolo_hardcoded_bbox",
+            "is_dynamic": label.lower() in DYNAMIC_LABELS,
+            "depth_source": depth_source,
+            "source": source,
+            "camera": camera,
         }
+        if sync_delta_s is not None:
+            payload["sync_delta_s"] = round(float(sync_delta_s), 3)
+        return payload
 
     @staticmethod
     def hardcoded_depth(label):
         return HARDCODED_DEPTH_M.get(str(label).lower(), 1.0)
 
-    def depth_from_frustum(self, az_left, az_right, el_top, el_bottom):
-        if self.point_cloud_msg is None or self.pose is None:
-            return None, 0
+    def point_cloud_points_body(self, sample, pose):
+        points = sample["points"]
+        frame = str(self.get_parameter("point_cloud_frame").value).strip().lower()
+        if frame == "tof_optical":
+            return (
+                self.depth_camera_translation_body
+                + (self.rotation_depth_camera_to_body @ points.T).T
+            ), None
+        if frame == "body_frd":
+            return points, None
+        if frame == "local_ned":
+            return (
+                pose["rotation_body_to_world"].T
+                @ (points - pose["position"]).T
+            ).T, None
+        return None, f"unsupported point_cloud_frame='{frame}'"
 
-        if self.point_cloud_points_world is None:
-            raw_points = list(
-                pc2.read_points(self.point_cloud_msg, field_names=("x", "y", "z"), skip_nans=True)
-            )
-            if not raw_points:
-                return None, 0
-            points = np.array([[p[0], p[1], p[2]] for p in raw_points], dtype=float)
-            self.point_cloud_points_world = points[np.all(np.isfinite(points), axis=1)]
-
-        points = self.point_cloud_points_world
-        if len(points) == 0:
-            return None, 0
-
-        camera_origin_world = (
-            self.pose["position"] + self.yaw_matrix(self.pose["yaw"]) @ self.camera_translation_body
+    def depth_points_for_box(self, points_body, x1, y1, x2, y2):
+        points_detection = (
+            self.rotation_detection_camera_to_body.T
+            @ (points_body - self.detection_camera_translation_body).T
+        ).T
+        ranges = np.linalg.norm(
+            points_body - self.depth_camera_translation_body,
+            axis=1,
         )
-        v_world = points - camera_origin_world
-        distances = np.linalg.norm(v_world, axis=1)
-        min_depth = float(self.get_parameter("min_tof_depth_m").value)
-        max_depth = float(self.get_parameter("max_tof_depth_m").value)
-        depth_mask = (distances > min_depth) & (distances < max_depth)
-        v_world = v_world[depth_mask]
-        distances = distances[depth_mask]
-        if len(v_world) == 0:
-            return None, 0
+        valid = (
+            (points_detection[:, 2] > 0.01)
+            & (ranges >= float(self.get_parameter("min_tof_depth_m").value))
+            & (ranges <= float(self.get_parameter("max_tof_depth_m").value))
+        )
+        points_body = points_body[valid]
+        points_detection = points_detection[valid]
+        ranges = ranges[valid]
+        if len(points_body) == 0:
+            return points_body, points_detection, 0
 
-        v_body = (self.yaw_matrix(-self.pose["yaw"]) @ v_world.T).T
-        v_cam = (self.rotation_camera_to_body.T @ v_body.T).T
-        front_mask = v_cam[:, 2] > 0.01
-        v_cam = v_cam[front_mask]
-        distances = distances[front_mask]
-        if len(v_cam) == 0:
-            return None, 0
+        normalized_u = (
+            self.fx * points_detection[:, 0] / points_detection[:, 2] + self.cx
+        ) / self.image_width
+        normalized_v = (
+            self.fy * points_detection[:, 1] / points_detection[:, 2] + self.cy
+        ) / self.image_height
+        full_mask = (
+            (normalized_u >= x1)
+            & (normalized_u <= x2)
+            & (normalized_v >= y1)
+            & (normalized_v <= y2)
+        )
+        margin = max(
+            0.0,
+            min(0.45, float(self.get_parameter("bbox_inner_margin_fraction").value)),
+        )
+        inner_mask = (
+            (normalized_u >= x1 + margin * (x2 - x1))
+            & (normalized_u <= x2 - margin * (x2 - x1))
+            & (normalized_v >= y1 + margin * (y2 - y1))
+            & (normalized_v <= y2 - margin * (y2 - y1))
+        )
+        min_points = int(self.get_parameter("min_frustum_points").value)
+        roi_mask = inner_mask if int(np.sum(inner_mask)) >= min_points else full_mask
+        candidate_count = int(np.sum(roi_mask))
+        if candidate_count < min_points:
+            return (
+                np.empty((0, 3), dtype=float),
+                np.empty((0, 3), dtype=float),
+                candidate_count,
+            )
 
-        az = np.arctan2(v_cam[:, 0], v_cam[:, 2])
-        el = np.arctan2(v_cam[:, 1], v_cam[:, 2])
-        in_frustum = (az >= az_left) & (az <= az_right) & (el >= el_top) & (el <= el_bottom)
-        count = int(np.sum(in_frustum))
-        if count < int(self.get_parameter("min_frustum_points").value):
-            return None, count
-        return float(np.median(distances[in_frustum])), count
+        roi_ranges = ranges[roi_mask]
+        percentile = max(
+            0.0,
+            min(100.0, float(self.get_parameter("depth_near_percentile").value)),
+        )
+        seed = float(np.percentile(roi_ranges, percentile))
+        tolerance = max(
+            0.01,
+            float(self.get_parameter("depth_cluster_tolerance_m").value),
+        )
+        cluster = roi_ranges <= seed + tolerance
+        return points_body[roi_mask][cluster], points_detection[roi_mask][cluster], candidate_count
 
     def normalized_box(self, detection):
         vals = [float(detection.x_min), float(detection.y_min), float(detection.x_max), float(detection.y_max)]
-        if max(abs(value) for value in vals) <= 1.5:
+        if all(-0.01 <= value <= 1.01 for value in vals):
             x1, y1, x2, y2 = vals
         else:
             x1 = vals[0] / self.image_width
@@ -428,8 +667,119 @@ class SemanticObstaclePerception(Node):
         y1, y2 = sorted((y1, y2))
         return max(0.0, x1), max(0.0, y1), min(1.0, x2), min(1.0, y2)
 
+    def match_point_cloud(self, detection_arrival_s):
+        if self.z_estimation_mode() != "depth":
+            return None, None
+        if detection_arrival_s is None:
+            return None, "no current detection frame"
+        if not self.point_cloud_samples:
+            return None, "no point cloud"
+
+        offset_s = float(self.get_parameter("detection_to_depth_offset_s").value)
+        image_sample = None
+        if self.detector_image_samples:
+            image_sample = min(
+                self.detector_image_samples,
+                key=lambda candidate: abs(
+                    float(candidate["arrival_s"]) - detection_arrival_s
+                ),
+            )
+
+        source_candidates = [
+            candidate
+            for candidate in self.point_cloud_samples
+            if int(candidate.get("source_stamp_ns", 0)) > 0
+        ]
+        if (
+            image_sample is not None
+            and int(image_sample.get("source_stamp_ns", 0)) > 0
+            and source_candidates
+        ):
+            target_ns = int(image_sample["source_stamp_ns"]) + int(offset_s * 1e9)
+            sample = min(
+                source_candidates,
+                key=lambda candidate: abs(
+                    int(candidate["source_stamp_ns"]) - target_ns
+                ),
+            )
+            delta_s = abs(int(sample["source_stamp_ns"]) - target_ns) / 1e9
+            sync_basis = "tflite_image_and_tof_header"
+        else:
+            target_s = detection_arrival_s + offset_s
+            sample = min(
+                self.point_cloud_samples,
+                key=lambda candidate: abs(float(candidate["arrival_s"]) - target_s),
+            )
+            delta_s = abs(float(sample["arrival_s"]) - target_s)
+            sync_basis = "local_receipt_time"
+
+        if delta_s > float(self.get_parameter("max_sync_slop_s").value):
+            return None, f"point cloud sync delta={delta_s:.3f}s"
+        matched = dict(sample)
+        matched["sync_delta_s"] = delta_s
+        self.last_sync_basis = sync_basis
+        self.last_point_cloud_sync_delta_s = delta_s
+        return matched, None
+
+    def match_pose(self, point_cloud_sample, fallback_arrival_s):
+        if not self.pose_samples:
+            return None
+
+        target_stamp_ns = (
+            int(point_cloud_sample.get("source_stamp_ns", 0))
+            if point_cloud_sample is not None
+            else 0
+        )
+        source_candidates = [
+            candidate
+            for candidate in self.pose_samples
+            if int(candidate.get("source_stamp_ns", 0)) > 0
+        ]
+        if target_stamp_ns > 0 and source_candidates:
+            pose = min(
+                source_candidates,
+                key=lambda candidate: abs(
+                    int(candidate["source_stamp_ns"]) - target_stamp_ns
+                ),
+            )
+            delta_s = abs(int(pose["source_stamp_ns"]) - target_stamp_ns) / 1e9
+        elif fallback_arrival_s is not None:
+            pose = min(
+                self.pose_samples,
+                key=lambda candidate: abs(
+                    float(candidate["arrival_s"]) - fallback_arrival_s
+                ),
+            )
+            delta_s = abs(float(pose["arrival_s"]) - fallback_arrival_s)
+        else:
+            return None
+
+        if delta_s > float(self.get_parameter("max_sync_slop_s").value):
+            return None
+        self.last_pose_sync_delta_s = delta_s
+        return pose
+
+    def accepted_detection_cameras(self):
+        aliases = {
+            self.normalize_camera_name(value)
+            for value in self.get_parameter("detection_camera_aliases").value
+        }
+        aliases.add(
+            self.normalize_camera_name(
+                str(self.get_parameter("detection_camera").value)
+            )
+        )
+        return {value for value in aliases if value}
+
+    def detection_camera_matches(self, camera):
+        return self.normalize_camera_name(camera) in self.accepted_detection_cameras()
+
+    @staticmethod
+    def normalize_camera_name(camera):
+        return str(camera).strip().strip("/").split("/")[-1].lower()
+
     def prune_detections(self):
-        now = time.time()
+        now = time.monotonic()
         timeout_s = float(self.get_parameter("detection_timeout_s").value)
         self.detections = [(det, stamp) for det, stamp in self.detections if now - stamp <= timeout_s]
 
@@ -437,24 +787,126 @@ class SemanticObstaclePerception(Node):
         if not self.detections:
             return []
         try:
-            latest_frame_id = max(int(det.frame_id) for det, _ in self.detections)
+            latest_frame_id = int(self.detections[-1][0].frame_id)
             return [(det, stamp) for det, stamp in self.detections if int(det.frame_id) == latest_frame_id]
         except (AttributeError, TypeError, ValueError):
             return list(self.detections)
 
-    def log_summary(self, obstacles, no_depth_count, low_conf_count):
+    def health_status(self, no_depth):
+        now = time.monotonic()
+        detector_topic = str(self.get_parameter("detector_image_topic").value).strip()
+        detector_timeout = float(self.get_parameter("detector_timeout_s").value)
+        point_cloud_timeout = float(self.get_parameter("point_cloud_timeout_s").value)
+        pose_timeout = float(self.get_parameter("pose_timeout_s").value)
+
+        if not detector_topic:
+            detector = "unmonitored"
+        elif self.last_detector_image_stamp is None:
+            detector = "missing"
+        elif now - self.last_detector_image_stamp > detector_timeout:
+            detector = "stale"
+        elif self.detector_image_size != (self.image_width, self.image_height):
+            detector = (
+                f"size_mismatch:{self.detector_image_size[0]}x"
+                f"{self.detector_image_size[1]}"
+            )
+        else:
+            detector = "ok"
+
+        if self.last_pose_stamp is None:
+            pose = "missing"
+        elif now - self.last_pose_stamp > pose_timeout:
+            pose = "stale"
+        else:
+            pose = "ok"
+
+        if self.z_estimation_mode() != "depth":
+            point_cloud = "not_used"
+        elif self.last_point_cloud_stamp is None:
+            point_cloud = "missing"
+        elif now - self.last_point_cloud_stamp > point_cloud_timeout:
+            point_cloud = "stale"
+        elif (
+            self.point_cloud_samples
+            and self.point_cloud_samples[-1]["valid_depth_count"]
+            < int(self.get_parameter("min_valid_point_cloud_points").value)
+        ):
+            point_cloud = (
+                "insufficient_valid_points:"
+                f"{self.point_cloud_samples[-1]['valid_depth_count']}"
+            )
+        else:
+            point_cloud = "ok"
+
+        detector_ok = detector in ("ok", "unmonitored")
+        depth_ok = point_cloud in ("ok", "not_used")
+        calibration_valid = bool(
+            self.get_parameter("camera_calibration_valid").value
+        )
+        healthy = (
+            detector_ok
+            and pose == "ok"
+            and depth_ok
+            and calibration_valid
+            and not no_depth
+        )
+        latest_sample = self.point_cloud_samples[-1] if self.point_cloud_samples else None
+        current_detections = self.current_detections()
+        latest_detection = current_detections[-1][0] if current_detections else None
+        return {
+            "healthy": bool(healthy),
+            "detector": detector,
+            "pose": pose,
+            "point_cloud": point_cloud,
+            "camera_calibration": (
+                "verified" if calibration_valid else "unverified"
+            ),
+            "point_cloud_frame_param": str(
+                self.get_parameter("point_cloud_frame").value
+            ),
+            "point_cloud_header_frame": (
+                latest_sample["frame_id"] if latest_sample is not None else None
+            ),
+            "valid_point_cloud_points": (
+                latest_sample["valid_depth_count"]
+                if latest_sample is not None
+                else 0
+            ),
+            "detection_camera": str(
+                self.get_parameter("detection_camera").value
+            ),
+            "reported_detection_camera": (
+                str(getattr(latest_detection, "cam", ""))
+                if latest_detection is not None
+                else None
+            ),
+            "detection_frame_id": (
+                int(getattr(latest_detection, "frame_id", 0))
+                if latest_detection is not None
+                else None
+            ),
+            "image_size": [self.image_width, self.image_height],
+            "range_is_measured": (
+                self.z_estimation_mode() == "depth" and calibration_valid
+            ),
+            "sync_basis": self.last_sync_basis,
+            "point_cloud_sync_delta_s": self.last_point_cloud_sync_delta_s,
+            "pose_sync_delta_s": self.last_pose_sync_delta_s,
+        }
+
+    def log_summary(self, obstacles, no_depth_count, low_conf_count, status):
         if not bool(self.get_parameter("debug").value):
             return
-        now = time.time()
+        now = time.monotonic()
         if now - self.last_log_stamp < float(self.get_parameter("print_obstacles_period_s").value):
             return
         self.last_log_stamp = now
 
         z_estimation_mode = self.z_estimation_mode()
-        pc_status = "missing" if self.point_cloud_msg is None else f"{self.point_cloud_msg.width}x{self.point_cloud_msg.height}"
         lines = [
             f"semantic_obstacles={len(obstacles)} no_depth={no_depth_count} low_conf={low_conf_count} "
-            f"z_mode={z_estimation_mode} pc={pc_status} pose={'ok' if self.pose is not None else 'missing'}"
+            f"healthy={status['healthy']} z_mode={z_estimation_mode} "
+            f"detector={status['detector']} pc={status['point_cloud']} pose={status['pose']}"
         ]
         for obstacle in obstacles:
             min_corner = obstacle.get("min_corner", [0.0, 0.0, 0.0])
@@ -471,12 +923,12 @@ class SemanticObstaclePerception(Node):
 
     def z_estimation_mode(self):
         mode = str(self.get_parameter("z_estimation_mode").value).strip().lower()
-        return "depth" if mode == "depth" else "hardcoded"
+        return "hardcoded" if mode == "hardcoded" else "depth"
 
     def perception_source(self):
         if self.z_estimation_mode() == "depth":
-            return "yolo_tof_frustum"
-        return "yolo_hardcoded_z"
+            return "tflite_tof_projected"
+        return "tflite_class_prior"
 
     def prompt_obstacle_text(self, obstacle):
         min_corner = obstacle.get("min_corner", [0.0, 0.0, 0.0])
@@ -484,7 +936,9 @@ class SemanticObstaclePerception(Node):
         label = obstacle.get("label") or obstacle.get("shape") or "unknown"
         return (
             f"{label}: x=[{min_corner[0]:.2f},{max_corner[0]:.2f}], "
-            f"y=[{min_corner[1]:.2f},{max_corner[1]:.2f}], size {self.size_phrase(obstacle)}."
+            f"y=[{min_corner[1]:.2f},{max_corner[1]:.2f}], "
+            f"distance {float(obstacle.get('distance_m', 0.0)):.2f}m, "
+            f"size {self.size_phrase(obstacle)}."
         )
 
     @staticmethod
@@ -508,15 +962,17 @@ class SemanticObstaclePerception(Node):
         if self.pose is None:
             return None
         p = self.pose["position"]
+        rotation = self.pose["rotation_body_to_world"]
+        yaw = math.atan2(rotation[1, 0], rotation[0, 0])
         return (
             round(float(p[0]), 2),
             round(float(p[1]), 2),
             round(float(p[2]), 2),
-            round(float(np.degrees(self.pose["yaw"])), 1),
+            round(float(np.degrees(yaw)), 1),
         )
 
     @staticmethod
-    def yolo_confidence(detection):
+    def detection_confidence(detection):
         for field_name in ("class_confidence", "detection_confidence"):
             try:
                 value = float(getattr(detection, field_name))
@@ -537,9 +993,26 @@ class SemanticObstaclePerception(Node):
         return rx @ ry @ rz
 
     @staticmethod
-    def yaw_matrix(yaw):
-        c, s = math.cos(yaw), math.sin(yaw)
-        return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+    def quaternion_body_to_world_matrix(quaternion):
+        q = np.asarray(quaternion, dtype=float)
+        if q.shape != (4,) or not np.all(np.isfinite(q)):
+            return None
+        norm = float(np.linalg.norm(q))
+        if norm < 1e-9:
+            return None
+        w, x, y, z = q / norm
+        return np.array(
+            [
+                [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+                [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+                [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+            ],
+            dtype=float,
+        )
+
+    @staticmethod
+    def ros_stamp_ns(stamp):
+        return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
 
 def main():

@@ -1,31 +1,58 @@
 semantic_obstacle_perception:
   ros__parameters:
     detection_topic: /tflite_data
+    detector_image_topic: /tflite
     point_cloud_topic: /tof_pc
     pose_topic: /fmu/out/vehicle_odometry
     obstacle_topic: /llm_vision/semantic_obstacles
     goal_x: 2.5
     goal_y: 0.0
-    goal_z: -1.0
-    hires_fx: 459.25277454251415
-    hires_fy: 459.77659154648927
-    hires_cx: 656.1383163463607
-    hires_cy: 424.58097964738005
-    hires_width: 1280
+    goal_z: -0.5
+    # Accepted hires_small_grey calibration for the paired 1024x768 IMX412
+    # small stream (0.703523 px reprojection error, plumb_bob model).
+    hires_fx: 501.5315609739347
+    hires_fy: 502.8286520347511
+    hires_cx: 508.1806484040712
+    hires_cy: 380.6556051674785
+    # Live VOXL check: hires_small_color is the paired 1024x768 TFLite input.
+    hires_width: 1024
     hires_height: 768
-    cam_body_x_m: 0.0665
-    cam_body_y_m: -0.0065
-    cam_body_z_m: -0.0154
-    cam_roll_deg: 0.0
-    cam_pitch_deg: -90.0
-    cam_yaw_deg: -90.0
+    camera_calibration_valid: true
+    detection_camera: hires_small_color
+    detection_camera_aliases: [hires_small_color]
+    # Starling 2 body FRD -> IMX412 optical frame, intrinsic XYZ degrees.
+    detection_cam_body_x_m: 0.068
+    detection_cam_body_y_m: 0.012
+    detection_cam_body_z_m: -0.015
+    detection_cam_roll_deg: 0.0
+    detection_cam_pitch_deg: 90.0
+    detection_cam_yaw_deg: 90.0
+    # Values read from this vehicle's /etc/modalai/extrinsics.conf.
+    depth_cam_body_x_m: 0.066
+    depth_cam_body_y_m: 0.009
+    depth_cam_body_z_m: -0.012
+    depth_cam_roll_deg: 0.0
+    depth_cam_pitch_deg: 90.0
+    depth_cam_yaw_deg: 180.0
+    # Raw /tof_pc is sensor-relative even when its bridge header says "world".
+    point_cloud_frame: tof_optical
     min_confidence: 0.60
     detection_timeout_s: 1.0
-    z_estimation_mode: hardcoded
+    detector_timeout_s: 1.0
+    point_cloud_timeout_s: 1.0
+    pose_timeout_s: 1.0
+    # Live source-stamp check observed 0.042-0.063 s RGB/ToF deltas at 10 Hz ToF.
+    max_sync_slop_s: 0.35
+    detection_to_depth_offset_s: 0.0
+    z_estimation_mode: depth
     min_tof_depth_m: 0.20
     max_tof_depth_m: 6.0
-    frustum_margin_deg: 5.0
-    min_frustum_points: 3
+    min_valid_point_cloud_points: 100
+    min_frustum_points: 10
+    # Prefer the box center so a foreground edge does not steal a rear object's range.
+    bbox_inner_margin_fraction: 0.25
+    depth_near_percentile: 25.0
+    depth_cluster_tolerance_m: 0.35
     obstacle_hold_s: 3.0
     obstacle_match_distance_m: 0.75
     publish_hz: 2.0
@@ -40,7 +67,7 @@ obstacle_perception:
     obstacle_topic: /llm_vision/obstacles
     goal_x: 2.5
     goal_y: 0.0
-    goal_z: -1.0
+    goal_z: -0.5
     min_range_m: 0.20
     max_range_m: 4.5
     min_z_m: -2.0
@@ -62,10 +89,10 @@ prompt_generator:
     workspace_x_max: 4.0
     workspace_y_min: 0.0
     workspace_y_max: 4.0
-    fixed_z: -1.0
+    fixed_z: -0.5
     goal_x: 2.5
     goal_y: 0.0
-    goal_z: -1.0
+    goal_z: -0.5
     clearance_m: 0.40
     goal_clearance_m: 0.40
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
@@ -78,6 +105,7 @@ prompt_generator:
     snapshot_after_hover_s: 1.0
     prefer_nonempty_obstacle_snapshot: true
     nonempty_obstacle_wait_s: 3.0
+    require_healthy_perception: true
     start_drift_replan_m: 0.25
     feedback_enabled: True
     pose_topic: /fmu/out/vehicle_odometry
@@ -104,7 +132,7 @@ path_refinement:
     interpolation_spacing_m: 1.0
     safety_margin_m: 0.40
     nudge_epsilon_m: 0.02
-    fixed_z: -1.0
+    fixed_z: -0.5
     debug: False
 
 path_verifier:
@@ -136,7 +164,7 @@ planner_visualizer:
     static_plot_dir: src/llm_vision_planner/plots/planner/snapshots
     static_plot_dpi: 180
     static_plot_prefix: simulated_test
-    fixed_z: -1.0
+    fixed_z: -0.5
     workspace_x_min: 0.0
     workspace_x_max: 4.0
     workspace_y_min: 0.0
@@ -174,15 +202,17 @@ control_law_executer:
     publish_hz: 20.0
     pose_timeout_s: 1.0
     prime_s: 1.5
-    takeoff_z: -1.0
+    takeoff_z: -0.5
     takeoff_accept_m: 0.15
     takeoff_settle_s: 1.0
     hover_speed_accept_mps: 0.20
+    # Must be >= 1.1 * PX4 LNDMC_Z_VEL_MAX so vehicle_land_detected can trigger.
+    land_descent_speed_mps: 0.30
     start_accept_m: 0.10
     goal_accept_m: 0.20
     goal_settle_s: 2.0
     command_retry_s: 1.0
-    transition_timeout_s: 15.0
+    transition_timeout_s: 40.0
     trajectory_dt: 0.1
     # Hard horizontal bounds for the QP and outgoing Offboard velocity setpoints.
     max_horizontal_speed_mps: 0.5

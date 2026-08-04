@@ -34,7 +34,7 @@ class ObstaclePerception(Node):
         self.declare_parameter("obstacle_topic", "/llm_vision/obstacles")
         self.declare_parameter("goal_x", 2.5)
         self.declare_parameter("goal_y", 0.0)
-        self.declare_parameter("goal_z", -0.25)
+        self.declare_parameter("goal_z", -0.5)
         self.declare_parameter("min_range_m", 0.20)
         self.declare_parameter("max_range_m", 4.5)
         self.declare_parameter("min_z_m", -2.0)

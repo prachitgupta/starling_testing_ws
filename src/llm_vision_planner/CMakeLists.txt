@@ -6,6 +6,8 @@ find_package(ament_cmake REQUIRED)
 install(PROGRAMS
   scripts/perception.py
   scripts/perception_detection.py
+  scripts/debug_perception.py
+  scripts/ros_wifi_dds.sh
   scripts/prompt_generator.py
   scripts/llm_planner.py
   scripts/refinment.py

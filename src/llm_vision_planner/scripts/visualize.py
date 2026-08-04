@@ -20,7 +20,7 @@ OBSTACLE_TOPIC = "/llm_vision/obstacles"
 SEMANTIC_OBSTACLE_TOPIC = "/llm_vision/semantic_obstacles"
 POSE_TOPIC = "/fmu/out/vehicle_odometry"
 DEFAULT_OUTPUT_PNG = "src/llm_vision_planner/plots/planner/live_planner.png"
-DEFAULT_Z = -0.25
+DEFAULT_Z = -0.5
 DEFAULT_RRT_CLEARANCE_M = 0.40
 
 ODOM_QOS = QoSProfile(

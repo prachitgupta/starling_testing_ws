@@ -31,6 +31,157 @@ nc -vz "$VICON_COMPUTER_IP" 801
 TCP port `801` must be reachable for the Vicon DataStream SDK. Allow Vicon
 Tracker/DataStream through the Windows firewall if this check fails.
 
+### Optional: isolate ROS 2 while using the campus VPN
+
+Use this section only while campus Ethernet reaches the GPU through a VPN. ROS
+2 remains on the existing Wi-Fi path between the laptop and VOXL; Vicon
+DataStream also remains on Wi-Fi. The GPU does not need this DDS profile unless
+it runs ROS 2 directly.
+
+The profile is opt-in and terminal-local. It allows Fast DDS UDP only on
+loopback and the selected Wi-Fi IPv4 address, excluding campus Ethernet and VPN
+interfaces. It does not modify NetworkManager, routes, `.bashrc`, or systemd.
+
+#### One-time setup
+
+On the laptop, build the package and copy the helper to the VOXL:
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select llm_vision_planner
+source install/setup.bash
+
+ssh root@"$Starling2" \
+  'mkdir -p /data/llm_vision_planner/scripts /data/llm_vision_planner/config'
+scp src/llm_vision_planner/scripts/ros_wifi_dds.sh \
+  root@"$Starling2":/data/llm_vision_planner/scripts/
+scp src/llm_vision_planner/config/fastdds_wifi_only.xml.in \
+  root@"$Starling2":/data/llm_vision_planner/config/
+```
+
+#### Enable on both sides
+
+In every new laptop terminal that starts MAVROS, the Vicon bridge, the planner,
+or ROS CLI commands:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 0
+```
+
+In every VOXL shell that manually starts a ROS 2 process:
+
+```bash
+source /opt/ros/foxy/setup.bash
+source /data/llm_vision_planner/scripts/ros_wifi_dds.sh enable wlan0 0
+```
+
+Both sides must report `rmw_fastrtps_cpp` and domain `0`. Stop and restart any
+ROS process that was already running before `enable`. Re-run `enable` and
+restart the processes if Wi-Fi reconnects with a different IPv4 address.
+
+This shell command does not alter an already-running VOXL systemd service. Check
+the installed service names and environments before changing a vendor service:
+
+```bash
+systemctl show voxl-microdds-agent voxl-mpa-to-ros2 \
+  --property=LoadState,ActiveState,Environment
+```
+
+`LoadState=not-found` means that service name is not installed. Do not create a
+systemd override until the connected vehicle's actual service has been
+identified.
+
+#### Sanity checks before and after connecting the VPN
+
+On the laptop, replace the example with the GPU server's campus IPv4 address:
+
+```bash
+export GPU_IP="10.0.0.10"
+
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  status
+printenv RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
+  FASTRTPS_DEFAULT_PROFILES_FILE
+
+ip route get "$Starling2"          # must show wlp6s0
+ip route get "$VICON_COMPUTER_IP" # must show wlp6s0
+ip route get "$GPU_IP"            # must show the VPN interface
+```
+
+Confirm that Wi-Fi is not shared with or bridged to campus Ethernet:
+
+```bash
+nmcli -t -f NAME,TYPE,DEVICE connection show --active
+WIFI_CONNECTION_NAME="$(nmcli -g GENERAL.CONNECTION device show wlp6s0)"
+nmcli -g ipv4.method,ipv6.method connection show "$WIFI_CONNECTION_NAME"
+ip -d link show type bridge
+bridge link
+```
+
+Neither Wi-Fi method may be `shared`, and Wi-Fi and campus Ethernet must not be
+members of the same bridge. If the VPN sends either Starling or Vicon traffic
+through its tunnel, stop and have the campus VPN route narrowed before flight.
+
+On the VOXL:
+
+```bash
+source /data/llm_vision_planner/scripts/ros_wifi_dds.sh status
+printenv RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
+  FASTRTPS_DEFAULT_PROFILES_FILE
+ip -4 -br address show wlan0
+```
+
+With the VPN connected, repeat the normal topic checks on the laptop:
+
+```bash
+ros2 topic info -v /fmu/out/vehicle_odometry
+ros2 topic hz /fmu/out/vehicle_odometry
+ros2 topic hz /mavros/vision_pose/pose --window 500
+```
+
+Stop each `ros2 topic hz` command with `Ctrl-C` after observing a stable rate.
+The Vicon maximum interval must remain below `0.2 s`, as required later in this
+procedure. Do not fly if topics disappear, rates fall, or either local route
+moves to the VPN.
+
+#### Undo when the VPN is no longer used
+
+Stop ROS processes started under the profile. In every affected laptop shell:
+
+```bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  disable
+```
+
+In every affected VOXL shell:
+
+```bash
+source /data/llm_vision_planner/scripts/ros_wifi_dds.sh disable
+```
+
+`disable` restores the environment that existed before `enable` and deletes
+only that shell's generated runtime XML. Closing the terminal has the same
+environment-reset effect. The copied VOXL helper is inert when it is not
+sourced; optionally remove only those two copied files:
+
+```bash
+ssh root@"$Starling2" \
+  'rm -f /data/llm_vision_planner/scripts/ros_wifi_dds.sh /data/llm_vision_planner/config/fastdds_wifi_only.xml.in'
+```
+
+After campus registration, disconnect the VPN and verify that the GPU uses
+campus Ethernet while the local paths remain on Wi-Fi:
+
+```bash
+ip route get "$Starling2"          # wlp6s0
+ip route get "$VICON_COMPUTER_IP" # wlp6s0
+ip route get "$GPU_IP"            # campus Ethernet interface
+```
+
 ## 2. Configure QGroundControl UDP
 
 Older `voxl-mavlink-server` versions send ground-station traffic back to UDP
@@ -210,6 +361,7 @@ source /opt/ros/humble/setup.bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 
 ros2 topic info -v /tflite_data
+ros2 topic info -v /tflite
 ros2 topic info -v /tof_pc
 ros2 topic info -v /fmu/out/vehicle_odometry
 ros2 topic hz /fmu/out/vehicle_odometry
@@ -438,39 +590,137 @@ ros2 topic echo /llm_vision/offboard_owner
 
 ## 12. Hardware flight with TFLite perception
 
-The current configuration uses:
+The current configuration uses measured ToF range:
 
 ```yaml
 semantic_obstacle_perception:
   ros__parameters:
     detection_topic: /tflite_data
+    detector_image_topic: /tflite
     point_cloud_topic: /tof_pc
-    z_estimation_mode: hardcoded
+    point_cloud_frame: tof_optical
+    z_estimation_mode: depth
 ```
 
-With `z_estimation_mode: hardcoded`, TFLite supplies the label and bounding box,
-and `perception_detection.py` uses its class-based hardcoded depth. `/tof_pc`
-may be running, but it is not used to estimate range in this mode.
+TFLite supplies the object label, confidence, source-camera name, and bounding
+box. The perception node transforms raw ToF points from the ToF optical frame
+into body FRD, projects them into the configured detection-camera image, rejects
+far background points in the box, and transforms the resulting obstacle into
+local NED using the synchronized PX4 pose. The published
+`/llm_vision/semantic_obstacles` JSON keeps the `min_corner`, `max_corner`, and
+`size` fields consumed by `prompt_generator.py`, and adds measured
+`distance_m`, `camera`, `sync_delta_s`, and health diagnostics.
 
-To use actual ToF depth instead, change:
+Do not trust the raw `/tof_pc` header when it says `frame_id: world`.
+`voxl-mpa-to-ros2` currently assigns that name to every point-cloud pipe, while
+raw ToF points remain sensor-relative. `point_cloud_frame: tof_optical` makes
+the intended interpretation explicit. Use `local_ned` only with an already
+aligned point cloud such as a mapper output.
 
-```yaml
-z_estimation_mode: depth
+`Aidetection.frame_id` is the inference server's processed-frame counter and
+its timestamp is generated during post-processing, so neither can be compared
+directly with ToF. The node associates each detection batch with the adjacent
+`/tflite` image instead. That image preserves the RGB source header timestamp,
+which is in the same converted clock domain as `/tof_pc` and PX4 odometry.
+Fusion then uses source timestamps and falls back to receipt time only when a
+header is unavailable. Keep the vehicle holding still during the planning
+snapshot because the RGB and ToF sensors are not exposure-synchronized.
+`detection_to_depth_offset_s` shifts the RGB source time when a measured
+systematic offset exists; do not guess this value.
+
+Before flight, make these parameters match the actual TFLite `input_pipe`:
+
+- `detection_camera` and `detection_camera_aliases`
+- `hires_width` and `hires_height`
+- `hires_fx`, `hires_fy`, `hires_cx`, and `hires_cy`
+- both camera-to-body translations and intrinsic-XYZ rotations
+
+One perception-node instance represents one RGB camera calibration. Do not mix
+front/down/rear tracking or multiple hires detections onto the same detection
+topic. With `voxl-tflite-server allow_multiple`, give each model a unique output
+prefix and use a separately calibrated fusion instance (and a downstream
+obstacle merger) for each camera. The `Aidetection.cam` check intentionally
+rejects a different camera instead of applying the wrong intrinsics.
+
+The Starling 2 IMX412 is not factory-calibrated. Calibrate this vehicle and the
+exact stream/crop used by TFLite; do not reuse ToF or tracking-camera
+intrinsics. Confirm the configured files and live dimensions on VOXL:
+
+```bash
+cat /etc/modalai/voxl-tflite-server.conf
+voxl-inspect-cam -a
+voxl-inspect-extrinsics
+voxl-inspect-points tof_pc
 ```
+
+Live sanity check on this vehicle (July 29, 2026):
+
+- `voxl-suite 1.3.5`, `voxl-tflite-server 0.3.4`, and
+  `voxl-mpa-to-ros2 0.0.4`
+- TFLite input `hires_small_color`, `1024x768`, RGB8, approximately 28 Hz with
+  21 ms displayed inference time
+- the RGB feed was well exposed and geometrically coherent, but stock SSDLite
+  labeled the green chair correctly only intermittently and labeled the
+  foreground cardboard container as `couch`; use a custom detector when class
+  identity affects planning
+- ToF `240x180` at 10 Hz; the rotated ROS depth image is `180x240`
+- 11,961-13,375 valid metric returns out of 43,200 in the sampled indoor scene
+- source-stamp RGB/ToF separation observed at 0.042-0.063 s and pose matching at
+  approximately 0.002-0.003 s
+- `/tof_pc.header.frame_id` is `world` even though this is raw optical-frame
+  data
+- `/etc/modalai/extrinsics.conf` reports ToF translation
+  `[0.066, 0.009, -0.012]` m and intrinsic-XYZ RPY `[0, 90, 180]` degrees
+- no IMX412 intrinsics file and no `hires` extrinsics entry were present
+- the bridge was a manually launched process although its systemd service was
+  inactive; `wlan0` was not connected, so camera topics were visible only from
+  the VOXL ROS graph through `adb shell`, not from the workstation ROS graph
+
+The `hires_small_grey` stream was subsequently calibrated successfully at
+1024x768 with `fx=501.5316`, `fy=502.8287`, `cx=508.1806`, and `cy=380.6556`.
+The reported reprojection error was `0.703523` px, below the tool's `0.75` px
+limit, and the result was saved on VOXL as
+`/data/modalai/opencv_hires_small_grey_intrinsics.yml`. The paired
+`hires_small_color` stream is the TFLite input, so `camera_calibration_valid`
+is enabled. Validate the configured RGB-to-body transform against measured
+object positions before flight.
 
 Before the perception flight:
 
 ```bash
+ros2 topic hz /tflite
 ros2 topic hz /tflite_data
 ros2 topic hz /tof_pc
 ros2 topic hz /fmu/out/vehicle_odometry
 ```
+
+`/tflite_data` can be quiet when no objects are detected. `/tflite` is used as
+the detector heartbeat and must continue publishing at the configured inference
+rate. Its dimensions must match `hires_width` x `hires_height`; otherwise the
+perception payload is unhealthy and `prompt_generator.py` will not latch it.
 
 Inspect the generated obstacles:
 
 ```bash
 ros2 topic echo /llm_vision/semantic_obstacles
 ```
+
+Require `"healthy": true`, `"range_is_measured": true`, the expected camera,
+and a small `sync_delta_s` before flight. Any confident detection without
+projected ToF points makes the snapshot unhealthy instead of silently using a
+guessed distance.
+
+Known ToF limitations:
+
+- the PMD sensor is intended for indoor depth up to 6 m and becomes noisy in
+  sunlight;
+- `/tof_depth` is an 8-bit visualization, not a metric depth image, and its
+  bridged `CameraInfo` may contain zero intrinsics; use `/tof_pc`;
+- SDK/configuration regressions can reduce the requested ToF frame rate through
+  the camera-server `decimator`;
+- a black/static depth stream can indicate focus, connector, thermal, or camera
+  configuration problems even when `/tof_ir` is present;
+- MPA-to-ROS topics publish data only while subscribed.
 
 Launch the real-perception mission:
 

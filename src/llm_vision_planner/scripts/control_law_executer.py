@@ -71,10 +71,11 @@ class ControlLawExecuter(Node):
         self.declare_parameter("publish_hz", 20.0)
         self.declare_parameter("pose_timeout_s", 1.0)
         self.declare_parameter("prime_s", 1.5)
-        self.declare_parameter("takeoff_z", -0.25)
+        self.declare_parameter("takeoff_z", -0.5)
         self.declare_parameter("takeoff_accept_m", 0.08)
         self.declare_parameter("takeoff_settle_s", 2.0)
         self.declare_parameter("hover_speed_accept_mps", 0.10)
+        self.declare_parameter("land_descent_speed_mps", 0.30)
         self.declare_parameter("start_accept_m", 0.10)
         self.declare_parameter("goal_accept_m", 0.20)
         self.declare_parameter("goal_settle_s", 2.0)
@@ -113,6 +114,7 @@ class ControlLawExecuter(Node):
         self.ground_z = None
         self.takeoff_target = None
         self.goal_target = None
+        self.landing_target = None
         self.samples = []
         self.track_start_s = None
         self.dwell_start_s = None
@@ -280,10 +282,8 @@ class ControlLawExecuter(Node):
                 self.last_command_s = -math.inf
                 self.request_disarm(now)
                 self.transition("COMPLETE")
-            else:
-                self.request_land(now)
 
-        if self.state not in ("COMPLETE", "FAILED", "LAND") and self.last_setpoint_position is not None:
+        if self.state not in ("COMPLETE", "FAILED") and self.last_setpoint_position is not None:
             self.publish_owner()
             self.publish_setpoint(self.last_setpoint_position, self.last_setpoint_velocity)
         self.publish_mission_state()
@@ -311,19 +311,27 @@ class ControlLawExecuter(Node):
     def begin_land(self, reason):
         if self.state == "LAND":
             return
-        if self.position is not None:
-            self.set_hold([self.position[0], self.position[1], self.position[2]])
+        if self.position is None:
+            self.failure_reason = reason
+            self.transition("FAILED")
+            self.get_logger().error(f"cannot start Offboard landing without a local position: {reason}")
+            return
+        descent_speed = float(self.get_parameter("land_descent_speed_mps").value)
+        if not math.isfinite(descent_speed) or descent_speed <= 0.0:
+            self.failure_reason = "invalid landing descent speed"
+            self.transition("FAILED")
+            self.get_logger().error("land_descent_speed_mps must be finite and positive")
+            return
+        self.landing_target = [self.position[0], self.position[1]]
+        self.last_setpoint_position = [self.landing_target[0], self.landing_target[1], math.nan]
+        self.last_setpoint_velocity = [0.0, 0.0, descent_speed]
         self.failure_reason = reason if reason != "goal confirmed" else None
         self.transition("LAND")
         self.last_command_s = -math.inf
-        self.request_land(time.monotonic())
-        self.get_logger().warning(f"PX4 auto-land requested: {reason}")
-
-    def request_land(self, now):
-        if now - self.last_command_s < float(self.get_parameter("command_retry_s").value):
-            return
-        self.command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
-        self.last_command_s = now
+        self.get_logger().warning(
+            f"Offboard landing started at x={self.landing_target[0]:.3f}, "
+            f"y={self.landing_target[1]:.3f}, down_speed={descent_speed:.3f} m/s: {reason}"
+        )
 
     def request_disarm(self, now):
         if now - self.last_command_s < float(self.get_parameter("command_retry_s").value):
@@ -475,7 +483,7 @@ class ControlLawExecuter(Node):
 def main():
     if "-h" in sys.argv or "--help" in sys.argv:
         print("usage: control_law_executer.py --ros-args --params-file <params.yaml>")
-        print("Owns PX4 takeoff, verified-waypoint QP tracking, and auto-land.")
+        print("Owns PX4 takeoff, verified-waypoint QP tracking, and Offboard landing.")
         return
     rclpy.init()
     node = ControlLawExecuter()

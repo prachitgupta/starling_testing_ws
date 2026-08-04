@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="420mm" height="594mm" viewBox="0 0 420 594">
+  <title>ModalAI 5x6 inner-corner checkerboard, 65.5 mm squares, A2</title>
+  <desc>Print at 100 percent actual size. Pattern is 6x7 squares, giving 5x6 internal corners.</desc>
+  <style>@page { size: A2 portrait; margin: 0; }</style>
+  <defs>
+    <pattern id="checker" width="131" height="131" patternUnits="userSpaceOnUse">
+      <rect x="0" y="0" width="65.5" height="65.5" fill="#000"/>
+      <rect x="65.5" y="65.5" width="65.5" height="65.5" fill="#000"/>
+    </pattern>
+  </defs>
+
+  <rect x="0" y="0" width="420" height="594" fill="#fff"/>
+  <!-- 6 columns x 7 rows of 65.5 mm squares = 393 x 458.5 mm. -->
+  <rect x="13.5" y="57" width="393" height="458.5" fill="url(#checker)"/>
+
+  <!-- Independent print-scale check below the checkerboard. -->
+  <line x1="160" y1="550" x2="260" y2="550" stroke="#000" stroke-width="0.5"/>
+  <line x1="160" y1="546" x2="160" y2="554" stroke="#000" stroke-width="0.5"/>
+  <line x1="260" y1="546" x2="260" y2="554" stroke="#000" stroke-width="0.5"/>
+  <text x="210" y="563" text-anchor="middle"
+        font-family="sans-serif" font-size="5" fill="#000">
+    Scale check: this line must measure exactly 100 mm
+  </text>
+  <text x="210" y="576" text-anchor="middle"
+        font-family="sans-serif" font-size="4.5" fill="#000">
+    ModalAI default: 5x6 internal corners, 65.5 mm squares; print at 100% actual size
+  </text>
+</svg>

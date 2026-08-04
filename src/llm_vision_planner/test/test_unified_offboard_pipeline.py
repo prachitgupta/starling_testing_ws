@@ -49,6 +49,7 @@ class Px4Harness(Node):
         self.commands = []
         self.setpoints = []
         self.heartbeats = []
+        self.offboard_modes = []
         self.mission_states = []
         self.create_subscription(VehicleCommand, "/fmu/in/vehicle_command", self.command_callback, 10)
         self.create_subscription(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", self.setpoint_callback, 10)
@@ -78,7 +79,7 @@ class Px4Harness(Node):
                 "plan_id": 7,
                 "passed": passed,
                 "waypoints": waypoints,
-                "workspace": {"x": [0.0, 4.0], "y": [0.0, 4.0], "z": -0.25},
+                "workspace": {"x": [0.0, 4.0], "y": [0.0, 4.0], "z": -0.5},
                 "obstacles": [],
             }
         )
@@ -90,21 +91,45 @@ class Px4Harness(Node):
     def setpoint_callback(self, msg):
         self.setpoints.append((time.monotonic(), list(msg.position), list(msg.velocity)))
 
-    def heartbeat_callback(self, _msg):
-        self.heartbeats.append(time.monotonic())
+    def heartbeat_callback(self, msg):
+        now = time.monotonic()
+        self.heartbeats.append(now)
+        self.offboard_modes.append((now, bool(msg.position), bool(msg.velocity)))
 
     def mission_callback(self, msg):
         self.mission_states.append(json.loads(msg.data)["state"])
 
 
-def spin_until(executor, node, harness, predicate, timeout, odometry=True):
+def spin_until(executor, node, harness, predicate, timeout):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        harness.publish_telemetry(odometry=odometry)
+        harness.publish_telemetry()
         executor.spin_once(timeout_sec=0.01)
         if predicate():
             return
     raise AssertionError(f"timeout waiting in state {node.state}")
+
+
+def simulate_offboard_landing(executor, node, harness, ground_z=0.0, simulation_dt=0.1, timeout=1.5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        harness.publish_telemetry()
+        executor.spin_once(timeout_sec=0.01)
+        if harness.setpoints:
+            _, position, velocity = harness.setpoints[-1]
+            if math.isnan(position[2]) and velocity[2] > 0.0:
+                descent_velocity = float(velocity[2])
+                harness.position[2] = float(
+                    min(ground_z, float(harness.position[2]) + descent_velocity * simulation_dt)
+                )
+                harness.velocity = [0.0, 0.0, descent_velocity]
+                if harness.position[2] >= ground_z:
+                    harness.position[2] = ground_z
+                    harness.velocity = [0.0, 0.0, 0.0]
+                    harness.landed = True
+        if node.state == "COMPLETE":
+            return
+    raise AssertionError(f"simulated landing did not complete; position={harness.position}")
 
 
 def make_nodes(suffix):
@@ -142,7 +167,8 @@ def test_complete_mission():
 
         harness.landed = False
         spin_until(executor, node, harness, lambda: node.state == "TAKEOFF", 0.5)
-        harness.position = [0.0, 0.0, -0.25]
+        assert math.isclose(node.takeoff_target[2], -0.5)
+        harness.position = [0.0, 0.0, -0.5]
         spin_until(executor, node, harness, lambda: node.state == "HOLDING_FOR_PLAN", 1.0)
         spin_until(
             executor,
@@ -152,8 +178,8 @@ def test_complete_mission():
             0.3,
         )
 
-        start = {"x": 0.0, "y": 0.0, "z": -0.25}
-        goal = {"x": 0.10, "y": 0.0, "z": -0.25}
+        start = {"x": 0.0, "y": 0.0, "z": -0.5}
+        goal = {"x": 0.10, "y": 0.0, "z": -0.5}
         harness.publish_plan(True, [start, goal])
         spin_until(executor, node, harness, lambda: node.state == "TRACK_QP", 1.0)
         tracking_index = len(harness.setpoints)
@@ -176,19 +202,37 @@ def test_complete_mission():
         node.last_track_command_s = None
 
         spin_until(executor, node, harness, lambda: node.state == "GOAL_HOLD", 2.0)
-        harness.position = [0.10, 0.0, -0.25]
+        harness.position = [0.10, 0.0, -0.5]
         harness.velocity = [0.0, 0.0, 0.0]
         spin_until(executor, node, harness, lambda: node.state == "LAND", 1.0)
+        landing_started = node.state_start_s
         spin_until(
             executor,
             node,
             harness,
-            lambda: any(item[1] == VehicleCommand.VEHICLE_CMD_NAV_LAND for item in harness.commands),
+            lambda: len([item for item in harness.setpoints if item[0] >= landing_started]) >= 6,
             0.3,
         )
-        assert harness.setpoints and harness.heartbeats
+        landing_setpoints = harness.setpoints[-4:]
+        landing_modes = harness.offboard_modes[-4:]
+        descent_speed = float(node.get_parameter("land_descent_speed_mps").value)
+        assert all(
+            math.isclose(actual, expected, abs_tol=1e-6)
+            for actual, expected in zip(node.landing_target, [0.10, 0.0])
+        )
+        assert landing_modes and all(position and velocity for _, position, velocity in landing_modes)
+        assert all(
+            math.isclose(position[0], 0.10, abs_tol=1e-6)
+            and math.isclose(position[1], 0.0, abs_tol=1e-6)
+            and math.isnan(position[2])
+            and math.isclose(velocity[0], 0.0, abs_tol=1e-6)
+            and math.isclose(velocity[1], 0.0, abs_tol=1e-6)
+            and math.isclose(velocity[2], descent_speed, abs_tol=1e-6)
+            for _, position, velocity in landing_setpoints
+        )
+        assert not any(item[1] == VehicleCommand.VEHICLE_CMD_NAV_LAND for item in harness.commands)
 
-        harness.landed = True
+        simulate_offboard_landing(executor, node, harness)
         spin_until(
             executor,
             node,
@@ -197,9 +241,15 @@ def test_complete_mission():
                 item[1] == VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM and item[2] == 0.0
                 for item in harness.commands
             ),
-            0.5,
+            timeout=0.5,
         )
-        spin_until(executor, node, harness, lambda: node.state == "COMPLETE", 0.5)
+        assert math.isclose(harness.position[0], 0.10, abs_tol=1e-6)
+        assert math.isclose(harness.position[1], 0.0, abs_tol=1e-6)
+        assert math.isclose(harness.position[2], 0.0, abs_tol=1e-6)
+        assert any(
+            item[1] == VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM and item[2] == 0.0
+            for item in harness.commands
+        )
 
         heartbeat_gaps = [later - earlier for earlier, later in zip(harness.heartbeats, harness.heartbeats[1:])]
         assert heartbeat_gaps and max(heartbeat_gaps) < 0.15
@@ -209,27 +259,30 @@ def test_complete_mission():
 
 def test_invalid_plans_land_without_qp():
     cases = [
-        ("failed", False, [{"x": 0.0, "y": 0.0, "z": -0.25}, {"x": 0.1, "y": 0.0, "z": -0.25}]),
-        ("mismatch", True, [{"x": 0.5, "y": 0.0, "z": -0.25}, {"x": 0.1, "y": 0.0, "z": -0.25}]),
+        ("failed", False, [{"x": 0.0, "y": 0.0, "z": -0.5}, {"x": 0.1, "y": 0.0, "z": -0.5}]),
+        ("mismatch", True, [{"x": 0.5, "y": 0.0, "z": -0.5}, {"x": 0.1, "y": 0.0, "z": -0.5}]),
     ]
     for suffix, passed, waypoints in cases:
         executor, node, harness = make_nodes(suffix)
         try:
             spin_until(executor, node, harness, lambda: node.state == "ARM_TAKEOFF", 1.0)
             harness.landed = False
-            harness.position = [0.0, 0.0, -0.25]
+            harness.position = [0.0, 0.0, -0.5]
             spin_until(executor, node, harness, lambda: node.state == "HOLDING_FOR_PLAN", 1.0)
             harness.publish_plan(passed, waypoints)
             spin_until(executor, node, harness, lambda: node.state == "LAND", 0.5)
+            landing_started = node.state_start_s
             assert node.track_start_s is None
             assert not node.samples
             spin_until(
                 executor,
                 node,
                 harness,
-                lambda: any(item[1] == VehicleCommand.VEHICLE_CMD_NAV_LAND for item in harness.commands),
+                lambda: any(item[0] >= landing_started for item in harness.setpoints),
                 0.3,
             )
+            assert all(math.isclose(value, 0.0) for value in node.landing_target)
+            assert not any(item[1] == VehicleCommand.VEHICLE_CMD_NAV_LAND for item in harness.commands)
         finally:
             destroy_nodes(executor, node, harness)
 
@@ -242,23 +295,14 @@ def test_stale_odometry_lands():
         harness.position = [0.0, 0.0, -0.10]
         spin_until(executor, node, harness, lambda: node.state == "TAKEOFF", 0.5)
         spin_until(executor, node, harness, lambda: node.position[2] < -0.05, 0.3)
-        spin_until(
-            executor,
-            node,
-            harness,
-            lambda: node.state == "LAND",
-            0.6,
-            odometry=False,
-        )
+        node.last_odom_s = time.monotonic() - float(node.get_parameter("pose_timeout_s").value) - 0.01
+        node.tick()
+        assert node.state == "LAND"
         assert node.failure_reason == "odometry timeout"
-        spin_until(
-            executor,
-            node,
-            harness,
-            lambda: any(item[1] == VehicleCommand.VEHICLE_CMD_NAV_LAND for item in harness.commands),
-            0.3,
-            odometry=False,
-        )
+        assert all(math.isclose(value, 0.0) for value in node.landing_target)
+        assert math.isnan(node.last_setpoint_position[2])
+        assert node.last_setpoint_velocity[2] > 0.0
+        assert not any(item[1] == VehicleCommand.VEHICLE_CMD_NAV_LAND for item in harness.commands)
     finally:
         destroy_nodes(executor, node, harness)
 

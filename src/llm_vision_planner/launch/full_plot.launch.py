@@ -133,7 +133,13 @@ def generate_launch_description():
         executable="interactive_web_ui.py",
         name="interactive_web_ui",
         output="screen",
-        parameters=[params_file, {"port": ParameterValue(LaunchConfiguration("web_ui_port"), value_type=int)}],
+        parameters=[
+            params_file,
+            {
+                "port": ParameterValue(LaunchConfiguration("web_ui_port"), value_type=int),
+                "visualizer": LaunchConfiguration("visualizer"),
+            },
+        ],
         condition=use_interactive_web_ui,
     )
 

@@ -16,6 +16,7 @@
     button:disabled { opacity: .45; cursor: not-allowed; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #d1d5db; }
     .status { font-size: 1.05rem; }
+    #contraction-plot { display: none; width: 100%; border-radius: 8px; background: white; }
   </style>
 </head>
 <body>
@@ -37,8 +38,15 @@
     <button id="approve" disabled>Approve</button>
     <button id="reject" disabled>Reject</button>
   </section>
+  <section>
+    <h2>Live contraction plot</h2>
+    <div id="plot-status">Waiting for a verified plan…</div>
+    <img id="contraction-plot" alt="Live QP contraction and tracking plot">
+  </section>
   <script>
     let proposal = {};
+    let plotObjectUrl = '';
+    let plotRequestRunning = false;
     async function post(path, data) {
       const response = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
       if (!response.ok) throw new Error(await response.text());
@@ -68,7 +76,31 @@
         document.getElementById('status').textContent = `UI backend unavailable: ${error}`;
       }
     }
+    async function refreshPlot() {
+      if (plotRequestRunning) return;
+      plotRequestRunning = true;
+      try {
+        const response = await fetch(`/api/contraction.png?t=${Date.now()}`, {cache: 'no-store'});
+        if (!response.ok) {
+          document.getElementById('plot-status').textContent = 'Waiting for the contraction visualizer…';
+          return;
+        }
+        const nextUrl = URL.createObjectURL(await response.blob());
+        const plot = document.getElementById('contraction-plot');
+        const previousUrl = plotObjectUrl;
+        plot.onload = () => { if (previousUrl) URL.revokeObjectURL(previousUrl); };
+        plotObjectUrl = nextUrl;
+        plot.src = nextUrl;
+        plot.style.display = 'block';
+        document.getElementById('plot-status').textContent = 'Live — refreshes every 0.5 s';
+      } catch (error) {
+        document.getElementById('plot-status').textContent = `Plot unavailable: ${error}`;
+      } finally {
+        plotRequestRunning = false;
+      }
+    }
     setInterval(refresh, 500); refresh();
+    setInterval(refreshPlot, 500); refreshPlot();
   </script>
 </body>
 </html>

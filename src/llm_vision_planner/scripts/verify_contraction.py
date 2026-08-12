@@ -304,10 +304,11 @@ class ContractionVisualizer(Node):
         self.status_text.set_text(f"ODOM\n$e_t$={live_error}\n$e_{{max}}$={max_live_error}")
         axis.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0, fontsize=8)
         self.figure.subplots_adjust(left=0.10, bottom=0.11, right=0.75, top=0.92)
-        output_dir = os.path.dirname(self.output_png)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-        self.figure.savefig(self.output_png, dpi=160)
+        output = Path(self.output_png).expanduser()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
+        self.figure.savefig(temporary, dpi=160, format="png")
+        os.replace(temporary, output)
         if self.show_window:
             self.figure.canvas.draw_idle()
             plt.pause(0.001)

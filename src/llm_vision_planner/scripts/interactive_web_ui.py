@@ -6,6 +6,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import rclpy
 from rclpy.node import Node
@@ -21,6 +22,11 @@ class WebUiBridge(Node):
         self.declare_parameter("approval_topic", "/llm_vision/mission_approval")
         self.declare_parameter("operator_response_topic", "/llm_vision/operator_response")
         self.declare_parameter("mission_proposal_topic", "/llm_vision/mission_proposal")
+        self.declare_parameter("visualizer", "standard")
+        self.declare_parameter(
+            "contraction_plot_path",
+            "src/llm_vision_planner/plots/contraction/live_contraction.png",
+        )
 
         self.command_pub = self.create_publisher(
             String,
@@ -47,6 +53,12 @@ class WebUiBridge(Node):
         self.lock = threading.Lock()
         self.latest_response = {}
         self.latest_proposal = {}
+        self.contraction_plot_enabled = (
+            str(self.get_parameter("visualizer").value).strip().lower() == "contraction"
+        )
+        self.contraction_plot_path = Path(
+            str(self.get_parameter("contraction_plot_path").value)
+        ).expanduser()
         self.html = self.load_html()
 
     @staticmethod
@@ -101,15 +113,32 @@ class WebUiBridge(Node):
         }
         self.approval_pub.publish(String(data=json.dumps(payload)))
 
+    def read_contraction_plot(self):
+        if not self.contraction_plot_enabled:
+            return None
+        try:
+            payload = self.contraction_plot_path.read_bytes()
+        except OSError:
+            return None
+        return payload if payload.startswith(b"\x89PNG\r\n\x1a\n") else None
+
 
 def handler_for(bridge):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path == "/":
+            path = urlsplit(self.path).path
+            if path == "/":
                 self.send_payload(bridge.html.encode("utf-8"), "text/html; charset=utf-8")
                 return
-            if self.path == "/api/state":
+            if path == "/api/state":
                 self.send_json(bridge.state_payload())
+                return
+            if path == "/api/contraction.png":
+                payload = bridge.read_contraction_plot()
+                if payload is None:
+                    self.send_error(404, "Contraction plot is not available")
+                    return
+                self.send_payload(payload, "image/png")
                 return
             self.send_error(404)
 

@@ -158,6 +158,7 @@ interactive_web_ui:
     approval_topic: /llm_vision/mission_approval
     operator_response_topic: /llm_vision/operator_response
     mission_proposal_topic: /llm_vision/mission_proposal
+    contraction_plot_path: src/llm_vision_planner/plots/contraction/live_contraction.png
 
 dataset_scene_publisher:
   ros__parameters:

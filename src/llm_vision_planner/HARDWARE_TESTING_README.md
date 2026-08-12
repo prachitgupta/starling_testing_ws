@@ -666,7 +666,8 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   intent_provider:=openai \
   use_dataset_scene:=true \
   sim_sample_id:=4 \
-  llm_provider:=llama
+  llm_provider:=llama \
+  visualizer:=contraction
 ```
 
 #### Dummy example: manually publish obstacles
@@ -684,7 +685,8 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   interaction_mode:=interactive \
   intent_provider:=openai \
   use_dataset_scene:=false \
-  llm_provider:=llama
+  llm_provider:=llama \
+  visualizer:=contraction
 ```
 
 In another terminal, continuously publish a fresh dummy COCO-object scene:
@@ -702,7 +704,8 @@ ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
 2. Open `http://127.0.0.1:8080`, enter `Hover near the chair`, and submit.
 3. Check the detected target, proposed goal, and clearance, then approve or
    reject the proposal. A planner prompt is published only after approval.
-4. Keep the obstacle publisher running and monitor the final result with:
+4. After verification, the live contraction plot appears in the same page.
+   Keep the obstacle publisher running and monitor the final result with:
 
 ```bash
 ros2 topic echo /llm_vision/plan_verified

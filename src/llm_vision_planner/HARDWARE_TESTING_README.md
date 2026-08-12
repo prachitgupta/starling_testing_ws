@@ -666,6 +666,45 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   llm_provider:=llama
 ```
 
+#### Dummy example: manually publish obstacles
+
+This test does not launch `perception_detection.py`. Start PX4 simulation, then
+launch interactive mode without the recorded dataset publisher:
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source install/setup.bash
+
+ros2 launch llm_vision_planner full_plot.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  environment:=sim \
+  interaction_mode:=interactive \
+  intent_provider:=openai \
+  use_dataset_scene:=false \
+  llm_provider:=llama
+```
+
+In another terminal, continuously publish a fresh dummy COCO-object scene:
+
+```bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+
+ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
+  "{data: '{\"healthy\":true,\"frame\":\"local_ned\",\"obstacles\":[{\"id\":1,\"label\":\"chair\",\"shape\":\"box\",\"min_corner\":[2.20,2.00,-0.75],\"max_corner\":[2.70,2.50,0.25],\"confidence\":1.0},{\"id\":2,\"label\":\"bottle\",\"shape\":\"box\",\"min_corner\":[1.00,2.80,-0.75],\"max_corner\":[1.30,3.10,0.25],\"confidence\":1.0}],\"timestamp\":0.0}'}"
+```
+
+#### Brief user guide
+
+1. Wait until `/llm_vision/mission_state` reports `HOLDING_FOR_PLAN`.
+2. Open `http://127.0.0.1:8080`, enter `Hover near the chair`, and submit.
+3. Check the detected target, proposed goal, and clearance, then approve or
+   reject the proposal. A planner prompt is published only after approval.
+4. Keep the obstacle publisher running and monitor the final result with:
+
+```bash
+ros2 topic echo /llm_vision/plan_verified
+```
+
 ## 12. TFLite and ToF perception
 
 TFLite detects object type from `hires_small_color`. ToF supplies distance

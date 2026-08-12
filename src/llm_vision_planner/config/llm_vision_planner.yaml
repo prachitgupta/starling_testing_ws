@@ -141,7 +141,7 @@ interactive_mission_gateway:
     default_standoff_m: 0.60
     fresh_data_timeout_s: 2.0
     approval_timeout_s: 30.0
-    # Allow live TFLite/ToF box jitter while planning against an expanded envelope.
+    # Obstacle envelope per x-y side = position tolerance + 0.5 * size tolerance.
     scene_position_tolerance_m: 0.15
     scene_size_tolerance_m: 0.20
     max_start_drift_m: 0.25
@@ -165,8 +165,9 @@ dataset_scene_publisher:
     dataset_csv: fine_tuning/datasets/env_ros_commands.csv
     sample_id: 4
     publish_hz: 2.0
-    relabel_to_coco: True
-    coco_labels: [chair, bottle, suitcase, person]
+    # Preserve the diverse COCO labels recorded in env_ros_commands.csv.
+    relabel_to_coco: False
+    coco_labels: [chair, bottle, suitcase, person, backpack, potted plant, bench, dining table, couch, tv, refrigerator, umbrella]
     fixed_z: -0.5
     obstacle_topic: /llm_vision/sim_obstacles
     mission_state_topic: /llm_vision/mission_state
@@ -236,7 +237,13 @@ planner_visualizer:
 
 verify_contraction:
   ros__parameters:
+    environment: real
+    refined_plan_topic: /llm_vision/plan_refined
+    candidate_verification_topic: /llm_vision/plan_candidate_verified
     verified_plan_topic: /llm_vision/plan_verified
+    mission_proposal_topic: /llm_vision/mission_proposal
+    semantic_obstacle_topic: /llm_vision/semantic_obstacles
+    sim_obstacle_topic: /llm_vision/sim_obstacles
     pose_topic: /fmu/out/vehicle_odometry
     output_png: src/llm_vision_planner/plots/contraction/live_contraction.png
     show_window: true
@@ -247,6 +254,7 @@ verify_contraction:
     max_horizontal_acceleration_mps2: 0.5
     calibration_csv: fine_tuning/datasets/calibration_min_control_qp_position_score_with_limits_2000.csv
     calibration_samples: 2000
+    # Blue tube radius q_p is the (1 - delta_p) quantile of calibrated position errors.
     delta_p: 0.10
     delta_w: 0.10
     drone_radius_m: 0.10
@@ -271,6 +279,8 @@ control_law_executer:
     start_accept_m: 0.10
     goal_accept_m: 0.20
     goal_settle_s: 2.0
+    # true lands after a successful mission; false holds the final goal in Offboard.
+    land_after_complete: true
     command_retry_s: 1.0
     transition_timeout_s: 40.0
     trajectory_dt: 0.1

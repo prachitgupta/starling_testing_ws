@@ -209,6 +209,12 @@ def run_test():
         assert final["mission_id"] == first["mission_id"]
         assert final["plan_id"] == second["plan_id"]
         assert final["proposal_hash"] == proposal["proposal_hash"]
+        assert final["scene_guard_band_m"] == 0.25
+        assert [item["label"] for item in final["observed_obstacles"]] == [
+            "chair",
+            "bottle",
+        ]
+        assert final["observed_obstacles"][0]["min_corner"] == [1.5, 1.5, -1.0]
     finally:
         executor.remove_node(gateway)
         executor.remove_node(harness)

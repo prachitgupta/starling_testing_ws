@@ -79,6 +79,7 @@ class ControlLawExecuter(Node):
         self.declare_parameter("start_accept_m", 0.10)
         self.declare_parameter("goal_accept_m", 0.20)
         self.declare_parameter("goal_settle_s", 2.0)
+        self.declare_parameter("land_after_complete", True)
         self.declare_parameter("command_retry_s", 1.0)
         self.declare_parameter("transition_timeout_s", 15.0)
         self.declare_parameter("trajectory_dt", 0.1)
@@ -91,6 +92,7 @@ class ControlLawExecuter(Node):
         self.owner_topic = str(self.get_parameter("offboard_owner_topic").value)
         self.pose_topic = str(self.get_parameter("pose_topic").value)
         self.land_detected_topic = str(self.get_parameter("land_detected_topic").value)
+        self.land_after_complete = bool(self.get_parameter("land_after_complete").value)
 
         self.offboard_pub = self.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
         self.setpoint_pub = self.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
@@ -271,11 +273,17 @@ class ControlLawExecuter(Node):
                 if self.speed() <= float(self.get_parameter("hover_speed_accept_mps").value):
                     self.update_dwell(now)
                     if now - self.dwell_start_s >= float(self.get_parameter("goal_settle_s").value):
-                        self.begin_land("goal confirmed")
+                        if self.land_after_complete:
+                            self.begin_land("goal confirmed")
+                        else:
+                            self.transition("HOLDING_AT_GOAL")
                 else:
                     self.dwell_start_s = None
             else:
                 self.dwell_start_s = None
+
+        elif self.state == "HOLDING_AT_GOAL":
+            self.set_hold(self.goal_target)
 
         elif self.state == "LAND":
             if self.landed is True:

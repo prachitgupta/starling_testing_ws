@@ -637,6 +637,9 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   show_rrt:=false
 ```
 
+Add `land_after_complete:=false` to hold the final goal in Offboard for human
+intervention; the default `true` lands automatically after success.
+
 Monitor:
 
 ```bash
@@ -704,8 +707,9 @@ ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
 2. Open `http://127.0.0.1:8080`, enter `Hover near the chair`, and submit.
 3. Check the detected target, proposed goal, and clearance, then approve or
    reject the proposal. A planner prompt is published only after approval.
-4. After verification, the live contraction plot appears in the same page.
-   Keep the obstacle publisher running and monitor the final result with:
+4. The page shows detected objects, the proposed goal, and every refined path.
+   Safety tubes appear only after verification. Keep the obstacle publisher
+   running and monitor the final result with:
 
 ```bash
 ros2 topic echo /llm_vision/plan_verified

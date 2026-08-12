@@ -20,8 +20,24 @@ class DatasetScenePublisher(Node):
         )
         self.declare_parameter("sample_id", 4)
         self.declare_parameter("publish_hz", 2.0)
-        self.declare_parameter("relabel_to_coco", True)
-        self.declare_parameter("coco_labels", ["chair", "bottle", "suitcase", "person"])
+        self.declare_parameter("relabel_to_coco", False)
+        self.declare_parameter(
+            "coco_labels",
+            [
+                "chair",
+                "bottle",
+                "suitcase",
+                "person",
+                "backpack",
+                "potted plant",
+                "bench",
+                "dining table",
+                "couch",
+                "tv",
+                "refrigerator",
+                "umbrella",
+            ],
+        )
         self.declare_parameter("fixed_z", -0.5)
         self.declare_parameter("obstacle_topic", "/llm_vision/sim_obstacles")
         self.declare_parameter("mission_state_topic", "/llm_vision/mission_state")
@@ -37,7 +53,6 @@ class DatasetScenePublisher(Node):
             for index, obstacle in enumerate(self.environment["obstacles"]):
                 obstacle["dataset_label"] = obstacle.get("label")
                 obstacle["label"] = str(labels[index % len(labels)])
-                obstacle["shape"] = obstacle["label"]
 
         self.obstacle_pub = self.create_publisher(
             String,
@@ -83,11 +98,16 @@ class DatasetScenePublisher(Node):
 
     def publish_scene(self):
         now = time.time()
+        status = dict(self.environment.get("status", {}))
+        status.setdefault("state", "READY")
+        status.setdefault("source", "env_ros_commands.csv")
+        status.setdefault("sample_id", int(self.row["sample_id"]))
         obstacle_payload = {
             "obstacles": self.environment["obstacles"],
-            "healthy": True,
-            "status": {"source": "env_ros_commands.csv", "sample_id": int(self.row["sample_id"])},
-            "frame": "local_ned",
+            "healthy": bool(self.environment.get("healthy", True)),
+            "status": status,
+            "frame": str(self.environment.get("frame", "local_ned")),
+            "source": str(self.environment.get("source", "env_ros_commands.csv")),
             "timestamp": now,
         }
         self.obstacle_pub.publish(String(data=json.dumps(obstacle_payload)))

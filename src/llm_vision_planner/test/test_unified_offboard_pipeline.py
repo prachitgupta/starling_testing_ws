@@ -132,8 +132,11 @@ def simulate_offboard_landing(executor, node, harness, ground_z=0.0, simulation_
     raise AssertionError(f"simulated landing did not complete; position={harness.position}")
 
 
-def make_nodes(suffix):
-    rclpy.init(args=["offboard_harness", *PARAMETERS])
+def make_nodes(suffix, extra_parameters=None):
+    arguments = ["offboard_harness", *PARAMETERS]
+    for parameter in extra_parameters or []:
+        arguments.extend(["-p", parameter])
+    rclpy.init(args=arguments)
     node = ControlLawExecuter()
     harness = Px4Harness(suffix)
     executor = SingleThreadedExecutor()
@@ -287,6 +290,43 @@ def test_invalid_plans_land_without_qp():
             destroy_nodes(executor, node, harness)
 
 
+def test_successful_mission_holds_when_landing_disabled():
+    executor, node, harness = make_nodes("hold", ["land_after_complete:=false"])
+    try:
+        spin_until(executor, node, harness, lambda: node.state == "ARM_TAKEOFF", 1.0)
+        harness.landed = False
+        harness.position = [0.0, 0.0, -0.5]
+        spin_until(executor, node, harness, lambda: node.state == "HOLDING_FOR_PLAN", 1.0)
+
+        start = {"x": 0.0, "y": 0.0, "z": -0.5}
+        goal = {"x": 0.10, "y": 0.0, "z": -0.5}
+        harness.publish_plan(True, [start, goal])
+        spin_until(executor, node, harness, lambda: node.state == "GOAL_HOLD", 2.0)
+        harness.position = [0.10, 0.0, -0.5]
+        harness.velocity = [0.0, 0.0, 0.0]
+        spin_until(executor, node, harness, lambda: node.state == "HOLDING_AT_GOAL", 1.0)
+
+        setpoint_index = len(harness.setpoints)
+        spin_until(executor, node, harness, lambda: len(harness.setpoints) >= setpoint_index + 5, 0.4)
+        assert node.state == "HOLDING_AT_GOAL"
+        assert "HOLDING_AT_GOAL" in harness.mission_states
+        assert all(
+            all(math.isclose(actual, expected, abs_tol=1e-6) for actual, expected in zip(position, [0.10, 0.0, -0.5]))
+            and all(math.isclose(value, 0.0, abs_tol=1e-6) for value in velocity)
+            for _, position, velocity in harness.setpoints[-5:]
+        )
+        assert not any(
+            item[1] in (
+                VehicleCommand.VEHICLE_CMD_NAV_LAND,
+                VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,
+            )
+            and item[2] == 0.0
+            for item in harness.commands
+        )
+    finally:
+        destroy_nodes(executor, node, harness)
+
+
 def test_stale_odometry_lands():
     executor, node, harness = make_nodes("stale")
     try:
@@ -310,5 +350,6 @@ def test_stale_odometry_lands():
 if __name__ == "__main__":
     test_complete_mission()
     test_invalid_plans_land_without_qp()
+    test_successful_mission_holds_when_landing_disabled()
     test_stale_odometry_lands()
     print("unified PX4 offboard ROS harness passed")

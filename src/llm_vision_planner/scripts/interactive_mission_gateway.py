@@ -863,6 +863,10 @@ class InteractiveMissionGateway(Node):
                     "snapshot_id": self.active_mission["snapshot_id"],
                     "proposal_hash": self.active_mission["proposal_hash"],
                     "approved_at": self.active_mission["approved_at"],
+                    "observed_obstacles": copy.deepcopy(
+                        self.active_mission["observed_obstacles"]
+                    ),
+                    "scene_guard_band_m": self.scene_guard_band_m,
                 }
             )
             self.passed_plan_pub.publish(String(data=json.dumps(output)))

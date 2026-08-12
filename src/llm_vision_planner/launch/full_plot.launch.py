@@ -36,6 +36,11 @@ def generate_launch_description():
         default_value="standard",
         description="Live plot: standard or contraction",
     )
+    land_after_complete_arg = DeclareLaunchArgument(
+        "land_after_complete",
+        default_value="true",
+        description="Land after a successful mission; false holds the final goal in Offboard.",
+    )
     interaction_mode_arg = DeclareLaunchArgument(
         "interaction_mode",
         default_value="fixed",
@@ -191,7 +196,14 @@ def generate_launch_description():
         executable="control_law_executer.py",
         name="control_law_executer",
         output="screen",
-        parameters=[params_file],
+        parameters=[
+            params_file,
+            {
+                "land_after_complete": ParameterValue(
+                    LaunchConfiguration("land_after_complete"), value_type=bool
+                )
+            },
+        ],
     )
 
     visualizer = Node(
@@ -208,7 +220,7 @@ def generate_launch_description():
         executable="verify_contraction.py",
         name="verify_contraction",
         output="screen",
-        parameters=[params_file],
+        parameters=[params_file, {"environment": LaunchConfiguration("environment")}],
         condition=IfCondition(PythonExpression(["'", LaunchConfiguration("visualizer"), "' == 'contraction'"])),
     )
 
@@ -219,6 +231,7 @@ def generate_launch_description():
             llm_provider_arg,
             show_rrt_arg,
             visualizer_arg,
+            land_after_complete_arg,
             interaction_mode_arg,
             intent_provider_arg,
             web_ui_arg,

@@ -36,9 +36,63 @@ def generate_launch_description():
         default_value="standard",
         description="Live plot: standard or contraction",
     )
+    interaction_mode_arg = DeclareLaunchArgument(
+        "interaction_mode",
+        default_value="fixed",
+        description="Mission prompt source: fixed preserves the existing pipeline; interactive requires human approval.",
+    )
+    intent_provider_arg = DeclareLaunchArgument(
+        "intent_provider",
+        default_value="openai",
+        description="Interactive intent parser: openai or mock (mock is for offline simulation only).",
+    )
+    web_ui_arg = DeclareLaunchArgument(
+        "web_ui",
+        default_value="true",
+        description="Launch the local operator web UI in interactive mode.",
+    )
+    web_ui_port_arg = DeclareLaunchArgument(
+        "web_ui_port",
+        default_value="8080",
+        description="Local HTTP port for the interactive operator UI.",
+    )
+    use_dataset_scene_arg = DeclareLaunchArgument(
+        "use_dataset_scene",
+        default_value="false",
+        description="Publish a recorded env_ros_commands.csv scene when environment=sim.",
+    )
+    sim_sample_id_arg = DeclareLaunchArgument(
+        "sim_sample_id",
+        default_value="4",
+        description="env_ros_commands.csv sample used by the optional simulation scene publisher.",
+    )
     params_file = LaunchConfiguration("params_file")
 
     use_real_perception = IfCondition(PythonExpression(["'", LaunchConfiguration("environment"), "' == 'real'"]))
+    use_fixed_prompt = IfCondition(PythonExpression(["'", LaunchConfiguration("interaction_mode"), "' == 'fixed'"]))
+    use_interactive_prompt = IfCondition(PythonExpression(["'", LaunchConfiguration("interaction_mode"), "' == 'interactive'"]))
+    use_interactive_web_ui = IfCondition(
+        PythonExpression(
+            [
+                "'",
+                LaunchConfiguration("interaction_mode"),
+                "' == 'interactive' and '",
+                LaunchConfiguration("web_ui"),
+                "'.lower() == 'true'",
+            ]
+        )
+    )
+    use_dataset_scene = IfCondition(
+        PythonExpression(
+            [
+                "'",
+                LaunchConfiguration("environment"),
+                "' == 'sim' and '",
+                LaunchConfiguration("use_dataset_scene"),
+                "'.lower() == 'true'",
+            ]
+        )
+    )
 
     semantic_perception = Node(
         package="llm_vision_planner",
@@ -55,6 +109,41 @@ def generate_launch_description():
         name="prompt_generator",
         output="screen",
         parameters=[params_file, {"environment": LaunchConfiguration("environment"), "llm_provider": LaunchConfiguration("llm_provider")}],
+        condition=use_fixed_prompt,
+    )
+
+    interactive_gateway = Node(
+        package="llm_vision_planner",
+        executable="interactive_mission_gateway.py",
+        name="interactive_mission_gateway",
+        output="screen",
+        parameters=[
+            params_file,
+            {
+                "environment": LaunchConfiguration("environment"),
+                "intent_provider": LaunchConfiguration("intent_provider"),
+                "planner_llm_provider": LaunchConfiguration("llm_provider"),
+            },
+        ],
+        condition=use_interactive_prompt,
+    )
+
+    interactive_web_ui = Node(
+        package="llm_vision_planner",
+        executable="interactive_web_ui.py",
+        name="interactive_web_ui",
+        output="screen",
+        parameters=[params_file, {"port": ParameterValue(LaunchConfiguration("web_ui_port"), value_type=int)}],
+        condition=use_interactive_web_ui,
+    )
+
+    dataset_scene = Node(
+        package="llm_vision_planner",
+        executable="dataset_scene_publisher.py",
+        name="dataset_scene_publisher",
+        output="screen",
+        parameters=[params_file, {"sample_id": ParameterValue(LaunchConfiguration("sim_sample_id"), value_type=int)}],
+        condition=use_dataset_scene,
     )
 
     llm_planner = Node(
@@ -73,12 +162,22 @@ def generate_launch_description():
         parameters=[params_file],
     )
 
-    verifier = Node(
+    fixed_verifier = Node(
         package="llm_vision_planner",
         executable="verifier.py",
         name="path_verifier",
         output="screen",
         parameters=[params_file],
+        condition=use_fixed_prompt,
+    )
+
+    interactive_verifier = Node(
+        package="llm_vision_planner",
+        executable="verifier.py",
+        name="path_verifier",
+        output="screen",
+        parameters=[params_file, {"verified_plan_topic": "/llm_vision/plan_candidate_verified"}],
+        condition=use_interactive_prompt,
     )
 
     control_executor = Node(
@@ -114,11 +213,21 @@ def generate_launch_description():
             llm_provider_arg,
             show_rrt_arg,
             visualizer_arg,
+            interaction_mode_arg,
+            intent_provider_arg,
+            web_ui_arg,
+            web_ui_port_arg,
+            use_dataset_scene_arg,
+            sim_sample_id_arg,
             semantic_perception,
+            dataset_scene,
             llm_planner,
             TimerAction(period=2.0, actions=[prompt_generator]),
+            interactive_gateway,
+            interactive_web_ui,
             refinement,
-            verifier,
+            fixed_verifier,
+            interactive_verifier,
             control_executor,
             visualizer,
             contraction_visualizer,

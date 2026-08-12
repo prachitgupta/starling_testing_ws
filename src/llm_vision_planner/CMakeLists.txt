@@ -9,6 +9,9 @@ install(PROGRAMS
   scripts/debug_perception.py
   scripts/ros_wifi_dds.sh
   scripts/prompt_generator.py
+  scripts/interactive_mission_gateway.py
+  scripts/interactive_web_ui.py
+  scripts/dataset_scene_publisher.py
   scripts/llm_planner.py
   scripts/refinment.py
   scripts/verifier.py
@@ -30,6 +33,7 @@ install(FILES
 install(DIRECTORY
   launch
   config
+  web
   fine_tuning
   DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE

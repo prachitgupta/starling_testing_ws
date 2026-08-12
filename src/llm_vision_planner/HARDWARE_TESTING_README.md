@@ -646,6 +646,26 @@ ros2 topic echo /llm_vision/plan_verified
 ros2 topic echo /llm_vision/offboard_owner
 ```
 
+### Interactive mode
+
+Interactive mode uses OpenAI to parse an operator request and opens
+`http://127.0.0.1:8080` for approval before planning. `OPENAI_API_KEY` must be
+exported in the launch shell; fixed mode remains the default.
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source install/setup.bash
+
+ros2 launch llm_vision_planner full_plot.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  environment:=sim \
+  interaction_mode:=interactive \
+  intent_provider:=openai \
+  use_dataset_scene:=true \
+  sim_sample_id:=4 \
+  llm_provider:=llama
+```
+
 ## 12. TFLite and ToF perception
 
 TFLite detects object type from `hires_small_color`. ToF supplies distance

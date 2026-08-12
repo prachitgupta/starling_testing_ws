@@ -112,6 +112,60 @@ prompt_generator:
     fresh_data_timeout_s: 2.0
     debug: True
 
+interactive_mission_gateway:
+  ros__parameters:
+    environment: real
+    intent_provider: openai
+    openai_intent_model: gpt-5.4-nano
+    planner_llm_provider: llama
+    planner_model_name: rrt_planner
+    operator_command_topic: /llm_vision/operator_command
+    approval_topic: /llm_vision/mission_approval
+    operator_response_topic: /llm_vision/operator_response
+    mission_proposal_topic: /llm_vision/mission_proposal
+    semantic_obstacle_topic: /llm_vision/semantic_obstacles
+    sim_obstacle_topic: /llm_vision/sim_obstacles
+    mission_state_topic: /llm_vision/mission_state
+    pose_topic: /fmu/out/vehicle_odometry
+    prompt_topic: /llm_vision/prompt
+    candidate_verification_topic: /llm_vision/plan_candidate_verified
+    passed_plan_topic: /llm_vision/plan_verified
+    required_mission_state: HOLDING_FOR_PLAN
+    require_mission_state: True
+    workspace_x_min: 0.0
+    workspace_x_max: 4.0
+    workspace_y_min: 0.0
+    workspace_y_max: 4.0
+    fixed_z: -0.5
+    clearance_m: 0.40
+    default_standoff_m: 0.60
+    fresh_data_timeout_s: 2.0
+    approval_timeout_s: 30.0
+    max_start_drift_m: 0.25
+    max_planning_attempts: 3
+    debug: True
+
+interactive_web_ui:
+  ros__parameters:
+    host: 127.0.0.1
+    port: 8080
+    operator_command_topic: /llm_vision/operator_command
+    approval_topic: /llm_vision/mission_approval
+    operator_response_topic: /llm_vision/operator_response
+    mission_proposal_topic: /llm_vision/mission_proposal
+
+dataset_scene_publisher:
+  ros__parameters:
+    dataset_csv: fine_tuning/datasets/env_ros_commands.csv
+    sample_id: 4
+    publish_hz: 2.0
+    relabel_to_coco: True
+    coco_labels: [chair, bottle, suitcase, person]
+    fixed_z: -0.5
+    obstacle_topic: /llm_vision/sim_obstacles
+    mission_state_topic: /llm_vision/mission_state
+    publish_mission_state: False
+
 llm_planner:
   ros__parameters:
     prompt_topic: /llm_vision/prompt

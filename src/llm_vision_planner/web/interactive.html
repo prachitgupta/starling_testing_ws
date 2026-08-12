@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>UAV Mission Approval</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; }
+    body { max-width: 850px; margin: 0 auto; padding: 28px 18px; }
+    section { background: #1f2937; border: 1px solid #374151; border-radius: 12px; padding: 18px; margin: 14px 0; }
+    h1 { margin-bottom: 6px; } h2 { font-size: 1rem; color: #93c5fd; }
+    form { display: flex; gap: 8px; }
+    input { flex: 1; padding: 11px; border-radius: 8px; border: 1px solid #4b5563; background: #111827; color: white; }
+    button { padding: 10px 16px; border: 0; border-radius: 8px; font-weight: 700; cursor: pointer; }
+    #send { background: #2563eb; color: white; } #approve { background: #16a34a; color: white; } #reject { background: #dc2626; color: white; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #d1d5db; }
+    .status { font-size: 1.05rem; }
+  </style>
+</head>
+<body>
+  <h1>UAV Mission Approval</h1>
+  <p>Commands are interpreted against the latest detected-object snapshot. No plan is released before approval.</p>
+  <section>
+    <form id="command-form">
+      <input id="command" placeholder="Hover near the chair without touching it" autocomplete="off">
+      <button id="send" type="submit">Send</button>
+    </form>
+  </section>
+  <section>
+    <h2>Gateway status</h2>
+    <div id="status" class="status">Waiting for ROS status…</div>
+  </section>
+  <section>
+    <h2>Grounded mission proposal</h2>
+    <pre id="proposal">No proposal yet.</pre>
+    <button id="approve" disabled>Approve</button>
+    <button id="reject" disabled>Reject</button>
+  </section>
+  <script>
+    let proposal = {};
+    async function post(path, data) {
+      const response = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+      if (!response.ok) throw new Error(await response.text());
+    }
+    document.getElementById('command-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const input = document.getElementById('command');
+      await post('/api/command', {text: input.value});
+      input.value = '';
+    });
+    async function decide(decision) {
+      await post('/api/decision', {decision, mission_id: proposal.mission_id, proposal_hash: proposal.proposal_hash});
+    }
+    document.getElementById('approve').onclick = () => decide('APPROVE');
+    document.getElementById('reject').onclick = () => decide('REJECT');
+    async function refresh() {
+      try {
+        const state = await (await fetch('/api/state', {cache: 'no-store'})).json();
+        const response = state.response || {};
+        proposal = state.proposal || {};
+        document.getElementById('status').textContent = `${response.status || 'WAITING'} — ${response.message || ''}`;
+        document.getElementById('proposal').textContent = proposal.mission_id ? JSON.stringify(proposal, null, 2) : 'No proposal yet.';
+        const awaiting = response.status === 'AWAITING_APPROVAL' && Boolean(proposal.mission_id);
+        document.getElementById('approve').disabled = !awaiting;
+        document.getElementById('reject').disabled = !awaiting;
+      } catch (error) {
+        document.getElementById('status').textContent = `UI backend unavailable: ${error}`;
+      }
+    }
+    setInterval(refresh, 500); refresh();
+  </script>
+</body>
+</html>

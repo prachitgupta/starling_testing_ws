@@ -141,7 +141,12 @@ interactive_mission_gateway:
     default_standoff_m: 0.60
     fresh_data_timeout_s: 2.0
     approval_timeout_s: 30.0
+    # Allow live TFLite/ToF box jitter while planning against an expanded envelope.
+    scene_position_tolerance_m: 0.15
+    scene_size_tolerance_m: 0.20
     max_start_drift_m: 0.25
+    # Keep margin below the executor's 0.10 m verified-plan start limit.
+    max_release_start_drift_m: 0.08
     max_planning_attempts: 3
     debug: True
 

@@ -197,6 +197,69 @@ def scene_signature(obstacles):
     return hashlib.sha256(canonical_json(geometry).encode("utf-8")).hexdigest()
 
 
+def obstacle_xy_geometry(obstacle):
+    minimum = obstacle["min_corner"]
+    maximum = obstacle["max_corner"]
+    center = (
+        0.5 * (float(minimum[0]) + float(maximum[0])),
+        0.5 * (float(minimum[1]) + float(maximum[1])),
+    )
+    size = (
+        float(maximum[0]) - float(minimum[0]),
+        float(maximum[1]) - float(minimum[1]),
+    )
+    return center, size
+
+
+def scenes_compatible(reference, current, position_tolerance, size_tolerance):
+    """Match by label and geometry so sensor jitter and reordered detections are safe."""
+    if len(reference) != len(current):
+        return False, f"obstacle count changed from {len(reference)} to {len(current)}"
+    unmatched = set(range(len(current)))
+    for expected in reference:
+        expected_center, expected_size = obstacle_xy_geometry(expected)
+        candidates = []
+        for index in unmatched:
+            observed = current[index]
+            if observed["label"].strip().lower() != expected["label"].strip().lower():
+                continue
+            observed_center, observed_size = obstacle_xy_geometry(observed)
+            center_delta = math.dist(expected_center, observed_center)
+            size_delta = max(abs(a - b) for a, b in zip(expected_size, observed_size))
+            candidates.append((center_delta, size_delta, index))
+        if not candidates:
+            return False, f"missing obstacle label '{expected['label']}'"
+        center_delta, size_delta, index = min(candidates)
+        if center_delta > float(position_tolerance):
+            return False, (
+                f"{expected['label']} moved {center_delta:.3f} m "
+                f"(allowed {float(position_tolerance):.3f} m)"
+            )
+        if size_delta > float(size_tolerance):
+            return False, (
+                f"{expected['label']} size changed {size_delta:.3f} m "
+                f"(allowed {float(size_tolerance):.3f} m)"
+            )
+        unmatched.remove(index)
+    return True, ""
+
+
+def inflate_obstacles_xy(obstacles, padding):
+    """Create a conservative planning envelope covering every accepted scene."""
+    inflated = copy.deepcopy(obstacles)
+    for obstacle in inflated:
+        minimum = obstacle["min_corner"]
+        maximum = obstacle["max_corner"]
+        minimum[0] = float(minimum[0]) - float(padding)
+        minimum[1] = float(minimum[1]) - float(padding)
+        maximum[0] = float(maximum[0]) + float(padding)
+        maximum[1] = float(maximum[1]) + float(padding)
+        if isinstance(obstacle.get("size"), list) and len(obstacle["size"]) >= 2:
+            obstacle["size"][0] = maximum[0] - minimum[0]
+            obstacle["size"][1] = maximum[1] - minimum[1]
+    return inflated
+
+
 def clearance_to_box(point, obstacle):
     minimum = obstacle["min_corner"]
     maximum = obstacle["max_corner"]
@@ -325,7 +388,10 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("default_standoff_m", 0.60)
         self.declare_parameter("fresh_data_timeout_s", 2.0)
         self.declare_parameter("approval_timeout_s", 30.0)
+        self.declare_parameter("scene_position_tolerance_m", 0.15)
+        self.declare_parameter("scene_size_tolerance_m", 0.20)
         self.declare_parameter("max_start_drift_m", 0.25)
+        self.declare_parameter("max_release_start_drift_m", 0.08)
         self.declare_parameter("max_planning_attempts", 3)
         self.declare_parameter("debug", True)
 
@@ -333,6 +399,11 @@ class InteractiveMissionGateway(Node):
         self.fixed_z = float(self.get_parameter("fixed_z").value)
         self.clearance_m = float(self.get_parameter("clearance_m").value)
         self.default_standoff_m = float(self.get_parameter("default_standoff_m").value)
+        self.scene_position_tolerance_m = float(self.get_parameter("scene_position_tolerance_m").value)
+        self.scene_size_tolerance_m = float(self.get_parameter("scene_size_tolerance_m").value)
+        if self.scene_position_tolerance_m < 0.0 or self.scene_size_tolerance_m < 0.0:
+            raise ValueError("scene tolerances must be non-negative")
+        self.scene_guard_band_m = self.scene_position_tolerance_m + 0.5 * self.scene_size_tolerance_m
         self.workspace = {
             "x": [
                 float(self.get_parameter("workspace_x_min").value),
@@ -452,7 +523,7 @@ class InteractiveMissionGateway(Node):
         self.current_pose = {
             "x": float(msg.position[0]),
             "y": float(msg.position[1]),
-            "z": self.fixed_z,
+            "z": float(msg.position[2]),
             "received_s": time.time(),
         }
 
@@ -552,10 +623,14 @@ class InteractiveMissionGateway(Node):
             )
             return
         try:
+            planning_obstacles = inflate_obstacles_xy(scene["obstacles"], self.scene_guard_band_m)
+            planning_target = next(
+                item for item in planning_obstacles if item["object_id"] == target["object_id"]
+            )
             goal = safe_standoff_goal(
                 start,
-                target,
-                scene["obstacles"],
+                planning_target,
+                planning_obstacles,
                 self.workspace,
                 self.fixed_z,
                 intent.requested_standoff_m,
@@ -580,13 +655,15 @@ class InteractiveMissionGateway(Node):
             "start": start,
             "goal": goal,
             "workspace": copy.deepcopy(self.workspace),
-            "obstacles": copy.deepcopy(scene["obstacles"]),
+            "observed_obstacles": copy.deepcopy(scene["obstacles"]),
+            "obstacles": planning_obstacles,
             "created_at": created_at,
             "attempt": 0,
         }
+        # The live hover position is rebound at approval within a configured limit.
         contract = {
             key: mission[key]
-            for key in ("mission_id", "snapshot_id", "intent", "target", "start", "goal", "workspace", "obstacles")
+            for key in ("mission_id", "snapshot_id", "intent", "target", "goal", "workspace", "obstacles")
         }
         mission["proposal_hash"] = hashlib.sha256(canonical_json(contract).encode("utf-8")).hexdigest()
         mission["base_prompt"], mission["nl_env"] = build_planner_prompt(
@@ -633,6 +710,7 @@ class InteractiveMissionGateway(Node):
             },
             "goal": mission["goal"],
             "clearance_m": self.clearance_m,
+            "scene_guard_band_m": round(self.scene_guard_band_m, 3),
             "obstacle_ids": [item["object_id"] for item in mission["obstacles"]],
             "created_at": mission["created_at"],
         }
@@ -667,17 +745,36 @@ class InteractiveMissionGateway(Node):
         if error:
             self.cancel_active_mission(f"Approval invalidated: {error}")
             return
-        if scene_signature(self.latest_scene["obstacles"]) != mission["scene_signature"]:
-            self.cancel_active_mission("Scene changed before approval; request a new mission proposal.")
+        scene_error = self.scene_compatibility_error(mission)
+        if scene_error:
+            self.cancel_active_mission(f"Scene changed before approval: {scene_error}.")
             return
-        current_start = self.current_start()
+        current_position = self.current_position()
         drift = math.dist(
-            [current_start["x"], current_start["y"], current_start["z"]],
+            [current_position["x"], current_position["y"], current_position["z"]],
             [mission["start"]["x"], mission["start"]["y"], mission["start"]["z"]],
         )
         if drift > float(self.get_parameter("max_start_drift_m").value):
             self.cancel_active_mission(f"Start moved {drift:.2f} m before approval; request a new proposal.")
             return
+        mission["start"] = {
+            "x": round(current_position["x"], 3),
+            "y": round(current_position["y"], 3),
+            "z": self.fixed_z,
+        }
+        if not self.point_in_workspace(mission["start"]):
+            self.cancel_active_mission("Current hover position is outside the planning workspace.")
+            return
+        if any(clearance_to_box(mission["start"], obstacle) < self.clearance_m for obstacle in mission["obstacles"]):
+            self.cancel_active_mission("Current hover position does not satisfy obstacle clearance.")
+            return
+        mission["base_prompt"], mission["nl_env"] = build_planner_prompt(
+            mission["start"],
+            mission["goal"],
+            mission["workspace"],
+            mission["obstacles"],
+            self.clearance_m,
+        )
         mission["approved_at"] = time.time()
         self.publish_planning_attempt()
 
@@ -732,10 +829,33 @@ class InteractiveMissionGateway(Node):
         if str(candidate.get("plan_id")) != str(self.active_plan_id):
             self.log_debug(f"ignoring stale candidate plan_id={candidate.get('plan_id')}")
             return
+        context_error = self.context_error()
+        if context_error:
+            self.cancel_active_mission(f"Planning context became unsafe: {context_error}")
+            return
+        scene_error = self.scene_compatibility_error(self.active_mission)
+        if scene_error:
+            self.cancel_active_mission(f"Scene changed during planning: {scene_error}.")
+            return
         if not self.candidate_contract_matches(candidate):
             self.cancel_active_mission("Candidate plan contract differs from the approved mission.")
             return
         if bool(candidate.get("passed", False)):
+            current_position = self.current_position()
+            release_drift = math.dist(
+                [current_position["x"], current_position["y"], current_position["z"]],
+                [
+                    self.active_mission["start"]["x"],
+                    self.active_mission["start"]["y"],
+                    self.active_mission["start"]["z"],
+                ],
+            )
+            release_limit = float(self.get_parameter("max_release_start_drift_m").value)
+            if release_drift > release_limit:
+                self.cancel_active_mission(
+                    f"Hover moved {release_drift:.2f} m during planning; request a new proposal."
+                )
+                return
             output = dict(candidate)
             output.update(
                 {
@@ -772,6 +892,21 @@ class InteractiveMissionGateway(Node):
                 return False
         return True
 
+    def scene_compatibility_error(self, mission):
+        compatible, reason = scenes_compatible(
+            mission["observed_obstacles"],
+            self.latest_scene["obstacles"],
+            self.scene_position_tolerance_m,
+            self.scene_size_tolerance_m,
+        )
+        return None if compatible else reason
+
+    def point_in_workspace(self, point):
+        return (
+            self.workspace["x"][0] <= float(point["x"]) <= self.workspace["x"][1]
+            and self.workspace["y"][0] <= float(point["y"]) <= self.workspace["y"][1]
+        )
+
     def context_error(self):
         now = time.time()
         timeout = float(self.get_parameter("fresh_data_timeout_s").value)
@@ -794,18 +929,18 @@ class InteractiveMissionGateway(Node):
         return None
 
     def current_start(self):
-        if bool(self.get_parameter("require_mission_state").value):
-            position = self.latest_mission_state.get("position", {})
-            return {
-                "x": round(float(position["x"]), 3),
-                "y": round(float(position["y"]), 3),
-                "z": self.fixed_z,
-            }
+        position = self.current_position()
         return {
-            "x": round(float(self.current_pose["x"]), 3),
-            "y": round(float(self.current_pose["y"]), 3),
+            "x": round(float(position["x"]), 3),
+            "y": round(float(position["y"]), 3),
             "z": self.fixed_z,
         }
+
+    def current_position(self):
+        if bool(self.get_parameter("require_mission_state").value):
+            position = self.latest_mission_state.get("position", {})
+            return {key: float(position[key]) for key in ("x", "y", "z")}
+        return {key: float(self.current_pose[key]) for key in ("x", "y", "z")}
 
     def cancel_active_mission(self, reason):
         if self.state == "RELEASED_TO_EXECUTOR":

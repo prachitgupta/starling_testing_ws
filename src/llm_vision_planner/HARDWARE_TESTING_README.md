@@ -650,7 +650,10 @@ ros2 topic echo /llm_vision/offboard_owner
 
 Interactive mode uses OpenAI to parse an operator request and opens
 `http://127.0.0.1:8080` for approval before planning. `OPENAI_API_KEY` must be
-exported in the launch shell; fixed mode remains the default.
+exported in the launch shell; fixed mode remains the default. Live box jitter
+is accepted within configured position and size limits, while planning uses a
+larger conservative obstacle envelope. The planner start is refreshed from the
+current hover position at approval and checked again before plan release.
 
 ```bash
 cd ~/Desktop/starling_testing_ws

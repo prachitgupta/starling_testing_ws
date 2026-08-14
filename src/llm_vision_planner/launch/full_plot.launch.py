@@ -71,6 +71,12 @@ def generate_launch_description():
         default_value="8080",
         description="Local HTTP port for the interactive operator UI.",
     )
+    web_ui_host_arg = DeclareLaunchArgument(
+        "web_ui_host",
+        default_value="127.0.0.1",
+        description="Bind address for the interactive operator UI. Set to 0.0.0.0 "
+        "to reach it from another device (e.g. a phone) on the same network.",
+    )
     use_dataset_scene_arg = DeclareLaunchArgument(
         "use_dataset_scene",
         default_value="false",
@@ -164,6 +170,7 @@ def generate_launch_description():
             params_file,
             {
                 "port": ParameterValue(LaunchConfiguration("web_ui_port"), value_type=int),
+                "host": LaunchConfiguration("web_ui_host"),
                 "visualizer": LaunchConfiguration("visualizer"),
             },
         ],
@@ -260,6 +267,7 @@ def generate_launch_description():
             intent_provider_arg,
             web_ui_arg,
             web_ui_port_arg,
+            web_ui_host_arg,
             use_dataset_scene_arg,
             sim_sample_id_arg,
             semantic_perception,

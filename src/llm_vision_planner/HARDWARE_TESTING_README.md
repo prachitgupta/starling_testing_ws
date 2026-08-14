@@ -87,6 +87,8 @@ source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dd
 source /opt/ros/foxy/setup.bash
 source /opt/ros/foxy/mpa_to_ros2/install/setup.bash
 source /data/llm_vision_planner/scripts/ros_wifi_dds.sh enable wlan0 42
+systemctl restart voxl-microdds-agent
+ros2 daemon start
 ```
 
 #### Verify on the ground station
@@ -365,6 +367,8 @@ On the VOXL:
 source /opt/ros/foxy/setup.bash
 source /opt/ros/foxy/mpa_to_ros2/install/setup.bash
 source /data/llm_vision_planner/scripts/ros_wifi_dds.sh enable wlan0 42
+systemctl restart voxl-microdds-agent
+ros2 daemon start
 ros2 pkg executables voxl_mpa_to_ros2
 ```
 

@@ -966,3 +966,32 @@ ros2 launch llm_vision_planner full_plot.launch.py \
 ```
 
 Use the RC kill switch or change PX4/QGroundControl mode to abort.
+
+### Launch the real mission (interactive mode)
+
+Same as above, but requests operator approval through the web UI before
+planning. `OPENAI_API_KEY` must be exported in the launch shell.
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+
+ros2 launch llm_vision_planner full_plot.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  goal_x:=0.4 \
+  goal_y:=1.7 \
+  environment:=real \
+  interaction_mode:=interactive \
+  intent_provider:=openai \
+  llm_provider:=llama \
+  visualizer:=contraction \
+  land_after_complete:=false
+```
+
+Open `http://127.0.0.1:8080` once `/llm_vision/mission_state` reports
+`HOLDING_FOR_PLAN`; see step 11's Interactive mode section for the approval
+walkthrough. Use the RC kill switch or change PX4/QGroundControl mode to
+abort.

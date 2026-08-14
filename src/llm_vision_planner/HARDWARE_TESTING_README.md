@@ -755,6 +755,12 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   visualizer:=contraction
 ```
 
+To open the operator UI from a phone on the same network, add
+`web_ui_host:=0.0.0.0` and browse to `http://<computer-lan-ip>:8080`. On plain
+LAN HTTP, **Record command** opens the phone's native audio recorder because
+browsers reserve live microphone streams for secure origins. Localhost or an
+HTTPS deployment retains the in-page push-to-talk recorder.
+
 #### Dummy example: manually publish obstacles
 
 This test does not launch `perception_detection.py`. Start PX4 simulation, then
@@ -795,8 +801,11 @@ ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
 
 1. Wait until `/llm_vision/mission_state` reports `HOLDING_FOR_PLAN`.
 2. Open `http://127.0.0.1:8080`, type a request or press **Push to talk**,
-   review the transcript, and press **Send**. Browser speech uses the browser
-   locale and requires microphone permission; typing remains available.
+   review the transcript, and press **Send**. The browser records the microphone
+   and the web node transcribes it with `gpt-4o-mini-transcribe`; this requires
+   microphone permission and `OPENAI_API_KEY`. On a phone over plain LAN HTTP,
+   **Record command** uses the phone's native recorder instead of a live browser
+   microphone stream. Typing remains available.
 3. Scene questions such as `What do you see?`, `List objects`, `Where is the
    chair?`, `Explain the proposal`, and `Explain failure` return text without
    creating a plan. Navigation can combine ranges, for example `Hover 0.8 to

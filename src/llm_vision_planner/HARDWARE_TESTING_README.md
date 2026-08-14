@@ -300,13 +300,49 @@ In Tracker:
 3. Select an actual 50 Hz or 100 Hz system/DataStream rate.
 4. Keep the rigid body visible and unoccluded.
 
-Build the bridge once if needed:
+The bridge was verified on Ubuntu 22.04 with ROS 2 Humble using
+`dasc-lab/ros2-vicon-bridge` package version `0.0.1`, Vicon DataStream SDK
+`1.12`, and commit `893aba0eb8b7d316d90865ac46394616bfb0bb36`. Install and
+build that revision once on the ground station:
 
 ```bash
+sudo apt update
+sudo apt install -y git build-essential cmake python3-colcon-common-extensions \
+  libboost-thread-dev libboost-date-time-dev libboost-chrono-dev \
+  ros-humble-ament-cmake ros-humble-rclcpp ros-humble-geometry-msgs \
+  ros-humble-tf2 ros-humble-tf2-ros ros-humble-diagnostic-updater
+
+mkdir -p ~/colcon_ws/src
+git clone https://github.com/dasc-lab/ros2-vicon-bridge.git \
+  ~/colcon_ws/src/ros2-vicon-bridge
+git -C ~/colcon_ws/src/ros2-vicon-bridge checkout \
+  893aba0eb8b7d316d90865ac46394616bfb0bb36
+
 cd ~/colcon_ws
 source /opt/ros/humble/setup.bash
-colcon build --packages-select vicon_bridge
+colcon build --symlink-install --packages-select vicon_bridge
 ```
+
+If the repository already exists, skip `git clone`, confirm that local changes
+are intentional, check out the verified commit, and rebuild. Verify the
+installation and dependencies:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/colcon_ws/install/setup.bash
+
+git -C ~/colcon_ws/src/ros2-vicon-bridge rev-parse HEAD
+ros2 pkg prefix vicon_bridge
+ros2 pkg xml vicon_bridge | grep -m1 '<version>'
+ros2 pkg executables vicon_bridge
+ldd ~/colcon_ws/install/vicon_bridge/lib/vicon_bridge/vicon_bridge | \
+  grep 'not found'
+```
+
+The commands must report the pinned commit, prefix
+`~/colcon_ws/install/vicon_bridge`, version `0.0.1`, and both `vicon_bridge`
+executables. The final `ldd` command must print nothing; any output names a
+missing runtime dependency that must be installed before continuing.
 
 Source it in every Vicon bridge terminal:
 

@@ -78,7 +78,7 @@ systemctl show voxl-microdds-agent --property=LoadState,ActiveState,Environment
 source /opt/ros/humble/setup.bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 ```
 
 #### Run in every VOXL ROS 2 terminal
@@ -194,7 +194,7 @@ On the ground station:
 source /opt/ros/humble/setup.bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 
 ros2 launch mavros px4.launch \
   fcu_url:="udp://0.0.0.0:14550@${Starling2}:14550" \
@@ -207,7 +207,7 @@ In another terminal:
 source /opt/ros/humble/setup.bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 ros2 topic echo /mavros/state
 ```
 
@@ -293,7 +293,7 @@ source /opt/ros/humble/setup.bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source ~/colcon_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 ```
 
 For a Vicon rate of 50 Hz:
@@ -400,7 +400,7 @@ On the ground station, verify both MPA and PX4 DDS topics:
 source /opt/ros/humble/setup.bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 
 ros2 topic info -v /tflite_data
 ros2 topic info -v /tflite
@@ -586,7 +586,7 @@ Use an empty obstacle snapshot:
 ```bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
   "{data: '{\"obstacles\":[],\"timestamp\":0.0}'}"
 ```
@@ -605,7 +605,7 @@ planner, verifier, visualizer, and control executor:
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -657,7 +657,7 @@ current hover position at approval and checked again before plan release.
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -681,7 +681,7 @@ launch interactive mode without the recorded dataset publisher:
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -700,7 +700,7 @@ In another terminal, continuously publish a fresh dummy COCO-object scene:
 ```bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 
 ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
   "{data: '{\"healthy\":true,\"frame\":\"local_ned\",\"obstacles\":[{\"id\":1,\"label\":\"chair\",\"shape\":\"box\",\"min_corner\":[2.20,2.00,-0.75],\"max_corner\":[2.70,2.50,0.25],\"confidence\":1.0},{\"id\":2,\"label\":\"bottle\",\"shape\":\"box\",\"min_corner\":[1.00,2.80,-0.75],\"max_corner\":[1.30,3.10,0.25],\"confidence\":1.0}],\"timestamp\":0.0}'}"
@@ -822,7 +822,7 @@ Terminal 1:
 ```bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 ros2 run llm_vision_planner perception_detection.py --ros-args \
   --params-file ~/Desktop/starling_testing_ws/src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
@@ -832,7 +832,7 @@ Terminal 2:
 ```bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 ros2 topic echo --full-length /llm_vision/semantic_obstacles
 ```
 
@@ -841,7 +841,7 @@ ros2 topic echo --full-length /llm_vision/semantic_obstacles
 ```bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 ros2 run llm_vision_planner debug_perception.py
 ```
 
@@ -864,7 +864,7 @@ to fly.
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 42
+  enable auto 42
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \

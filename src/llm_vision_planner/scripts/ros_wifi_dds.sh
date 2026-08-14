@@ -3,7 +3,7 @@
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   echo "ERROR: source this script; do not execute it." >&2
-  echo "Usage: source $0 {enable WIFI_INTERFACE [DOMAIN_ID]|disable|status}" >&2
+  echo "Usage: source $0 {enable WIFI_INTERFACE|auto [DOMAIN_ID]|disable|status}" >&2
   exit 2
 fi
 
@@ -24,12 +24,42 @@ case "${1:-}" in
     _ros_wifi_dds_domain="${3:-${ROS_DOMAIN_ID:-0}}"
 
     if [[ -z "$_ros_wifi_dds_interface" ]]; then
-      echo "Usage: source ${BASH_SOURCE[0]} enable WIFI_INTERFACE [DOMAIN_ID]" >&2
+      echo "Usage: source ${BASH_SOURCE[0]} enable WIFI_INTERFACE|auto [DOMAIN_ID]" >&2
       return 2
     fi
     if ! [[ "$_ros_wifi_dds_domain" =~ ^[0-9]+$ ]]; then
       echo "ERROR: ROS domain ID must be a non-negative integer." >&2
       return 2
+    fi
+    if [[ "$_ros_wifi_dds_interface" == "auto" ]]; then
+      # Prefer an up wireless interface with a global IPv4 address (the
+      # flight Wi-Fi) over the default route, which may point at a wired
+      # uplink on a dual-homed ground station.
+      _ros_wifi_dds_detected=""
+      for _ros_wifi_dds_candidate in /sys/class/net/*/wireless; do
+        [[ -d "$_ros_wifi_dds_candidate" ]] || continue
+        _ros_wifi_dds_candidate="$(basename "$(dirname "$_ros_wifi_dds_candidate")")"
+        if ip -o -4 address show dev "$_ros_wifi_dds_candidate" scope global \
+             up >/dev/null 2>&1; then
+          _ros_wifi_dds_detected="$_ros_wifi_dds_candidate"
+          break
+        fi
+      done
+      unset _ros_wifi_dds_candidate
+      if [[ -z "$_ros_wifi_dds_detected" ]]; then
+        _ros_wifi_dds_detected="$(
+          ip -o -4 route show default \
+            | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") {print $(i + 1); exit}}'
+        )"
+      fi
+      if [[ -z "$_ros_wifi_dds_detected" ]]; then
+        echo "ERROR: could not auto-detect a wireless interface or default route." >&2
+        echo "Pass the interface name explicitly instead of 'auto'." >&2
+        return 1
+      fi
+      echo "Auto-detected interface: ${_ros_wifi_dds_detected}"
+      _ros_wifi_dds_interface="$_ros_wifi_dds_detected"
+      unset _ros_wifi_dds_detected
     fi
     if ! ip link show dev "$_ros_wifi_dds_interface" >/dev/null 2>&1; then
       echo "ERROR: interface '$_ros_wifi_dds_interface' does not exist." >&2
@@ -144,7 +174,7 @@ case "${1:-}" in
     ;;
 
   *)
-    echo "Usage: source ${BASH_SOURCE[0]} {enable WIFI_INTERFACE [DOMAIN_ID]|disable|status}" >&2
+    echo "Usage: source ${BASH_SOURCE[0]} {enable WIFI_INTERFACE|auto [DOMAIN_ID]|disable|status}" >&2
     return 2
     ;;
 esac

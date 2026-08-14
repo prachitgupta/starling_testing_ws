@@ -31,7 +31,7 @@ nc -vz "$VICON_COMPUTER_IP" 801
 TCP port `801` must be reachable for the Vicon DataStream SDK. Allow Vicon
 Tracker/DataStream through the Windows firewall if this check fails.
 
-### Required: bind ROS 2 DDS to the flight Wi-Fi and domain 42
+### Option A: bind ROS 2 DDS to the flight Wi-Fi and domain 42
 
 #### Run once on the ground station
 
@@ -109,6 +109,69 @@ source /data/llm_vision_planner/scripts/ros_wifi_dds.sh status
 printenv RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
   FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
 ip -4 -br address show wlan0
+```
+
+### Option B: use default ROS 2 DDS
+
+Do not run any `ros_wifi_dds.sh enable` command when using this option.
+
+#### Disable Option A on the ground station
+
+Run in every ground-station terminal where Option A is active:
+
+```bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" disable
+unset RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
+  FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+ros2 daemon stop
+ros2 daemon start
+```
+
+#### Disable Option A on the VOXL
+
+```bash
+source /data/llm_vision_planner/scripts/ros_wifi_dds.sh disable
+unset RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
+  FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+rm -f /etc/systemd/system/voxl-microdds-agent.service.d/10-flight-dds.conf
+rm -f /data/llm_vision_planner/config/fastdds_wifi_only.xml
+systemctl daemon-reload
+systemctl restart voxl-microdds-agent
+ros2 daemon stop
+ros2 daemon start
+```
+
+In **QGroundControl > Analyze Tools > MAVLink Console**:
+
+```bash
+param set UXRCE_DDS_DOM_ID 0
+param save
+reboot
+```
+
+#### Start after power-on with default DDS
+
+Run in every new ground-station ROS 2 terminal:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+unset RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
+  FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+ros2 daemon stop
+ros2 daemon start
+```
+
+Run in every new VOXL ROS 2 terminal:
+
+```bash
+source /opt/ros/foxy/setup.bash
+source /opt/ros/foxy/mpa_to_ros2/install/setup.bash
+unset RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
+  FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+ros2 daemon stop
+ros2 daemon start
+systemctl is-active voxl-microdds-agent
 ```
 
 ## 2. Configure QGroundControl UDP
@@ -221,7 +284,7 @@ connected: true
 
 QGroundControl should now connect through its UDP `14551` link.
 
-In **QGroundControl > Analyze Tools > MAVLink Console**:
+For Option A, run in **QGroundControl > Analyze Tools > MAVLink Console**:
 
 ```bash
 param set UXRCE_DDS_DOM_ID 42
@@ -229,7 +292,15 @@ param save
 reboot
 ```
 
-After PX4 reconnects, verify in the MAVLink Console:
+For Option B, run in the MAVLink Console:
+
+```bash
+param set UXRCE_DDS_DOM_ID 0
+param save
+reboot
+```
+
+After PX4 reconnects, verify:
 
 ```bash
 param show UXRCE_DDS_DOM_ID
@@ -469,7 +540,6 @@ EKF2_EV_NOISE_MD = 1
 EKF2_EVP_NOISE   = 0.10 m
 EKF2_EVA_NOISE   = 0.05 rad
 EKF2_EV_DELAY    = 0 ms initially
-UXRCE_DDS_DOM_ID = 42
 ```
 
 On PX4 v1.14, `EKF2_MAG_TYPE=5` disables magnetometer fusion. With the yaw bit

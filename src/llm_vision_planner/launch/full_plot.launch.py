@@ -21,6 +21,16 @@ def generate_launch_description():
         ),
         description="YAML file containing llm_vision_planner node parameters",
     )
+    goal_x_arg = DeclareLaunchArgument(
+        "goal_x",
+        default_value="0.0",
+        description="Fixed mission goal x coordinate in local NED metres.",
+    )
+    goal_y_arg = DeclareLaunchArgument(
+        "goal_y",
+        default_value="1.5",
+        description="Fixed mission goal y coordinate in local NED metres.",
+    )
     llm_provider_arg = DeclareLaunchArgument(
         "llm_provider",
         default_value="llama",
@@ -72,6 +82,10 @@ def generate_launch_description():
         description="env_ros_commands.csv sample used by the optional simulation scene publisher.",
     )
     params_file = LaunchConfiguration("params_file")
+    fixed_goal = {
+        "goal_x": ParameterValue(LaunchConfiguration("goal_x"), value_type=float),
+        "goal_y": ParameterValue(LaunchConfiguration("goal_y"), value_type=float),
+    }
 
     use_real_perception = IfCondition(PythonExpression(["'", LaunchConfiguration("environment"), "' == 'real'"]))
     use_fixed_prompt = IfCondition(PythonExpression(["'", LaunchConfiguration("interaction_mode"), "' == 'fixed'"]))
@@ -105,7 +119,7 @@ def generate_launch_description():
         name="semantic_obstacle_perception",
         output="screen",
         condition=use_real_perception,
-        parameters=[params_file],
+        parameters=[params_file, fixed_goal],
     )
 
     prompt_generator = Node(
@@ -113,7 +127,14 @@ def generate_launch_description():
         executable="prompt_generator.py",
         name="prompt_generator",
         output="screen",
-        parameters=[params_file, {"environment": LaunchConfiguration("environment"), "llm_provider": LaunchConfiguration("llm_provider")}],
+        parameters=[
+            params_file,
+            {
+                "environment": LaunchConfiguration("environment"),
+                "llm_provider": LaunchConfiguration("llm_provider"),
+                **fixed_goal,
+            },
+        ],
         condition=use_fixed_prompt,
     )
 
@@ -128,6 +149,7 @@ def generate_launch_description():
                 "environment": LaunchConfiguration("environment"),
                 "intent_provider": LaunchConfiguration("intent_provider"),
                 "planner_llm_provider": LaunchConfiguration("llm_provider"),
+                "visualizer": LaunchConfiguration("visualizer"),
             },
         ],
         condition=use_interactive_prompt,
@@ -228,6 +250,8 @@ def generate_launch_description():
         [
             environment_arg,
             params_file_arg,
+            goal_x_arg,
+            goal_y_arg,
             llm_provider_arg,
             show_rrt_arg,
             visualizer_arg,

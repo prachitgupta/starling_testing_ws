@@ -620,6 +620,8 @@ source install/setup.bash
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  goal_x:=0.0 \
+  goal_y:=1.5 \
   environment:=sim \
   llm_provider:=llama \
   visualizer:=standard \
@@ -631,6 +633,8 @@ For the live conformal contraction plot:
 ```bash
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  goal_x:=0.0 \
+  goal_y:=1.5 \
   environment:=sim \
   llm_provider:=llama \
   visualizer:=contraction \
@@ -639,6 +643,8 @@ ros2 launch llm_vision_planner full_plot.launch.py \
 
 Add `land_after_complete:=false` to hold the final goal in Offboard for human
 intervention; the default `true` lands automatically after success.
+`goal_x` and `goal_y` default to `0.0` and `1.5`; set both launch arguments to
+override the fixed prompt, plotted goal, verified trajectory, and executor goal.
 
 Monitor:
 
@@ -664,6 +670,8 @@ source install/setup.bash
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  goal_x:=0.0 \
+  goal_y:=1.5 \
   environment:=sim \
   interaction_mode:=interactive \
   intent_provider:=openai \
@@ -684,6 +692,8 @@ source install/setup.bash
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  goal_x:=0.0 \
+  goal_y:=1.5 \
   environment:=sim \
   interaction_mode:=interactive \
   intent_provider:=openai \
@@ -708,8 +718,11 @@ ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
 3. Check the detected target, proposed goal, and clearance, then approve or
    reject the proposal. A planner prompt is published only after approval.
 4. The page shows detected objects, the proposed goal, and every refined path.
-   Safety tubes appear only after verification. Keep the obstacle publisher
-   running and monitor the final result with:
+   Once verification latches the trajectory and forms the safety tubes, use
+   **Final launch command** to approve control-law execution or terminate. A
+   termination keeps Offboard mode and commands an x/y-hold landing waypoint
+   through `control_law_executer.py`. Keep the obstacle publisher running and
+   monitor the final result with:
 
 ```bash
 ros2 topic echo /llm_vision/plan_verified
@@ -852,6 +865,8 @@ source install/setup.bash
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  goal_x:=0.0 \
+  goal_y:=1.5 \
   environment:=real \
   llm_provider:=llama \
   visualizer:=contraction \

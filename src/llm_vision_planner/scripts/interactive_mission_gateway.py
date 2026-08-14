@@ -366,10 +366,15 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("openai_intent_model", "gpt-5.4-nano")
         self.declare_parameter("planner_llm_provider", "llama")
         self.declare_parameter("planner_model_name", "rrt_planner")
+        self.declare_parameter("visualizer", "standard")
         self.declare_parameter("operator_command_topic", "/llm_vision/operator_command")
         self.declare_parameter("approval_topic", "/llm_vision/mission_approval")
+        self.declare_parameter("launch_approval_topic", "/llm_vision/launch_approval")
         self.declare_parameter("operator_response_topic", "/llm_vision/operator_response")
         self.declare_parameter("mission_proposal_topic", "/llm_vision/mission_proposal")
+        self.declare_parameter("launch_proposal_topic", "/llm_vision/launch_proposal")
+        self.declare_parameter("executor_command_topic", "/llm_vision/executor_command")
+        self.declare_parameter("safety_tube_ready_topic", "/llm_vision/safety_tube_ready")
         self.declare_parameter("semantic_obstacle_topic", "/llm_vision/semantic_obstacles")
         self.declare_parameter("sim_obstacle_topic", "/llm_vision/sim_obstacles")
         self.declare_parameter("mission_state_topic", "/llm_vision/mission_state")
@@ -424,6 +429,11 @@ class InteractiveMissionGateway(Node):
         self.conversation = []
         self.active_mission = None
         self.active_plan_id = None
+        self.pending_verified_plan = None
+        self.latest_safety_tube_ready = None
+        self.require_safety_tubes = (
+            str(self.get_parameter("visualizer").value).strip().lower() == "contraction"
+        )
         self.intent_request_token = None
         self.intent_results = queue.Queue()
         self.intent_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="intent_parser")
@@ -461,8 +471,20 @@ class InteractiveMissionGateway(Node):
         )
         self.create_subscription(
             String,
+            str(self.get_parameter("launch_approval_topic").value),
+            self.launch_approval_callback,
+            10,
+        )
+        self.create_subscription(
+            String,
             str(self.get_parameter("candidate_verification_topic").value),
             self.verification_callback,
+            LATCHED_QOS,
+        )
+        self.create_subscription(
+            String,
+            str(self.get_parameter("safety_tube_ready_topic").value),
+            self.safety_tube_ready_callback,
             LATCHED_QOS,
         )
         self.response_pub = self.create_publisher(
@@ -474,6 +496,16 @@ class InteractiveMissionGateway(Node):
             String,
             str(self.get_parameter("mission_proposal_topic").value),
             LATCHED_QOS,
+        )
+        self.launch_proposal_pub = self.create_publisher(
+            String,
+            str(self.get_parameter("launch_proposal_topic").value),
+            LATCHED_QOS,
+        )
+        self.executor_command_pub = self.create_publisher(
+            String,
+            str(self.get_parameter("executor_command_topic").value),
+            10,
         )
         self.prompt_pub = self.create_publisher(
             String,
@@ -535,7 +567,14 @@ class InteractiveMissionGateway(Node):
         if operator_text.strip().lower() == "cancel":
             self.cancel_active_mission("Mission cancelled by operator.")
             return
-        if self.state in ("PARSING_INTENT", "WAITING_FOR_VERIFICATION", "RELEASED_TO_EXECUTOR"):
+        if self.state in (
+            "PARSING_INTENT",
+            "WAITING_FOR_VERIFICATION",
+            "FORMING_SAFETY_TUBES",
+            "AWAITING_LAUNCH_APPROVAL",
+            "LAND_REQUESTED",
+            "RELEASED_TO_EXECUTOR",
+        ):
             self.publish_response("BUSY", f"Cannot accept a new mission while state={self.state}.")
             return
         error = self.context_error()
@@ -675,6 +714,8 @@ class InteractiveMissionGateway(Node):
         )
         self.active_mission = mission
         self.active_plan_id = None
+        self.pending_verified_plan = None
+        self.latest_safety_tube_ready = None
         self.state = "AWAITING_APPROVAL"
         proposal = self.proposal_payload(mission)
         self.proposal_pub.publish(String(data=json.dumps(proposal)))
@@ -869,14 +910,16 @@ class InteractiveMissionGateway(Node):
                     "scene_guard_band_m": self.scene_guard_band_m,
                 }
             )
-            self.passed_plan_pub.publish(String(data=json.dumps(output)))
-            self.state = "RELEASED_TO_EXECUTOR"
-            self.publish_response(
-                "VERIFIED",
-                f"Plan {self.active_plan_id} passed verification and was released to the executor.",
-                mission_id=self.active_mission["mission_id"],
-                plan_id=self.active_plan_id,
-            )
+            self.pending_verified_plan = output
+            self.state = "FORMING_SAFETY_TUBES"
+            self.maybe_publish_launch_proposal()
+            if self.state == "FORMING_SAFETY_TUBES":
+                self.publish_response(
+                    "FORMING_SAFETY_TUBES",
+                    f"Plan {self.active_plan_id} passed verification; latching its conformal safety tubes.",
+                    mission_id=self.active_mission["mission_id"],
+                    plan_id=self.active_plan_id,
+                )
             return
         if self.active_mission["attempt"] >= int(self.get_parameter("max_planning_attempts").value):
             self.state = "PLANNING_FAILED"
@@ -888,6 +931,126 @@ class InteractiveMissionGateway(Node):
             )
             return
         self.publish_planning_attempt(feedback=candidate)
+
+    def safety_tube_ready_callback(self, msg):
+        try:
+            self.latest_safety_tube_ready = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().error(f"invalid safety-tube readiness JSON: {exc}")
+            return
+        self.maybe_publish_launch_proposal()
+
+    def maybe_publish_launch_proposal(self):
+        if self.state != "FORMING_SAFETY_TUBES" or self.pending_verified_plan is None:
+            return
+        tube_status = self.latest_safety_tube_ready or {}
+        tube_ready = (
+            tube_status.get("status") == "READY"
+            and tube_status.get("plan_id") == self.active_plan_id
+            and int(tube_status.get("sample_count", 0)) > 0
+        )
+        if self.require_safety_tubes and not tube_ready:
+            return
+        launch_proposal = {
+            "type": "LAUNCH_PROPOSAL",
+            "status": "AWAITING_LAUNCH_APPROVAL",
+            "mission_id": self.active_mission["mission_id"],
+            "plan_id": self.active_plan_id,
+            "proposal_hash": self.active_mission["proposal_hash"],
+            "goal": self.active_mission["goal"],
+            "verified_at": time.time(),
+            "conformal_safety_tubes_ready": tube_ready,
+            "safety_tube_samples": tube_status.get("sample_count", 0),
+        }
+        self.state = "AWAITING_LAUNCH_APPROVAL"
+        self.launch_proposal_pub.publish(String(data=json.dumps(launch_proposal)))
+        self.publish_response(
+            "AWAITING_LAUNCH_APPROVAL",
+            (
+                f"Plan {self.active_plan_id} passed verification. Review the latched trajectory "
+                "and conformal safety tubes, then approve launch or terminate and land."
+            ),
+            mission_id=self.active_mission["mission_id"],
+            plan_id=self.active_plan_id,
+        )
+
+    def launch_approval_callback(self, msg):
+        try:
+            approval = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.publish_response("LAUNCH_APPROVAL_REJECTED", f"Launch decision must be structured JSON: {exc}")
+            return
+        if self.state != "AWAITING_LAUNCH_APPROVAL" or self.pending_verified_plan is None:
+            self.publish_response("LAUNCH_APPROVAL_REJECTED", "There is no verified plan awaiting launch approval.")
+            return
+        mission = self.active_mission
+        if approval.get("mission_id") != mission["mission_id"]:
+            self.publish_response("LAUNCH_APPROVAL_REJECTED", "Launch mission_id does not match the active mission.")
+            return
+        if approval.get("plan_id") != self.active_plan_id:
+            self.publish_response("LAUNCH_APPROVAL_REJECTED", "Launch plan_id does not match the verified plan.")
+            return
+        if approval.get("proposal_hash") != mission["proposal_hash"]:
+            self.publish_response("LAUNCH_APPROVAL_REJECTED", "Launch proposal_hash does not match the active mission.")
+            return
+
+        decision = str(approval.get("decision", approval.get("type", ""))).upper()
+        if decision in ("DENY", "REJECT", "REJECTED", "TERMINATE", "CANCEL"):
+            self.request_executor_land("Verified mission terminated by operator before launch.")
+            return
+        if decision not in ("APPROVE", "APPROVED", "LAUNCH"):
+            self.publish_response("LAUNCH_APPROVAL_REJECTED", "Decision must be APPROVE or DENY.")
+            return
+
+        error = self.context_error()
+        if error:
+            self.publish_response("LAUNCH_APPROVAL_REJECTED", f"Launch context is no longer safe: {error}")
+            return
+        scene_error = self.scene_compatibility_error(mission)
+        if scene_error:
+            self.publish_response("LAUNCH_APPROVAL_REJECTED", f"Scene changed before launch: {scene_error}.")
+            return
+        current_position = self.current_position()
+        release_drift = math.dist(
+            [current_position["x"], current_position["y"], current_position["z"]],
+            [mission["start"]["x"], mission["start"]["y"], mission["start"]["z"]],
+        )
+        release_limit = float(self.get_parameter("max_release_start_drift_m").value)
+        if release_drift > release_limit:
+            self.publish_response(
+                "LAUNCH_APPROVAL_REJECTED",
+                f"Hover moved {release_drift:.2f} m before launch; terminate and request a new mission.",
+            )
+            return
+
+        self.passed_plan_pub.publish(String(data=json.dumps(self.pending_verified_plan)))
+        self.pending_verified_plan = None
+        self.state = "RELEASED_TO_EXECUTOR"
+        self.publish_response(
+            "LAUNCHED",
+            f"Launch approved; plan {self.active_plan_id} was released to the control-law executor.",
+            mission_id=mission["mission_id"],
+            plan_id=self.active_plan_id,
+        )
+
+    def request_executor_land(self, reason):
+        mission_id = self.active_mission["mission_id"] if self.active_mission else None
+        payload = {
+            "command": "LAND",
+            "reason": reason,
+            "mission_id": mission_id,
+            "plan_id": self.active_plan_id,
+            "timestamp": time.time(),
+        }
+        self.executor_command_pub.publish(String(data=json.dumps(payload)))
+        self.pending_verified_plan = None
+        self.state = "LAND_REQUESTED"
+        self.publish_response(
+            "LAND_REQUESTED",
+            f"{reason} Offboard landing was sent to the control-law executor.",
+            mission_id=mission_id,
+            plan_id=self.active_plan_id,
+        )
 
     def candidate_contract_matches(self, candidate):
         mission = self.active_mission
@@ -950,9 +1113,13 @@ class InteractiveMissionGateway(Node):
         if self.state == "RELEASED_TO_EXECUTOR":
             self.publish_response("CANCEL_UNAVAILABLE", "The plan has already been released to the executor.")
             return
+        if self.state in ("FORMING_SAFETY_TUBES", "AWAITING_LAUNCH_APPROVAL"):
+            self.request_executor_land(reason)
+            return
         self.intent_request_token = None
         self.active_mission = None
         self.active_plan_id = None
+        self.pending_verified_plan = None
         self.state = "WAITING_FOR_COMMAND"
         self.publish_response("CANCELLED", reason)
 

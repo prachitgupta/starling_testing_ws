@@ -44,14 +44,23 @@ class GatewayHarness(Node):
         self.state_pub = self.create_publisher(String, "/llm_vision/mission_state", 10)
         self.command_pub = self.create_publisher(String, "/llm_vision/operator_command", 10)
         self.approval_pub = self.create_publisher(String, "/llm_vision/mission_approval", 10)
+        self.launch_approval_pub = self.create_publisher(String, "/llm_vision/launch_approval", 10)
         self.candidate_pub = self.create_publisher(
             String,
             "/llm_vision/plan_candidate_verified",
             LATCHED_QOS,
         )
+        self.safety_ready_pub = self.create_publisher(
+            String,
+            "/llm_vision/safety_tube_ready",
+            LATCHED_QOS,
+        )
         self.proposals = []
         self.prompts = []
         self.final_plans = []
+        self.launch_proposals = []
+        self.executor_commands = []
+        self.safety_ready_plan_id = None
         self.responses = []
         self.scene = {
             "healthy": True,
@@ -77,6 +86,8 @@ class GatewayHarness(Node):
             "position": {"x": 0.2, "y": 0.2, "z": -0.5},
         }
         self.create_subscription(String, "/llm_vision/mission_proposal", self.proposal_callback, LATCHED_QOS)
+        self.create_subscription(String, "/llm_vision/launch_proposal", self.launch_proposal_callback, LATCHED_QOS)
+        self.create_subscription(String, "/llm_vision/executor_command", self.executor_command_callback, 10)
         self.create_subscription(String, "/llm_vision/prompt", self.prompt_callback, LATCHED_QOS)
         self.create_subscription(String, "/llm_vision/plan_verified", self.final_callback, LATCHED_QOS)
         self.create_subscription(String, "/llm_vision/operator_response", self.response_callback, LATCHED_QOS)
@@ -84,6 +95,18 @@ class GatewayHarness(Node):
     def publish_context(self):
         self.scene_pub.publish(String(data=json.dumps(self.scene)))
         self.state_pub.publish(String(data=json.dumps(self.state)))
+        if self.safety_ready_plan_id:
+            self.safety_ready_pub.publish(
+                String(
+                    data=json.dumps(
+                        {
+                            "status": "READY",
+                            "plan_id": self.safety_ready_plan_id,
+                            "sample_count": 24,
+                        }
+                    )
+                )
+            )
 
     def proposal_callback(self, msg):
         self.proposals.append(json.loads(msg.data))
@@ -92,6 +115,12 @@ class GatewayHarness(Node):
         payload = json.loads(msg.data)
         if not self.prompts or payload["plan_id"] != self.prompts[-1]["plan_id"]:
             self.prompts.append(payload)
+
+    def launch_proposal_callback(self, msg):
+        self.launch_proposals.append(json.loads(msg.data))
+
+    def executor_command_callback(self, msg):
+        self.executor_commands.append(json.loads(msg.data))
 
     def final_callback(self, msg):
         self.final_plans.append(json.loads(msg.data))
@@ -119,6 +148,8 @@ def run_test():
             "environment:=sim",
             "-p",
             "fresh_data_timeout_s:=5.0",
+            "-p",
+            "visualizer:=contraction",
             "-p",
             "debug:=false",
         ]
@@ -203,6 +234,26 @@ def run_test():
             "waypoints": [second["start"], second["goal"]],
         }
         harness.candidate_pub.publish(String(data=json.dumps(passed)))
+        spin_until(executor, harness, lambda: gateway.state == "FORMING_SAFETY_TUBES")
+        assert not harness.launch_proposals, "final approval opened before safety tubes were ready"
+        harness.safety_ready_plan_id = second["plan_id"]
+        spin_until(executor, harness, lambda: bool(harness.launch_proposals))
+        assert not harness.final_plans, "verified candidate bypassed final launch approval"
+        launch_proposal = harness.launch_proposals[-1]
+        assert launch_proposal["conformal_safety_tubes_ready"] is True
+        assert launch_proposal["safety_tube_samples"] == 24
+        harness.launch_approval_pub.publish(
+            String(
+                data=json.dumps(
+                    {
+                        "decision": "APPROVE",
+                        "mission_id": launch_proposal["mission_id"],
+                        "plan_id": launch_proposal["plan_id"],
+                        "proposal_hash": launch_proposal["proposal_hash"],
+                    }
+                )
+            )
+        )
         spin_until(executor, harness, lambda: bool(harness.final_plans))
         final = harness.final_plans[-1]
         assert final["passed"] is True
@@ -233,6 +284,8 @@ def run_release_drift_rejection_test():
             "environment:=sim",
             "-p",
             "fresh_data_timeout_s:=5.0",
+            "-p",
+            "visualizer:=contraction",
             "-p",
             "debug:=false",
         ]
@@ -296,7 +349,86 @@ def run_release_drift_rejection_test():
         rclpy.shutdown()
 
 
+def run_launch_termination_test():
+    rclpy.init(
+        args=[
+            "interactive_gateway_launch_termination_test",
+            "--ros-args",
+            "-p",
+            "environment:=sim",
+            "-p",
+            "fresh_data_timeout_s:=5.0",
+            "-p",
+            "visualizer:=contraction",
+            "-p",
+            "debug:=false",
+        ]
+    )
+    gateway = InteractiveMissionGateway(intent_parser=FixedIntentParser())
+    harness = GatewayHarness()
+    executor = SingleThreadedExecutor()
+    executor.add_node(gateway)
+    executor.add_node(harness)
+    try:
+        spin_until(executor, harness, lambda: gateway.latest_scene is not None and gateway.latest_mission_state is not None)
+        harness.command_pub.publish(String(data=json.dumps({"text": "Hover near the chair"})))
+        spin_until(executor, harness, lambda: bool(harness.proposals))
+        proposal = harness.proposals[-1]
+        harness.approval_pub.publish(
+            String(
+                data=json.dumps(
+                    {
+                        "decision": "APPROVE",
+                        "mission_id": proposal["mission_id"],
+                        "proposal_hash": proposal["proposal_hash"],
+                    }
+                )
+            )
+        )
+        spin_until(executor, harness, lambda: bool(harness.prompts))
+        prompt = harness.prompts[-1]
+        passed = {
+            "plan_id": prompt["plan_id"],
+            "passed": True,
+            "failed_constraints": [],
+            "start": prompt["start"],
+            "goal": prompt["goal"],
+            "workspace": prompt["workspace"],
+            "obstacles": prompt["obstacles"],
+            "waypoints": [prompt["start"], prompt["goal"]],
+        }
+        harness.candidate_pub.publish(String(data=json.dumps(passed)))
+        spin_until(executor, harness, lambda: gateway.state == "FORMING_SAFETY_TUBES")
+        harness.safety_ready_plan_id = prompt["plan_id"]
+        spin_until(executor, harness, lambda: bool(harness.launch_proposals))
+        launch_proposal = harness.launch_proposals[-1]
+        harness.launch_approval_pub.publish(
+            String(
+                data=json.dumps(
+                    {
+                        "decision": "DENY",
+                        "mission_id": launch_proposal["mission_id"],
+                        "plan_id": launch_proposal["plan_id"],
+                        "proposal_hash": launch_proposal["proposal_hash"],
+                    }
+                )
+            )
+        )
+        spin_until(executor, harness, lambda: bool(harness.executor_commands))
+        assert harness.executor_commands[-1]["command"] == "LAND"
+        assert not harness.final_plans
+        assert gateway.state == "LAND_REQUESTED"
+    finally:
+        executor.remove_node(gateway)
+        executor.remove_node(harness)
+        gateway.destroy_node()
+        harness.destroy_node()
+        executor.shutdown()
+        rclpy.shutdown()
+
+
 if __name__ == "__main__":
     run_test()
     run_release_drift_rejection_test()
+    run_launch_termination_test()
     print("interactive gateway ROS test passed")

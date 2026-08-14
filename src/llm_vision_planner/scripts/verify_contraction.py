@@ -55,6 +55,7 @@ class ContractionVisualizer(Node):
             "/llm_vision/plan_candidate_verified",
         )
         self.declare_parameter("verified_plan_topic", "/llm_vision/plan_verified")
+        self.declare_parameter("safety_tube_ready_topic", "/llm_vision/safety_tube_ready")
         self.declare_parameter("mission_proposal_topic", "/llm_vision/mission_proposal")
         self.declare_parameter("semantic_obstacle_topic", "/llm_vision/semantic_obstacles")
         self.declare_parameter("sim_obstacle_topic", "/llm_vision/sim_obstacles")
@@ -87,6 +88,7 @@ class ContractionVisualizer(Node):
 
         self.environment = str(self.get_parameter("environment").value).strip().lower()
         self.plan = None
+        self.launched = False
         self.latest_refined = None
         self.latest_verification = None
         self.latest_scene = None
@@ -104,6 +106,12 @@ class ContractionVisualizer(Node):
         if self.show_window:
             plt.ion()
             self.figure.show()
+
+        self.safety_tube_ready_pub = self.create_publisher(
+            String,
+            str(self.get_parameter("safety_tube_ready_topic").value),
+            PLAN_QOS,
+        )
 
         self.create_subscription(
             String,
@@ -224,8 +232,14 @@ class ContractionVisualizer(Node):
         if payload is None:
             return
         self.latest_proposal = payload
+        self.plan = None
+        self.launched = False
         self.latest_refined = None
         self.latest_verification = None
+        self.reference_samples = []
+        self.reference_xy = []
+        self.pose_trail = []
+        self.reference_start_timestamp_us = None
         self.dirty = True
 
     def refined_plan_callback(self, msg):
@@ -241,6 +255,16 @@ class ContractionVisualizer(Node):
         if payload is None:
             return
         self.latest_verification = payload
+        if payload.get("passed", False):
+            if self.latch_plan(payload, launched=False):
+                ready = {
+                    "status": "READY",
+                    "plan_id": payload.get("plan_id"),
+                    "sample_count": len(self.reference_xy),
+                    "q_p": self.q_p,
+                    "q_w": self.q_w,
+                }
+                self.safety_tube_ready_pub.publish(String(data=json.dumps(ready)))
         self.dirty = True
 
     def verified_plan_callback(self, msg):
@@ -251,8 +275,22 @@ class ContractionVisualizer(Node):
         if not payload.get("passed", False):
             self.dirty = True
             return
-        if self.plan is not None:
-            return
+        self.latch_plan(payload, launched=True)
+
+    def latch_plan(self, payload, launched):
+        previous_plan_id = self.plan.get("plan_id") if self.plan else None
+        if previous_plan_id == payload.get("plan_id") and self.reference_samples:
+            self.plan = payload
+            if launched and not self.launched:
+                self.pose_trail = []
+                self.reference_start_timestamp_us = None
+                self.latest_live_position_error = None
+                self.max_live_position_error = None
+            self.launched = self.launched or launched
+            self.dirty = True
+            if launched:
+                self.get_logger().info(f"launch approved for latched plan_id={payload.get('plan_id')}")
+            return True
         try:
             trajectory = generate_trajectory(
                 payload.get("waypoints", []),
@@ -264,8 +302,9 @@ class ContractionVisualizer(Node):
             )
         except (RuntimeError, ValueError) as exc:
             self.get_logger().error(f"could not generate verified QP reference: {exc}")
-            return
+            return False
         self.plan = payload
+        self.launched = launched
         self.reference_samples = trajectory["samples"]
         self.reference_xy = [
             (float(sample["x"][0]), float(sample["x"][1])) for sample in self.reference_samples
@@ -276,8 +315,10 @@ class ContractionVisualizer(Node):
         self.max_live_position_error = None
         self.dirty = True
         self.get_logger().info(
-            f"latched passed plan_id={payload.get('plan_id')} with {len(self.reference_xy)} QP samples"
+            f"latched passed plan_id={payload.get('plan_id')} with {len(self.reference_xy)} QP samples; "
+            "conformal safety tubes formed"
         )
+        return True
 
     def pose_callback(self, msg):
         if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
@@ -286,7 +327,7 @@ class ContractionVisualizer(Node):
         if not all(math.isfinite(value) for value in point):
             return
         self.latest_pose = point
-        if self.plan is None or not self.reference_samples:
+        if self.plan is None or not self.reference_samples or not self.launched:
             self.dirty = True
             return
         if not self.pose_trail or math.dist(point, self.pose_trail[-1]) >= 0.002:
@@ -450,7 +491,9 @@ class ContractionVisualizer(Node):
 
     def phase_text(self):
         if self.plan is not None:
-            return "Verified plan - safety tubes active"
+            if self.launched:
+                return "Launch approved - safety tubes active"
+            return "Verified trajectory latched - awaiting final launch approval"
         if self.latest_refined is not None:
             if self.verification_matches(self.latest_refined):
                 if self.latest_verification.get("passed", False):

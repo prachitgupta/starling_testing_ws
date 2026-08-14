@@ -20,6 +20,7 @@ from dataset_scene_publisher import DatasetScenePublisher  # noqa: E402
 from interactive_mission_gateway import InteractiveMissionGateway, LATCHED_QOS  # noqa: E402
 from refinment import PathRefinement  # noqa: E402
 from verifier import PathVerifier  # noqa: E402
+from verify_contraction import ContractionVisualizer  # noqa: E402
 
 
 class PlannerHarness(Node):
@@ -68,6 +69,7 @@ class OperatorHarness(Node):
         super().__init__("interactive_sim_operator_harness")
         self.command_pub = self.create_publisher(String, "/llm_vision/operator_command", 10)
         self.approval_pub = self.create_publisher(String, "/llm_vision/mission_approval", 10)
+        self.launch_approval_pub = self.create_publisher(String, "/llm_vision/launch_approval", 10)
         self.create_subscription(String, "/llm_vision/mission_proposal", self.proposal_callback, LATCHED_QOS)
         self.create_subscription(String, "/llm_vision/operator_response", self.response_callback, LATCHED_QOS)
         self.create_subscription(String, "/llm_vision/prompt", self.prompt_callback, LATCHED_QOS)
@@ -78,11 +80,14 @@ class OperatorHarness(Node):
             LATCHED_QOS,
         )
         self.create_subscription(String, "/llm_vision/plan_verified", self.final_callback, LATCHED_QOS)
+        self.create_subscription(String, "/llm_vision/launch_proposal", self.launch_proposal_callback, LATCHED_QOS)
         self.command_sent = False
         self.approved_missions = set()
         self.responses = []
         self.prompts = []
         self.candidates = []
+        self.launch_proposals = []
+        self.launch_approved = False
         self.final = None
 
     def send_command(self):
@@ -120,6 +125,30 @@ class OperatorHarness(Node):
     def final_callback(self, msg):
         self.final = json.loads(msg.data)
 
+    def launch_proposal_callback(self, msg):
+        payload = json.loads(msg.data)
+        if self.launch_proposals and self.launch_proposals[-1]["plan_id"] == payload["plan_id"]:
+            return
+        self.launch_proposals.append(payload)
+
+    def approve_launch(self):
+        if self.launch_approved or not self.launch_proposals:
+            return
+        self.launch_approved = True
+        payload = self.launch_proposals[-1]
+        self.launch_approval_pub.publish(
+            String(
+                data=json.dumps(
+                    {
+                        "decision": "APPROVE",
+                        "mission_id": payload["mission_id"],
+                        "plan_id": payload["plan_id"],
+                        "proposal_hash": payload["proposal_hash"],
+                    }
+                )
+            )
+        )
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -137,6 +166,8 @@ def main():
             "-p",
             f"intent_provider:={intent_provider}",
             "-p",
+            "visualizer:=contraction",
+            "-p",
             "sample_id:=4",
             "-p",
             "publish_mission_state:=true",
@@ -146,14 +177,20 @@ def main():
             "verified_plan_topic:=/llm_vision/plan_candidate_verified",
             "-p",
             "debug:=false",
+            "-p",
+            "show_window:=false",
+            "-p",
+            "output_png:=/tmp/llm_vision_contraction_backend_sim.png",
         ]
     )
+    contraction_visualizer = ContractionVisualizer()
     nodes = [
         DatasetScenePublisher(),
         InteractiveMissionGateway(),
         PlannerHarness(),
         PathRefinement(),
         PathVerifier(),
+        contraction_visualizer,
         OperatorHarness(),
     ]
     operator = nodes[-1]
@@ -166,6 +203,8 @@ def main():
             executor.spin_once(timeout_sec=0.02)
             if not operator.command_sent and time.monotonic() - started >= 1.0:
                 operator.send_command()
+            if operator.launch_proposals and contraction_visualizer.plan is not None:
+                operator.approve_launch()
         if operator.final is None:
             raise AssertionError(f"simulation timed out; responses={operator.responses[-5:]}")
         if len(operator.prompts) != 2:
@@ -180,6 +219,10 @@ def main():
             raise AssertionError("verification feedback was not added to retry prompt")
         if operator.final["plan_id"] != operator.prompts[1]["plan_id"]:
             raise AssertionError("wrong planning attempt was released")
+        if len(operator.launch_proposals) != 1:
+            raise AssertionError(f"expected one final launch approval, got {len(operator.launch_proposals)}")
+        if not contraction_visualizer.reference_xy or not contraction_visualizer.launched:
+            raise AssertionError("conformal safety tubes were not latched before final launch")
         print(
             json.dumps(
                 {
@@ -189,6 +232,7 @@ def main():
                     "attempts": len(operator.prompts),
                     "failed_constraints_attempt_1": operator.candidates[0]["failed_constraints"],
                     "final_plan_id": operator.final["plan_id"],
+                    "final_launch_approved": True,
                     "final_metrics": operator.final["metrics"],
                 },
                 indent=2,

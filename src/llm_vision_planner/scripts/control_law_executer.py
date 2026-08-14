@@ -31,6 +31,7 @@ except ModuleNotFoundError:
 PLAN_TOPIC = "/llm_vision/plan_verified"
 MISSION_STATE_TOPIC = "/llm_vision/mission_state"
 OWNER_TOPIC = "/llm_vision/offboard_owner"
+EXECUTOR_COMMAND_TOPIC = "/llm_vision/executor_command"
 POSE_TOPIC = "/fmu/out/vehicle_odometry"
 LAND_DETECTED_TOPIC = "/fmu/out/vehicle_land_detected"
 FEEDBACK_K = np.array(
@@ -66,6 +67,7 @@ class ControlLawExecuter(Node):
         self.declare_parameter("plan_topic", PLAN_TOPIC)
         self.declare_parameter("mission_state_topic", MISSION_STATE_TOPIC)
         self.declare_parameter("offboard_owner_topic", OWNER_TOPIC)
+        self.declare_parameter("executor_command_topic", EXECUTOR_COMMAND_TOPIC)
         self.declare_parameter("pose_topic", POSE_TOPIC)
         self.declare_parameter("land_detected_topic", LAND_DETECTED_TOPIC)
         self.declare_parameter("publish_hz", 20.0)
@@ -90,6 +92,7 @@ class ControlLawExecuter(Node):
         self.plan_topic = str(self.get_parameter("plan_topic").value)
         self.mission_state_topic = str(self.get_parameter("mission_state_topic").value)
         self.owner_topic = str(self.get_parameter("offboard_owner_topic").value)
+        self.executor_command_topic = str(self.get_parameter("executor_command_topic").value)
         self.pose_topic = str(self.get_parameter("pose_topic").value)
         self.land_detected_topic = str(self.get_parameter("land_detected_topic").value)
         self.land_after_complete = bool(self.get_parameter("land_after_complete").value)
@@ -107,6 +110,12 @@ class ControlLawExecuter(Node):
             ODOM_QOS,
         )
         self.plan_sub = self.create_subscription(String, self.plan_topic, self.plan_callback, LATCHED_QOS)
+        self.executor_command_sub = self.create_subscription(
+            String,
+            self.executor_command_topic,
+            self.executor_command_callback,
+            10,
+        )
 
         self.position = None
         self.velocity = None
@@ -146,6 +155,19 @@ class ControlLawExecuter(Node):
 
     def land_callback(self, msg):
         self.landed = bool(msg.landed)
+
+    def executor_command_callback(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().error(f"failed to parse executor command: {exc}")
+            return
+        if str(payload.get("command", "")).strip().upper() != "LAND":
+            self.get_logger().warning(f"ignoring unsupported executor command: {payload.get('command')}")
+            return
+        if self.state in ("LAND", "COMPLETE", "FAILED"):
+            return
+        self.begin_land(str(payload.get("reason") or "operator requested landing"))
 
     def plan_callback(self, msg):
         if self.state != "HOLDING_FOR_PLAN":

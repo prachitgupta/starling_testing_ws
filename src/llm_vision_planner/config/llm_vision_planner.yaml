@@ -5,8 +5,8 @@ semantic_obstacle_perception:
     point_cloud_topic: /tof_pc
     pose_topic: /fmu/out/vehicle_odometry
     obstacle_topic: /llm_vision/semantic_obstacles
-    goal_x: 2.5
-    goal_y: 0.0
+    goal_x: 0.0
+    goal_y: 1.5
     goal_z: -0.5
     # Accepted hires_small_grey calibration for the paired 1024x768 IMX412
     # small stream (0.703523 px reprojection error, plumb_bob model).
@@ -65,8 +65,8 @@ obstacle_perception:
     point_cloud_frame: auto
     pose_topic: /fmu/out/vehicle_odometry
     obstacle_topic: /llm_vision/obstacles
-    goal_x: 2.5
-    goal_y: 0.0
+    goal_x: 0.0
+    goal_y: 1.5
     goal_z: -0.5
     min_range_m: 0.20
     max_range_m: 4.5
@@ -90,8 +90,8 @@ prompt_generator:
     workspace_y_min: 0.0
     workspace_y_max: 4.0
     fixed_z: -0.5
-    goal_x: 2.5
-    goal_y: 0.0
+    goal_x: 0.0
+    goal_y: 1.5
     goal_z: -0.5
     clearance_m: 0.40
     goal_clearance_m: 0.40
@@ -119,10 +119,15 @@ interactive_mission_gateway:
     openai_intent_model: gpt-5.4-nano
     planner_llm_provider: llama
     planner_model_name: rrt_planner
+    visualizer: standard
     operator_command_topic: /llm_vision/operator_command
     approval_topic: /llm_vision/mission_approval
+    launch_approval_topic: /llm_vision/launch_approval
     operator_response_topic: /llm_vision/operator_response
     mission_proposal_topic: /llm_vision/mission_proposal
+    launch_proposal_topic: /llm_vision/launch_proposal
+    executor_command_topic: /llm_vision/executor_command
+    safety_tube_ready_topic: /llm_vision/safety_tube_ready
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
     sim_obstacle_topic: /llm_vision/sim_obstacles
     mission_state_topic: /llm_vision/mission_state
@@ -156,8 +161,10 @@ interactive_web_ui:
     port: 8080
     operator_command_topic: /llm_vision/operator_command
     approval_topic: /llm_vision/mission_approval
+    launch_approval_topic: /llm_vision/launch_approval
     operator_response_topic: /llm_vision/operator_response
     mission_proposal_topic: /llm_vision/mission_proposal
+    launch_proposal_topic: /llm_vision/launch_proposal
     contraction_plot_path: src/llm_vision_planner/plots/contraction/live_contraction.png
 
 dataset_scene_publisher:
@@ -241,6 +248,7 @@ verify_contraction:
     refined_plan_topic: /llm_vision/plan_refined
     candidate_verification_topic: /llm_vision/plan_candidate_verified
     verified_plan_topic: /llm_vision/plan_verified
+    safety_tube_ready_topic: /llm_vision/safety_tube_ready
     mission_proposal_topic: /llm_vision/mission_proposal
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
     sim_obstacle_topic: /llm_vision/sim_obstacles
@@ -267,6 +275,7 @@ control_law_executer:
     pose_topic: /fmu/out/vehicle_odometry
     land_detected_topic: /fmu/out/vehicle_land_detected
     offboard_owner_topic: /llm_vision/offboard_owner
+    executor_command_topic: /llm_vision/executor_command
     publish_hz: 20.0
     pose_timeout_s: 1.0
     prime_s: 1.5

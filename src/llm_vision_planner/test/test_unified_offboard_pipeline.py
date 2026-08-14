@@ -46,6 +46,7 @@ class Px4Harness(Node):
         self.odom_pub = self.create_publisher(VehicleOdometry, "/fmu/out/vehicle_odometry", ODOM_QOS)
         self.land_pub = self.create_publisher(VehicleLandDetected, "/fmu/out/vehicle_land_detected", ODOM_QOS)
         self.plan_pub = self.create_publisher(String, "/llm_vision/plan_verified", LATCHED_QOS)
+        self.executor_command_pub = self.create_publisher(String, "/llm_vision/executor_command", 10)
         self.commands = []
         self.setpoints = []
         self.heartbeats = []
@@ -84,6 +85,11 @@ class Px4Harness(Node):
             }
         )
         self.plan_pub.publish(msg)
+
+    def request_land(self):
+        self.executor_command_pub.publish(
+            String(data=json.dumps({"command": "LAND", "reason": "operator denied final launch"}))
+        )
 
     def command_callback(self, msg):
         self.commands.append((time.monotonic(), int(msg.command), float(msg.param1), float(msg.param2)))
@@ -347,9 +353,34 @@ def test_stale_odometry_lands():
         destroy_nodes(executor, node, harness)
 
 
+def test_operator_termination_lands_in_offboard():
+    executor, node, harness = make_nodes("operator_termination")
+    try:
+        harness.position = [0.20, 0.30, 0.0]
+        spin_until(executor, node, harness, lambda: node.state == "ARM_TAKEOFF", 1.0)
+        harness.landed = False
+        harness.position = [0.20, 0.30, -0.5]
+        spin_until(executor, node, harness, lambda: node.state == "HOLDING_FOR_PLAN", 1.0)
+        setpoint_index = len(harness.setpoints)
+        harness.request_land()
+        spin_until(executor, node, harness, lambda: node.state == "LAND", 0.5)
+        spin_until(executor, node, harness, lambda: len(harness.setpoints) >= setpoint_index + 3, 0.3)
+        assert all(
+            math.isclose(actual, expected, abs_tol=1e-6)
+            for actual, expected in zip(node.landing_target, [0.20, 0.30])
+        )
+        assert harness.offboard_modes[-1][1:] == (True, True)
+        assert math.isnan(harness.setpoints[-1][1][2])
+        assert harness.setpoints[-1][2][2] > 0.0
+        assert not any(item[1] == VehicleCommand.VEHICLE_CMD_NAV_LAND for item in harness.commands)
+    finally:
+        destroy_nodes(executor, node, harness)
+
+
 if __name__ == "__main__":
     test_complete_mission()
     test_invalid_plans_land_without_qp()
     test_successful_mission_holds_when_landing_disabled()
     test_stale_odometry_lands()
+    test_operator_termination_lands_in_offboard()
     print("unified PX4 offboard ROS harness passed")

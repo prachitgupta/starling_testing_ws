@@ -20,8 +20,10 @@ class WebUiBridge(Node):
         self.declare_parameter("port", 8080)
         self.declare_parameter("operator_command_topic", "/llm_vision/operator_command")
         self.declare_parameter("approval_topic", "/llm_vision/mission_approval")
+        self.declare_parameter("launch_approval_topic", "/llm_vision/launch_approval")
         self.declare_parameter("operator_response_topic", "/llm_vision/operator_response")
         self.declare_parameter("mission_proposal_topic", "/llm_vision/mission_proposal")
+        self.declare_parameter("launch_proposal_topic", "/llm_vision/launch_proposal")
         self.declare_parameter("visualizer", "standard")
         self.declare_parameter(
             "contraction_plot_path",
@@ -38,6 +40,11 @@ class WebUiBridge(Node):
             str(self.get_parameter("approval_topic").value),
             10,
         )
+        self.launch_approval_pub = self.create_publisher(
+            String,
+            str(self.get_parameter("launch_approval_topic").value),
+            10,
+        )
         self.create_subscription(
             String,
             str(self.get_parameter("operator_response_topic").value),
@@ -50,9 +57,16 @@ class WebUiBridge(Node):
             self.proposal_callback,
             10,
         )
+        self.create_subscription(
+            String,
+            str(self.get_parameter("launch_proposal_topic").value),
+            self.launch_proposal_callback,
+            10,
+        )
         self.lock = threading.Lock()
         self.latest_response = {}
         self.latest_proposal = {}
+        self.latest_launch_proposal = {}
         self.contraction_plot_enabled = (
             str(self.get_parameter("visualizer").value).strip().lower() == "contraction"
         )
@@ -92,11 +106,20 @@ class WebUiBridge(Node):
         with self.lock:
             self.latest_proposal = payload
 
+    def launch_proposal_callback(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            payload = {}
+        with self.lock:
+            self.latest_launch_proposal = payload
+
     def state_payload(self):
         with self.lock:
             return {
                 "response": self.latest_response,
                 "proposal": self.latest_proposal,
+                "launch_proposal": self.latest_launch_proposal,
                 "timestamp": time.time(),
             }
 
@@ -112,6 +135,16 @@ class WebUiBridge(Node):
             "timestamp": time.time(),
         }
         self.approval_pub.publish(String(data=json.dumps(payload)))
+
+    def publish_launch_decision(self, decision, mission_id, plan_id, proposal_hash):
+        payload = {
+            "decision": str(decision).upper(),
+            "mission_id": str(mission_id),
+            "plan_id": str(plan_id),
+            "proposal_hash": str(proposal_hash),
+            "timestamp": time.time(),
+        }
+        self.launch_approval_pub.publish(String(data=json.dumps(payload)))
 
     def read_contraction_plot(self):
         if not self.contraction_plot_enabled:
@@ -161,6 +194,15 @@ def handler_for(bridge):
                 bridge.publish_decision(
                     payload.get("decision", ""),
                     payload.get("mission_id", ""),
+                    payload.get("proposal_hash", ""),
+                )
+                self.send_json({"ok": True})
+                return
+            if self.path == "/api/launch-decision":
+                bridge.publish_launch_decision(
+                    payload.get("decision", ""),
+                    payload.get("mission_id", ""),
+                    payload.get("plan_id", ""),
                     payload.get("proposal_hash", ""),
                 )
                 self.send_json({"ok": True})

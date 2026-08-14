@@ -36,10 +36,10 @@ semantic_obstacle_perception:
     depth_cam_yaw_deg: 180.0
     # Raw /tof_pc is sensor-relative even when its bridge header says "world".
     point_cloud_frame: tof_optical
-    min_confidence: 0.60
-    detection_timeout_s: 1.0
-    detector_timeout_s: 1.0
-    point_cloud_timeout_s: 1.0
+    min_confidence: 0.70
+    detection_timeout_s: 2.0
+    detector_timeout_s: 2.0
+    point_cloud_timeout_s: 1.5
     pose_timeout_s: 1.0
     # Live source-stamp check observed 0.042-0.063 s RGB/ToF deltas at 10 Hz ToF.
     max_sync_slop_s: 0.35
@@ -50,10 +50,10 @@ semantic_obstacle_perception:
     min_valid_point_cloud_points: 100
     min_frustum_points: 10
     # Prefer the box center so a foreground edge does not steal a rear object's range.
-    bbox_inner_margin_fraction: 0.25
+    bbox_inner_margin_fraction: 0.30
     depth_near_percentile: 25.0
     depth_cluster_tolerance_m: 0.35
-    obstacle_hold_s: 3.0
+    obstacle_hold_s: 5.0
     obstacle_match_distance_m: 0.75
     publish_hz: 2.0
     debug: False
@@ -102,9 +102,9 @@ prompt_generator:
     mission_state_topic: /llm_vision/mission_state
     required_mission_state: HOLDING_FOR_PLAN
     require_mission_state: True
-    snapshot_after_hover_s: 1.0
+    snapshot_after_hover_s: 2.5
     prefer_nonempty_obstacle_snapshot: true
-    nonempty_obstacle_wait_s: 3.0
+    nonempty_obstacle_wait_s: 5.0
     require_healthy_perception: true
     start_drift_replan_m: 0.25
     feedback_enabled: True
@@ -151,8 +151,8 @@ interactive_mission_gateway:
     fresh_data_timeout_s: 2.0
     approval_timeout_s: 30.0
     # Obstacle envelope per x-y side = position tolerance + 0.5 * size tolerance.
-    scene_position_tolerance_m: 0.15
-    scene_size_tolerance_m: 0.20
+    scene_position_tolerance_m: 0.20
+    scene_size_tolerance_m: 0.30
     max_start_drift_m: 0.25
     # Keep margin below the executor's 0.10 m verified-plan start limit.
     max_release_start_drift_m: 0.08
@@ -170,6 +170,7 @@ interactive_web_ui:
     mission_proposal_topic: /llm_vision/mission_proposal
     launch_proposal_topic: /llm_vision/launch_proposal
     visualizer: contraction
+    transcription_model: gpt-4o-mini-transcribe
     contraction_plot_path: src/llm_vision_planner/plots/contraction/live_contraction.png
 
 dataset_scene_publisher:

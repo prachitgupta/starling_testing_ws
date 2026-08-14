@@ -40,4 +40,12 @@ install(DIRECTORY
   PATTERN "*.pyc" EXCLUDE
 )
 
+if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(
+    NAME interactive_web_ui
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_interactive_web_ui.py
+  )
+endif()
+
 ament_package()

@@ -27,6 +27,7 @@
     <form id="command-form">
       <input id="command" placeholder="Hover near the chair without touching it" autocomplete="off">
       <button id="speech" type="button">Push to talk</button>
+      <input id="speech-file" type="file" accept="audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav" capture hidden>
       <button id="send" type="submit">Send</button>
     </form>
     <p id="speech-status">Speech fills the command box; review the transcript before sending.</p>
@@ -60,6 +61,7 @@
     let plotRequestRunning = false;
     const commandInput = document.getElementById('command');
     const speechButton = document.getElementById('speech');
+    const speechFileInput = document.getElementById('speech-file');
     const speechStatus = document.getElementById('speech-status');
     const sendButton = document.getElementById('send');
     async function post(path, data) {
@@ -72,47 +74,95 @@
       await post('/api/command', {text: input.value});
       input.value = '';
     });
-    const BrowserSpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!BrowserSpeechRecognition) {
+    let recorder = null;
+    let recorderStream = null;
+    let recordingTimeout = null;
+    const audioTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+    const audioType = window.MediaRecorder
+      ? audioTypes.find(type => MediaRecorder.isTypeSupported(type)) || ''
+      : '';
+    async function transcribeAudio(audio, recordedType) {
+      if (!audio.size) {
+        speechStatus.textContent = 'No audio was recorded. Check the microphone and try again.';
+        return;
+      }
       speechButton.disabled = true;
-      speechStatus.textContent = 'Speech recognition is unavailable in this browser; type the command instead.';
-    } else {
-      const recognition = new BrowserSpeechRecognition();
-      let listening = false;
-      recognition.continuous = false;
-      recognition.interimResults = false;
-      recognition.maxAlternatives = 1;
-      recognition.lang = navigator.language || 'en-US';
-      recognition.onstart = () => {
-        listening = true;
-        speechButton.classList.add('listening');
-        speechButton.textContent = 'Stop listening';
-        sendButton.disabled = true;
-        speechStatus.textContent = `Listening in ${recognition.lang}. Speak one command or question.`;
-      };
-      recognition.onresult = event => {
-        commandInput.value = event.results[event.resultIndex][0].transcript.trim();
+      speechStatus.textContent = 'Transcribing…';
+      try {
+        const response = await fetch('/api/transcribe', {
+          method: 'POST',
+          headers: {
+            'Content-Type': recordedType,
+            'X-Speech-Language': navigator.language || 'en-US'
+          },
+          body: audio
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'transcription request failed');
+        commandInput.value = result.text.trim();
         commandInput.focus();
         speechStatus.textContent = 'Transcript ready. Review it, then press Send.';
-      };
-      recognition.onerror = event => {
-        speechStatus.textContent = `Speech recognition error: ${event.error}. You can still type the command.`;
-      };
-      recognition.onend = () => {
-        listening = false;
-        speechButton.classList.remove('listening');
-        speechButton.textContent = 'Push to talk';
-        sendButton.disabled = false;
-      };
-      speechButton.onclick = () => {
-        if (listening) {
-          recognition.stop();
+      } catch (error) {
+        speechStatus.textContent = `Speech transcription failed: ${error.message}. You can still type the command.`;
+      } finally {
+        speechButton.disabled = false;
+      }
+    }
+    speechFileInput.onchange = async () => {
+      const audio = speechFileInput.files[0];
+      if (audio) await transcribeAudio(audio, audio.type);
+      speechFileInput.value = '';
+    };
+    function finishRecording() {
+      if (recordingTimeout) clearTimeout(recordingTimeout);
+      recordingTimeout = null;
+      if (recorderStream) recorderStream.getTracks().forEach(track => track.stop());
+      recorderStream = null;
+      speechButton.classList.remove('listening');
+      speechButton.textContent = 'Push to talk';
+      sendButton.disabled = false;
+    }
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      speechButton.textContent = 'Record command';
+      speechButton.onclick = () => speechFileInput.click();
+      speechStatus.textContent = window.isSecureContext
+        ? 'Use your device recorder to capture one command.'
+        : 'Live microphone access requires HTTPS; use your phone recorder to capture one command.';
+    } else {
+      speechButton.onclick = async () => {
+        if (recorder?.state === 'recording') {
+          speechStatus.textContent = 'Transcribing…';
+          recorder.stop();
           return;
         }
         try {
-          recognition.start();
+          recorderStream = await navigator.mediaDevices.getUserMedia({audio: true});
+          const chunks = [];
+          recorder = new MediaRecorder(recorderStream, audioType ? {mimeType: audioType} : undefined);
+          recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+          recorder.onerror = event => {
+            speechStatus.textContent = `Microphone recording failed: ${event.error?.message || 'unknown error'}`;
+            finishRecording();
+          };
+          recorder.onstop = async () => {
+            const recordedType = recorder.mimeType || audioType;
+            const audio = new Blob(chunks, {type: recordedType});
+            finishRecording();
+            await transcribeAudio(audio, recordedType);
+          };
+          recorder.start();
+          speechButton.classList.add('listening');
+          speechButton.textContent = 'Stop listening';
+          sendButton.disabled = true;
+          speechStatus.textContent = `Listening in ${navigator.language || 'en-US'}. Speak one command or question.`;
+          recordingTimeout = setTimeout(() => {
+            if (recorder?.state === 'recording') recorder.stop();
+          }, 20000);
         } catch (error) {
-          speechStatus.textContent = `Speech recognition could not start: ${error.message}`;
+          finishRecording();
+          speechStatus.textContent = error.name === 'NotAllowedError'
+            ? 'Microphone permission was denied. Allow microphone access in the address bar and try again.'
+            : `Microphone could not start: ${error.message}`;
         }
       };
     }

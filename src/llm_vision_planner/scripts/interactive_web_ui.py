@@ -2,6 +2,8 @@
 """Minimal local web UI bridging operator actions to ROS 2 topics."""
 
 import json
+import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,6 +13,28 @@ from urllib.parse import urlsplit
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
+
+
+MAX_AUDIO_BYTES = 10 * 1024 * 1024
+AUDIO_EXTENSIONS = {
+    "audio/flac": "flac",
+    "audio/m4a": "m4a",
+    "audio/mp4": "mp4",
+    "audio/mpeg": "mp3",
+    "audio/ogg": "ogg",
+    "audio/wav": "wav",
+    "audio/webm": "webm",
+    "audio/x-m4a": "m4a",
+    "audio/x-wav": "wav",
+}
+
+
+def audio_file_metadata(content_type):
+    mime_type = str(content_type).split(";", 1)[0].strip().lower()
+    extension = AUDIO_EXTENSIONS.get(mime_type)
+    if extension is None:
+        raise ValueError(f"unsupported audio type: {mime_type or 'missing'}")
+    return mime_type, extension
 
 
 class WebUiBridge(Node):
@@ -25,6 +49,7 @@ class WebUiBridge(Node):
         self.declare_parameter("mission_proposal_topic", "/llm_vision/mission_proposal")
         self.declare_parameter("launch_proposal_topic", "/llm_vision/launch_proposal")
         self.declare_parameter("visualizer", "contraction")
+        self.declare_parameter("transcription_model", "gpt-4o-mini-transcribe")
         self.declare_parameter(
             "contraction_plot_path",
             "src/llm_vision_planner/plots/contraction/live_contraction.png",
@@ -67,6 +92,8 @@ class WebUiBridge(Node):
         self.latest_response = {}
         self.latest_proposal = {}
         self.latest_launch_proposal = {}
+        self.transcription_model = str(self.get_parameter("transcription_model").value)
+        self.transcription_client = None
         self.contraction_plot_enabled = (
             str(self.get_parameter("visualizer").value).strip().lower() == "contraction"
         )
@@ -146,6 +173,28 @@ class WebUiBridge(Node):
         }
         self.launch_approval_pub.publish(String(data=json.dumps(payload)))
 
+    def transcribe_audio(self, payload, content_type, language=""):
+        if not os.getenv("OPENAI_API_KEY"):
+            raise RuntimeError("OPENAI_API_KEY is not set in the web UI process")
+        mime_type, extension = audio_file_metadata(content_type)
+        if self.transcription_client is None:
+            from openai import OpenAI
+
+            self.transcription_client = OpenAI()
+        normalized_language = str(language).split("-", 1)[0].strip().lower()
+        options = {
+            "file": (f"operator-command.{extension}", payload, mime_type),
+            "model": self.transcription_model,
+            "response_format": "json",
+        }
+        if re.fullmatch(r"[a-z]{2}", normalized_language):
+            options["language"] = normalized_language
+        response = self.transcription_client.audio.transcriptions.create(**options)
+        text = str(response.text).strip()
+        if not text:
+            raise RuntimeError("no speech was detected")
+        return text
+
     def read_contraction_plot(self):
         if not self.contraction_plot_enabled:
             return None
@@ -176,6 +225,33 @@ def handler_for(bridge):
             self.send_error(404)
 
         def do_POST(self):
+            if self.path == "/api/transcribe":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    self.send_json({"ok": False, "error": "invalid content length"}, status=400)
+                    return
+                if length <= 0:
+                    self.send_json({"ok": False, "error": "audio recording is empty"}, status=400)
+                    return
+                if length > MAX_AUDIO_BYTES:
+                    self.send_json({"ok": False, "error": "audio recording is too large"}, status=413)
+                    return
+                try:
+                    text = bridge.transcribe_audio(
+                        self.rfile.read(length),
+                        self.headers.get("Content-Type", ""),
+                        self.headers.get("X-Speech-Language", ""),
+                    )
+                except ValueError as error:
+                    self.send_json({"ok": False, "error": str(error)}, status=415)
+                    return
+                except Exception as error:
+                    bridge.get_logger().warning(f"speech transcription failed: {error}")
+                    self.send_json({"ok": False, "error": str(error)}, status=503)
+                    return
+                self.send_json({"ok": True, "text": text})
+                return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length) or b"{}")

@@ -31,20 +31,9 @@ nc -vz "$VICON_COMPUTER_IP" 801
 TCP port `801` must be reachable for the Vicon DataStream SDK. Allow Vicon
 Tracker/DataStream through the Windows firewall if this check fails.
 
-### Optional: isolate ROS 2 while using the campus VPN
+### Required: bind ROS 2 DDS to the flight Wi-Fi and domain 42
 
-Use this section only while campus Ethernet reaches the GPU through a VPN. ROS
-2 remains on the existing Wi-Fi path between the laptop and VOXL; Vicon
-DataStream also remains on Wi-Fi. The GPU does not need this DDS profile unless
-it runs ROS 2 directly.
-
-The profile is opt-in and terminal-local. It allows Fast DDS UDP only on
-loopback and the selected Wi-Fi IPv4 address, excluding campus Ethernet and VPN
-interfaces. It does not modify NetworkManager, routes, `.bashrc`, or systemd.
-
-#### One-time setup
-
-On the laptop, build the package and copy the helper to the VOXL:
+#### Run once on the ground station
 
 ```bash
 cd ~/Desktop/starling_testing_ws
@@ -60,131 +49,64 @@ scp src/llm_vision_planner/config/fastdds_wifi_only.xml.in \
   root@"$Starling2":/data/llm_vision_planner/config/
 ```
 
-#### Enable on both sides
+#### Run once on the VOXL
 
-In every new laptop terminal that starts MAVROS, the Vicon bridge, the planner,
-or ROS CLI commands:
+```bash
+VOXL_WIFI_IPV4="$(ip -4 -o address show dev wlan0 scope global | \
+  awk 'NR == 1 {split($4, address, "/"); print address[1]}')"
+sed "s/@ROS_WIFI_IPV4@/${VOXL_WIFI_IPV4}/g" \
+  /data/llm_vision_planner/config/fastdds_wifi_only.xml.in \
+  >/data/llm_vision_planner/config/fastdds_wifi_only.xml
+chmod 600 /data/llm_vision_planner/config/fastdds_wifi_only.xml
+
+install -d /etc/systemd/system/voxl-microdds-agent.service.d
+printf '%s\n' \
+  '[Service]' \
+  'Environment=ROS_DOMAIN_ID=42' \
+  'Environment=FASTRTPS_DEFAULT_PROFILES_FILE=/data/llm_vision_planner/config/fastdds_wifi_only.xml' \
+  'Environment=FASTDDS_DEFAULT_PROFILES_FILE=/data/llm_vision_planner/config/fastdds_wifi_only.xml' \
+  >/etc/systemd/system/voxl-microdds-agent.service.d/10-flight-dds.conf
+
+systemctl daemon-reload
+systemctl restart voxl-microdds-agent
+systemctl show voxl-microdds-agent --property=LoadState,ActiveState,Environment
+```
+
+#### Run in every ground-station ROS 2 terminal
 
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable wlp6s0 0
+  enable wlp6s0 42
 ```
 
-In every VOXL shell that manually starts a ROS 2 process:
+#### Run in every VOXL ROS 2 terminal
 
 ```bash
 source /opt/ros/foxy/setup.bash
-source /data/llm_vision_planner/scripts/ros_wifi_dds.sh enable wlan0 0
+source /opt/ros/foxy/mpa_to_ros2/install/setup.bash
+source /data/llm_vision_planner/scripts/ros_wifi_dds.sh enable wlan0 42
 ```
 
-Both sides must report `rmw_fastrtps_cpp` and domain `0`. Stop and restart any
-ROS process that was already running before `enable`. Re-run `enable` and
-restart the processes if Wi-Fi reconnects with a different IPv4 address.
-
-This shell command does not alter an already-running VOXL systemd service. Check
-the installed service names and environments before changing a vendor service:
+#### Verify on the ground station
 
 ```bash
-systemctl show voxl-microdds-agent voxl-mpa-to-ros2 \
-  --property=LoadState,ActiveState,Environment
-```
-
-`LoadState=not-found` means that service name is not installed. Do not create a
-systemd override until the connected vehicle's actual service has been
-identified.
-
-#### Connect the VPN now
-
-On the laptop, connect Cisco Secure Client using `1 Split Tunnel`
-(`OpenConnect1 (Split)` on Linux). Do not use `2 Tunnel All`.
-
-#### Verify routes after connecting the VPN
-
-On the laptop, replace the example with the GPU server's campus IPv4 address:
-
-```bash
-export GPU_IP="10.0.0.10"
-
-source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  status
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" status
 printenv RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
-  FASTRTPS_DEFAULT_PROFILES_FILE
-
-ip route get "$Starling2"          # must show wlp6s0
-ip route get "$VICON_COMPUTER_IP" # must show wlp6s0
-ip route get "$GPU_IP"            # must show the VPN interface
+  FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+ip route get "$Starling2"
+ip route get "$VICON_COMPUTER_IP"
+ip route get 172.22.224.93
 ```
 
-Confirm that Wi-Fi is not shared with or bridged to campus Ethernet:
-
-```bash
-nmcli -t -f NAME,TYPE,DEVICE connection show --active
-WIFI_CONNECTION_NAME="$(nmcli -g GENERAL.CONNECTION device show wlp6s0)"
-nmcli -g ipv4.method,ipv6.method connection show "$WIFI_CONNECTION_NAME"
-ip -d link show type bridge
-bridge link
-```
-
-Neither Wi-Fi method may be `shared`, and Wi-Fi and campus Ethernet must not be
-members of the same bridge. If the VPN sends either Starling or Vicon traffic
-through its tunnel, stop and have the campus VPN route narrowed before flight.
-
-On the VOXL:
+#### Verify in a VOXL ROS 2 terminal
 
 ```bash
 source /data/llm_vision_planner/scripts/ros_wifi_dds.sh status
 printenv RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
-  FASTRTPS_DEFAULT_PROFILES_FILE
+  FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
 ip -4 -br address show wlan0
-```
-
-With the VPN connected, repeat the normal topic checks on the laptop:
-
-```bash
-ros2 topic info -v /fmu/out/vehicle_odometry
-ros2 topic hz /fmu/out/vehicle_odometry
-ros2 topic hz /mavros/vision_pose/pose --window 500
-```
-
-Stop each `ros2 topic hz` command with `Ctrl-C` after observing a stable rate.
-The Vicon maximum interval must remain below `0.2 s`, as required later in this
-procedure. Do not fly if topics disappear, rates fall, or either local route
-moves to the VPN.
-
-#### Undo when the VPN is no longer used
-
-Stop ROS processes started under the profile. In every affected laptop shell:
-
-```bash
-source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  disable
-```
-
-In every affected VOXL shell:
-
-```bash
-source /data/llm_vision_planner/scripts/ros_wifi_dds.sh disable
-```
-
-`disable` restores the environment that existed before `enable` and deletes
-only that shell's generated runtime XML. Closing the terminal has the same
-environment-reset effect. The copied VOXL helper is inert when it is not
-sourced; optionally remove only those two copied files:
-
-```bash
-ssh root@"$Starling2" \
-  'rm -f /data/llm_vision_planner/scripts/ros_wifi_dds.sh /data/llm_vision_planner/config/fastdds_wifi_only.xml.in'
-```
-
-After campus registration, disconnect the VPN and verify that the GPU uses
-campus Ethernet while the local paths remain on Wi-Fi:
-
-```bash
-ip route get "$Starling2"          # wlp6s0
-ip route get "$VICON_COMPUTER_IP" # wlp6s0
-ip route get "$GPU_IP"            # campus Ethernet interface
 ```
 
 ## 2. Configure QGroundControl UDP
@@ -270,6 +192,9 @@ On the ground station:
 
 ```bash
 source /opt/ros/humble/setup.bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 
 ros2 launch mavros px4.launch \
   fcu_url:="udp://0.0.0.0:14550@${Starling2}:14550" \
@@ -280,6 +205,9 @@ In another terminal:
 
 ```bash
 source /opt/ros/humble/setup.bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 ros2 topic echo /mavros/state
 ```
 
@@ -290,6 +218,20 @@ connected: true
 ```
 
 QGroundControl should now connect through its UDP `14551` link.
+
+In **QGroundControl > Analyze Tools > MAVLink Console**:
+
+```bash
+param set UXRCE_DDS_DOM_ID 42
+param save
+reboot
+```
+
+After PX4 reconnects, verify in the MAVLink Console:
+
+```bash
+param show UXRCE_DDS_DOM_ID
+```
 
 ## 5. Start the Vicon bridge
 
@@ -348,7 +290,10 @@ Source it in every Vicon bridge terminal:
 
 ```bash
 source /opt/ros/humble/setup.bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
 source ~/colcon_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 ```
 
 For a Vicon rate of 50 Hz:
@@ -419,6 +364,7 @@ On the VOXL:
 ```bash
 source /opt/ros/foxy/setup.bash
 source /opt/ros/foxy/mpa_to_ros2/install/setup.bash
+source /data/llm_vision_planner/scripts/ros_wifi_dds.sh enable wlan0 42
 ros2 pkg executables voxl_mpa_to_ros2
 ```
 
@@ -453,6 +399,8 @@ On the ground station, verify both MPA and PX4 DDS topics:
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 
 ros2 topic info -v /tflite_data
 ros2 topic info -v /tflite
@@ -517,6 +465,7 @@ EKF2_EV_NOISE_MD = 1
 EKF2_EVP_NOISE   = 0.10 m
 EKF2_EVA_NOISE   = 0.05 rad
 EKF2_EV_DELAY    = 0 ms initially
+UXRCE_DDS_DOM_ID = 42
 ```
 
 On PX4 v1.14, `EKF2_MAG_TYPE=5` disables magnetometer fusion. With the yaw bit
@@ -636,6 +585,8 @@ Use an empty obstacle snapshot:
 
 ```bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
   "{data: '{\"obstacles\":[],\"timestamp\":0.0}'}"
 ```
@@ -653,6 +604,8 @@ planner, verifier, visualizer, and control executor:
 ```bash
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -703,6 +656,8 @@ current hover position at approval and checked again before plan release.
 ```bash
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -725,6 +680,8 @@ launch interactive mode without the recorded dataset publisher:
 ```bash
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -742,6 +699,8 @@ In another terminal, continuously publish a fresh dummy COCO-object scene:
 
 ```bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 
 ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
   "{data: '{\"healthy\":true,\"frame\":\"local_ned\",\"obstacles\":[{\"id\":1,\"label\":\"chair\",\"shape\":\"box\",\"min_corner\":[2.20,2.00,-0.75],\"max_corner\":[2.70,2.50,0.25],\"confidence\":1.0},{\"id\":2,\"label\":\"bottle\",\"shape\":\"box\",\"min_corner\":[1.00,2.80,-0.75],\"max_corner\":[1.30,3.10,0.25],\"confidence\":1.0}],\"timestamp\":0.0}'}"
@@ -862,6 +821,8 @@ Terminal 1:
 
 ```bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 ros2 run llm_vision_planner perception_detection.py --ros-args \
   --params-file ~/Desktop/starling_testing_ws/src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
@@ -870,6 +831,8 @@ Terminal 2:
 
 ```bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 ros2 topic echo --full-length /llm_vision/semantic_obstacles
 ```
 
@@ -877,6 +840,8 @@ ros2 topic echo --full-length /llm_vision/semantic_obstacles
 
 ```bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 ros2 run llm_vision_planner debug_perception.py
 ```
 
@@ -898,6 +863,8 @@ to fly.
 ```bash
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable wlp6s0 42
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \

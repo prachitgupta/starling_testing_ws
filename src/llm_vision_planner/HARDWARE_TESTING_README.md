@@ -624,7 +624,7 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   goal_y:=1.5 \
   environment:=sim \
   llm_provider:=llama \
-  visualizer:=standard \
+  visualizer:=contraction \
   show_rrt:=true
 ```
 

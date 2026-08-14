@@ -43,7 +43,7 @@ def generate_launch_description():
     )
     visualizer_arg = DeclareLaunchArgument(
         "visualizer",
-        default_value="standard",
+        default_value="contraction",
         description="Live plot: standard or contraction",
     )
     land_after_complete_arg = DeclareLaunchArgument(

@@ -24,7 +24,7 @@ class WebUiBridge(Node):
         self.declare_parameter("operator_response_topic", "/llm_vision/operator_response")
         self.declare_parameter("mission_proposal_topic", "/llm_vision/mission_proposal")
         self.declare_parameter("launch_proposal_topic", "/llm_vision/launch_proposal")
-        self.declare_parameter("visualizer", "standard")
+        self.declare_parameter("visualizer", "contraction")
         self.declare_parameter(
             "contraction_plot_path",
             "src/llm_vision_planner/plots/contraction/live_contraction.png",

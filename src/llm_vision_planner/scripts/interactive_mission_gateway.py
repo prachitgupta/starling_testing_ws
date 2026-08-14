@@ -366,7 +366,7 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("openai_intent_model", "gpt-5.4-nano")
         self.declare_parameter("planner_llm_provider", "llama")
         self.declare_parameter("planner_model_name", "rrt_planner")
-        self.declare_parameter("visualizer", "standard")
+        self.declare_parameter("visualizer", "contraction")
         self.declare_parameter("operator_command_topic", "/llm_vision/operator_command")
         self.declare_parameter("approval_topic", "/llm_vision/mission_approval")
         self.declare_parameter("launch_approval_topic", "/llm_vision/launch_approval")

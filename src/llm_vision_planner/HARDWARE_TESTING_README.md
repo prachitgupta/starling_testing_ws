@@ -145,7 +145,7 @@ ros2 daemon start
 In **QGroundControl > Analyze Tools > MAVLink Console**:
 
 ```bash
-param set UXRCE_DDS_DOM_ID 0
+param set XRCE_DDS_DOM_ID 0
 param save
 reboot
 ```
@@ -290,7 +290,7 @@ QGroundControl should now connect through its UDP `14551` link.
 For Option A, run in **QGroundControl > Analyze Tools > MAVLink Console**:
 
 ```bash
-param set UXRCE_DDS_DOM_ID 42
+param set XRCE_DDS_DOM_ID 42
 param save
 reboot
 ```
@@ -298,7 +298,7 @@ reboot
 For Option B, run in the MAVLink Console:
 
 ```bash
-param set UXRCE_DDS_DOM_ID 0
+param set XRCE_DDS_DOM_ID 0
 param save
 reboot
 ```
@@ -306,7 +306,7 @@ reboot
 After PX4 reconnects, verify:
 
 ```bash
-param show UXRCE_DDS_DOM_ID
+param show XRCE_DDS_DOM_ID
 ```
 
 ## 5. Start the Vicon bridge
@@ -545,6 +545,7 @@ EKF2_EV_NOISE_MD = 1
 EKF2_EVP_NOISE   = 0.10 m
 EKF2_EVA_NOISE   = 0.05 rad
 EKF2_EV_DELAY    = 0 ms initially
+XRCE_DDS_DOM_ID  = 42
 ```
 
 On PX4 v1.14, `EKF2_MAG_TYPE=5` disables magnetometer fusion. With the yaw bit

@@ -144,6 +144,10 @@ interactive_mission_gateway:
     fixed_z: -0.5
     clearance_m: 0.40
     default_standoff_m: 0.60
+    # Object-surface range grounding and bounded-workspace goal sampling.
+    goal_sample_resolution_m: 0.10
+    default_goal_range_half_width_m: 0.15
+    exact_goal_distance_tolerance_m: 0.10
     fresh_data_timeout_s: 2.0
     approval_timeout_s: 30.0
     # Obstacle envelope per x-y side = position tolerance + 0.5 * size tolerance.

@@ -102,6 +102,7 @@ class PathVerifier(Node):
         workspace = payload.get("workspace", {})
         start = payload.get("start", {})
         goal = payload.get("goal", {})
+        goal_relations = payload.get("goal_relations", [])
 
         in_workspace = all(self.point_in_workspace(point, workspace) for point in waypoints)
         clearance_values = [self.clearance_to_obstacles(point, obstacles) for point in waypoints]
@@ -114,6 +115,8 @@ class PathVerifier(Node):
         monotonic_progress = self.is_monotonic_progress(waypoints, goal)
         max_speed, max_accel = self.kinematic_metrics(waypoints)
         smoothness = self.smoothness_score(waypoints)
+        goal_relation_results = self.goal_relation_results(goal, goal_relations)
+        goal_relations_ok = all(item["satisfied"] for item in goal_relation_results)
 
         checks = {
             "has_waypoints": bool(waypoints),
@@ -126,6 +129,8 @@ class PathVerifier(Node):
             "max_segment_speed": max_speed <= self.max_velocity_mps,
             "max_segment_accel": max_accel <= self.max_acceleration_mps2,
         }
+        if goal_relations:
+            checks["goal_relations"] = goal_relations_ok
         failed_constraints = [name for name, ok in checks.items() if not ok]
         thresholds = {
             "min_clearance_m": self.safety_margin_m,
@@ -146,10 +151,12 @@ class PathVerifier(Node):
             start_match,
             goal_match,
             monotonic_progress,
+            goal_relation_results,
+            goal_relations_ok,
         )
         passed = not failed_constraints
 
-        return {
+        metrics = {
             "collision_free": collision_free,
             "min_clearance_m": round(min_clearance, 3),
             "goal_clearance_m": round(goal_clearance, 3),
@@ -166,6 +173,10 @@ class PathVerifier(Node):
             "thresholds": thresholds,
             "feedback_table": feedback_table,
         }
+        if "goal_relations" in payload:
+            metrics["goal_relations_satisfied"] = goal_relations_ok
+            metrics["goal_relation_results"] = goal_relation_results
+        return metrics
 
     def feedback_table(
         self,
@@ -179,6 +190,8 @@ class PathVerifier(Node):
         start_match,
         goal_match,
         monotonic_progress,
+        goal_relation_results,
+        goal_relations_ok,
     ):
         rows = [
             ("in_workspace", str(in_workspace), "true", in_workspace),
@@ -191,10 +204,52 @@ class PathVerifier(Node):
             ("max_segment_speed", f"{max_speed:.3f}", f"<= {self.max_velocity_mps:.3f}", max_speed <= self.max_velocity_mps),
             ("max_segment_accel", f"{max_accel:.3f}", f"<= {self.max_acceleration_mps2:.3f}", max_accel <= self.max_acceleration_mps2),
         ]
+        if goal_relation_results:
+            relation_values = ", ".join(
+                f"{item['object_label']}={item['distance_m']:.3f}m" for item in goal_relation_results
+            )
+            rows.append(("goal_relations", relation_values, "all approved ranges", goal_relations_ok))
         lines = ["| Metric | Value | Required | Status |", "|---|---:|---:|---|"]
         for metric, value, required, ok in rows:
             lines.append(f"| {metric} | {value} | {required} | {'PASS' if ok else 'FAIL'} |")
         return "\n".join(lines)
+
+    def goal_relation_results(self, goal, relations):
+        results = []
+        if not goal:
+            return [
+                {
+                    "object_id": relation.get("object_id", ""),
+                    "object_label": relation.get("object_label", ""),
+                    "distance_m": 0.0,
+                    "satisfied": False,
+                }
+                for relation in relations
+            ]
+        for relation in relations:
+            obstacle = {
+                "min_corner": relation.get("object_min_corner", [0.0, 0.0, 0.0]),
+                "max_corner": relation.get("object_max_corner", [0.0, 0.0, 0.0]),
+            }
+            distance = self.clearance_to_box(goal, obstacle)
+            minimum = relation.get("min_distance_m")
+            maximum = relation.get("max_distance_m")
+            satisfied = (
+                (minimum is None or distance >= float(minimum) - 1e-9)
+                and (maximum is None or distance <= float(maximum) + 1e-9)
+            )
+            results.append(
+                {
+                    "object_id": relation.get("object_id", ""),
+                    "object_label": relation.get("object_label", ""),
+                    "relation": relation.get("relation", ""),
+                    "distance_m": round(distance, 3),
+                    "min_distance_m": minimum,
+                    "max_distance_m": maximum,
+                    "satisfied": satisfied,
+                }
+            )
+        return results
 
     @staticmethod
     def point_in_workspace(point, workspace):

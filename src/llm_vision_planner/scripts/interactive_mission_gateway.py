@@ -11,7 +11,7 @@ import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Literal
+from typing import Literal, Optional
 
 import rclpy
 from openai import OpenAI
@@ -32,10 +32,21 @@ INTENT_SYSTEM_PROMPT = """You are a UAV mission intent parser.
 Return only the supplied MissionIntent structure.
 Do not generate coordinates, waypoints, or a route.
 Never invent an object ID; copy it exactly from the detected-object catalog.
-Only HOVER_NEAR and GO_TO a uniquely identified detected object are supported.
-GO_TO means approach the object with a safe standoff, never collide with it.
-If the target is missing or ambiguous, return NEEDS_CLARIFICATION.
-HOLD, cancellation, and unsupported requests must not return READY.
+Use the operator's language for clarifying_question.
+Supported non-motion queries are DESCRIBE_SCENE, LIST_OBJECTS, LOCATE_OBJECT,
+EXPLAIN_PROPOSAL, and EXPLAIN_FAILURE. Queries never move the vehicle.
+For LOCATE_OBJECT, put the uniquely matched detected ID in query_object_ids.
+Supported navigation actions are HOVER and GO_TO with one or more object relations.
+Every navigation intent needs at least one NEAR relation to anchor the goal.
+NEAR and FAR_FROM may include an explicit minimum, maximum, or exact range in metres.
+For an exact distance, set min_distance_m and max_distance_m to the same value.
+For an unspecified NEAR distance, leave both distances null so policy defaults apply.
+For 'as far as possible', use FAR_FROM with optimize=MAXIMIZE and null distances.
+Do not invent a number for vague words such as 'far'; ask for clarification unless
+the operator explicitly requests the maximum feasible distance.
+If any referenced object is missing or ambiguous, return NEEDS_CLARIFICATION.
+HOLD, LAND, RETURN_HOME, and all other flight-control requests are unsupported.
+Cancellations use status CANCELLED and do not return READY.
 If any safety-relevant meaning is uncertain, return NEEDS_CLARIFICATION.
 All detected objects remain mandatory avoidance obstacles.
 """
@@ -53,17 +64,37 @@ LATCHED_QOS = QoSProfile(
 )
 
 
+class GoalRelation(BaseModel):
+    """One natural-language object relation grounded to detected geometry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    object_id: str
+    object_label: str
+    relation: Literal["NEAR", "FAR_FROM"]
+    min_distance_m: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    max_distance_m: Optional[float] = Field(default=None, ge=0.0, le=5.0)
+    optimize: Literal["NONE", "MAXIMIZE"]
+
+
 class MissionIntent(BaseModel):
     """Schema-constrained result returned by the intent model."""
 
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["READY", "NEEDS_CLARIFICATION", "CANCELLED", "UNSUPPORTED"]
-    action: Literal["HOVER_NEAR", "GO_TO", "HOLD", "NONE"]
-    target_object_id: str
-    target_label: str
-    relation: Literal["NEAR", "NONE"]
-    requested_standoff_m: float = Field(ge=0.0, le=2.0)
+    intent_type: Literal["NAVIGATION", "QUERY", "NONE"]
+    navigation_action: Literal["HOVER", "GO_TO", "NONE"]
+    query_type: Literal[
+        "DESCRIBE_SCENE",
+        "LIST_OBJECTS",
+        "LOCATE_OBJECT",
+        "EXPLAIN_PROPOSAL",
+        "EXPLAIN_FAILURE",
+        "NONE",
+    ]
+    relations: list[GoalRelation] = Field(default_factory=list, max_length=8)
+    query_object_ids: list[str] = Field(default_factory=list, max_length=8)
     clarifying_question: str
 
 
@@ -107,49 +138,115 @@ class MockIntentParser:
         if "cancel" in lowered:
             return MissionIntent(
                 status="CANCELLED",
-                action="NONE",
-                target_object_id="",
-                target_label="",
-                relation="NONE",
-                requested_standoff_m=0.0,
+                intent_type="NONE",
+                navigation_action="NONE",
+                query_type="NONE",
+                relations=[],
+                query_object_ids=[],
                 clarifying_question="",
             )
-        if "hold" in lowered and not any(item["label"].lower() in lowered for item in object_catalog):
+        query_type = self.query_type(lowered)
+        matches = [item for item in object_catalog if item["label"].lower() in lowered]
+        if query_type != "NONE":
+            if query_type == "LOCATE_OBJECT" and len(matches) != 1:
+                labels = ", ".join(item["label"] for item in object_catalog) or "none"
+                return MissionIntent(
+                    status="NEEDS_CLARIFICATION",
+                    intent_type="QUERY",
+                    navigation_action="NONE",
+                    query_type=query_type,
+                    relations=[],
+                    query_object_ids=[],
+                    clarifying_question=f"Which detected object should I locate? I see: {labels}.",
+                )
+            return MissionIntent(
+                status="READY",
+                intent_type="QUERY",
+                navigation_action="NONE",
+                query_type=query_type,
+                relations=[],
+                query_object_ids=[matches[0]["object_id"]] if query_type == "LOCATE_OBJECT" else [],
+                clarifying_question="",
+            )
+        if any(term in lowered for term in ("hold", "land", "return home", "rth")):
             return MissionIntent(
                 status="UNSUPPORTED",
-                action="HOLD",
-                target_object_id="",
-                target_label="",
-                relation="NONE",
-                requested_standoff_m=0.0,
-                clarifying_question="The vehicle is already holding; specify a detected object to approach.",
+                intent_type="NONE",
+                navigation_action="NONE",
+                query_type="NONE",
+                relations=[],
+                query_object_ids=[],
+                clarifying_question="Flight-control requests are not supported by the intent gateway.",
             )
 
-        matches = [item for item in object_catalog if item["label"].lower() in lowered]
-        if len(matches) != 1:
+        if not matches:
             labels = ", ".join(item["label"] for item in object_catalog) or "none"
             return MissionIntent(
                 status="NEEDS_CLARIFICATION",
-                action="NONE",
-                target_object_id="",
-                target_label="",
-                relation="NONE",
-                requested_standoff_m=0.0,
+                intent_type="NAVIGATION",
+                navigation_action="NONE",
+                query_type="NONE",
+                relations=[],
+                query_object_ids=[],
                 clarifying_question=f"Which detected object do you mean? I see: {labels}.",
             )
 
-        distance_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:m|meter|meters)\b", lowered)
-        standoff = float(distance_match.group(1)) if distance_match else 0.0
-        target = matches[0]
+        relations = []
+        for item in matches:
+            label = item["label"].lower()
+            far = bool(
+                re.search(rf"(?:far(?:thest)?|away)\s+(?:as possible\s+)?from\s+(?:the\s+)?{re.escape(label)}", lowered)
+                or re.search(rf"far(?:thest)?[^.]*{re.escape(label)}", lowered)
+            )
+            distance_match = re.search(
+                rf"(\d+(?:\.\d+)?)\s*(?:m|meter|meters)\b[^.]*{re.escape(label)}",
+                lowered,
+            )
+            distance = float(distance_match.group(1)) if distance_match else None
+            maximize = far and any(term in lowered for term in ("as far as possible", "farthest", "maximum distance"))
+            relations.append(
+                GoalRelation(
+                    object_id=item["object_id"],
+                    object_label=item["label"],
+                    relation="FAR_FROM" if far else "NEAR",
+                    min_distance_m=distance,
+                    max_distance_m=None if far else distance,
+                    optimize="MAXIMIZE" if maximize else "NONE",
+                )
+            )
+        if not any(relation.relation == "NEAR" for relation in relations):
+            return MissionIntent(
+                status="NEEDS_CLARIFICATION",
+                intent_type="NAVIGATION",
+                navigation_action="NONE",
+                query_type="NONE",
+                relations=relations,
+                query_object_ids=[],
+                clarifying_question="Which detected object should anchor the goal position?",
+            )
         return MissionIntent(
             status="READY",
-            action="HOVER_NEAR" if "hover" in lowered else "GO_TO",
-            target_object_id=target["object_id"],
-            target_label=target["label"],
-            relation="NEAR",
-            requested_standoff_m=standoff,
+            intent_type="NAVIGATION",
+            navigation_action="HOVER" if "hover" in lowered else "GO_TO",
+            query_type="NONE",
+            relations=relations,
+            query_object_ids=[],
             clarifying_question="",
         )
+
+    @staticmethod
+    def query_type(lowered):
+        if any(term in lowered for term in ("explain the proposal", "why this goal", "explain proposal")):
+            return "EXPLAIN_PROPOSAL"
+        if any(term in lowered for term in ("explain the failure", "why did it fail", "explain failure")):
+            return "EXPLAIN_FAILURE"
+        if any(term in lowered for term in ("what do you see", "describe the scene", "describe scene")):
+            return "DESCRIBE_SCENE"
+        if any(term in lowered for term in ("list objects", "list the objects", "what objects")):
+            return "LIST_OBJECTS"
+        if any(term in lowered for term in ("where is", "locate", "location of")):
+            return "LOCATE_OBJECT"
+        return "NONE"
 
 
 def canonical_json(value):
@@ -277,6 +374,165 @@ def clearance_to_box(point, obstacle):
     return math.hypot(dx, dy)
 
 
+def normalize_goal_relations(
+    raw_relations,
+    observed_obstacles,
+    *,
+    default_standoff,
+    clearance,
+    guard_band,
+    default_range_half_width,
+    exact_distance_tolerance,
+):
+    """Validate LLM relations and ground them to immutable observed-object bounds."""
+    by_id = {item["object_id"]: item for item in observed_obstacles}
+    normalized = []
+    used_ids = set()
+    for raw in raw_relations:
+        relation = raw.model_dump() if isinstance(raw, GoalRelation) else dict(raw)
+        object_id = str(relation.get("object_id", ""))
+        obstacle = by_id.get(object_id)
+        if obstacle is None:
+            raise ValueError(f"selected object ID '{object_id}' is not in the current snapshot")
+        if obstacle["label"].strip().lower() != str(relation.get("object_label", "")).strip().lower():
+            raise ValueError(f"selected object ID '{object_id}' does not match its detected label")
+        same_label = [
+            item
+            for item in observed_obstacles
+            if item["label"].strip().lower() == obstacle["label"].strip().lower()
+        ]
+        if len(same_label) > 1:
+            raise ValueError(
+                f"I see {len(same_label)} objects labelled {obstacle['label']}; specify which object you mean"
+            )
+        if object_id in used_ids:
+            raise ValueError(f"object '{object_id}' has more than one relation; combine them into one range")
+        used_ids.add(object_id)
+
+        minimum = relation.get("min_distance_m")
+        maximum = relation.get("max_distance_m")
+        minimum = None if minimum is None else float(minimum)
+        maximum = None if maximum is None else float(maximum)
+        relation_name = str(relation.get("relation", ""))
+        optimize = str(relation.get("optimize", "NONE"))
+        if minimum is not None and maximum is not None and minimum > maximum:
+            raise ValueError(f"distance range for {obstacle['label']} has minimum greater than maximum")
+
+        if relation_name == "NEAR":
+            if minimum is None and maximum is None:
+                preferred = float(guard_band) + max(float(default_standoff), float(clearance)) + 0.02
+                minimum = max(
+                    float(guard_band) + float(clearance) + 0.02,
+                    preferred - float(default_range_half_width),
+                )
+                maximum = preferred + float(default_range_half_width)
+            elif minimum is not None and maximum is None:
+                raise ValueError(f"NEAR relation for {obstacle['label']} also needs a maximum distance")
+            elif minimum is None:
+                minimum = 0.0
+            elif math.isclose(minimum, maximum, abs_tol=1e-9):
+                minimum = max(0.0, minimum - float(exact_distance_tolerance))
+                maximum += float(exact_distance_tolerance)
+        elif relation_name == "FAR_FROM":
+            if minimum is None and maximum is None and optimize != "MAXIMIZE":
+                raise ValueError(
+                    f"FAR_FROM relation for {obstacle['label']} needs a minimum distance or MAXIMIZE"
+                )
+            minimum = 0.0 if minimum is None else minimum
+        else:
+            raise ValueError(f"unsupported object relation: {relation_name}")
+
+        normalized.append(
+            {
+                "object_id": object_id,
+                "object_label": obstacle["label"],
+                "relation": relation_name,
+                "min_distance_m": round(minimum, 3) if minimum is not None else None,
+                "max_distance_m": round(maximum, 3) if maximum is not None else None,
+                "optimize": optimize,
+                "object_min_corner": copy.deepcopy(obstacle["min_corner"]),
+                "object_max_corner": copy.deepcopy(obstacle["max_corner"]),
+            }
+        )
+    if not normalized:
+        raise ValueError("navigation requires at least one object relation")
+    if not any(item["relation"] == "NEAR" for item in normalized):
+        raise ValueError("navigation requires at least one NEAR relation to anchor the goal")
+    return normalized
+
+
+def relation_distance(point, relation):
+    return clearance_to_box(
+        point,
+        {
+            "min_corner": relation["object_min_corner"],
+            "max_corner": relation["object_max_corner"],
+        },
+    )
+
+
+def relation_results(point, relations):
+    results = []
+    for relation in relations:
+        distance = relation_distance(point, relation)
+        minimum = relation.get("min_distance_m")
+        maximum = relation.get("max_distance_m")
+        satisfied = (
+            (minimum is None or distance >= float(minimum) - 1e-9)
+            and (maximum is None or distance <= float(maximum) + 1e-9)
+        )
+        results.append(
+            {
+                "object_id": relation["object_id"],
+                "object_label": relation["object_label"],
+                "relation": relation["relation"],
+                "distance_m": round(distance, 3),
+                "min_distance_m": minimum,
+                "max_distance_m": maximum,
+                "optimize": relation.get("optimize", "NONE"),
+                "satisfied": satisfied,
+            }
+        )
+    return results
+
+
+def range_constrained_goal(start, relations, planning_obstacles, workspace, fixed_z, clearance, resolution):
+    """Sample the bounded workspace and select a point satisfying every relation."""
+    resolution = float(resolution)
+    if not math.isfinite(resolution) or resolution <= 0.0:
+        raise ValueError("goal_sample_resolution_m must be finite and positive")
+    x_min, x_max = (float(value) for value in workspace["x"])
+    y_min, y_max = (float(value) for value in workspace["y"])
+    x_count = int(math.ceil((x_max - x_min) / resolution))
+    y_count = int(math.ceil((y_max - y_min) / resolution))
+    candidates = []
+    for x_index in range(x_count + 1):
+        x = min(x_max, x_min + x_index * resolution)
+        for y_index in range(y_count + 1):
+            y = min(y_max, y_min + y_index * resolution)
+            point = {"x": round(x, 3), "y": round(y, 3), "z": float(fixed_z)}
+            if any(clearance_to_box(point, obstacle) < float(clearance) for obstacle in planning_obstacles):
+                continue
+            results = relation_results(point, relations)
+            if not all(item["satisfied"] for item in results):
+                continue
+            maximize_score = sum(
+                item["distance_m"] for item in results if item["optimize"] == "MAXIMIZE"
+            )
+            range_error = 0.0
+            for item in results:
+                minimum = item["min_distance_m"]
+                maximum = item["max_distance_m"]
+                if minimum is not None and maximum is not None:
+                    range_error += abs(item["distance_m"] - 0.5 * (float(minimum) + float(maximum)))
+            travel = math.hypot(point["x"] - float(start["x"]), point["y"] - float(start["y"]))
+            candidates.append(((maximize_score, -range_error, -travel), point, results))
+    if not candidates:
+        raise ValueError("no goal satisfies all object-distance ranges and safety constraints")
+    _, goal, results = max(candidates, key=lambda item: item[0])
+    return goal, results
+
+
 def safe_standoff_goal(start, target, obstacles, workspace, fixed_z, requested_standoff, default_standoff, clearance):
     minimum = target["min_corner"]
     maximum = target["max_corner"]
@@ -333,7 +589,26 @@ def describe_obstacles(obstacles):
     return " ".join(descriptions) if descriptions else "No obstacles currently detected."
 
 
-def build_planner_prompt(start, goal, workspace, obstacles, clearance):
+def describe_goal_relations(relations):
+    descriptions = []
+    for relation in relations:
+        minimum = relation.get("min_distance_m")
+        maximum = relation.get("max_distance_m")
+        if minimum is not None and maximum is not None:
+            distance = f"range=[{minimum:.2f},{maximum:.2f}]m"
+        elif minimum is not None:
+            distance = f"distance>={minimum:.2f}m"
+        elif maximum is not None:
+            distance = f"distance<={maximum:.2f}m"
+        else:
+            distance = "maximize distance"
+        descriptions.append(
+            f"{relation['relation']} {relation['object_label']} ({relation['object_id']}), {distance}"
+        )
+    return "; ".join(descriptions)
+
+
+def build_planner_prompt(start, goal, workspace, obstacles, clearance, goal_relations=None):
     distance = math.hypot(float(goal["x"]) - float(start["x"]), float(goal["y"]) - float(start["y"]))
     nl_env = (
         "Mission state: the UAV has already taken off and is holding hover at the start position. "
@@ -344,6 +619,11 @@ def build_planner_prompt(start, goal, workspace, obstacles, clearance):
         f"Goal: ({goal['x']:.2f},{goal['y']:.2f},{goal['z']:.2f}), "
         f"distance≈{distance:.2f}m. Obstacles with x-y spans: {describe_obstacles(obstacles)}"
     )
+    if goal_relations:
+        nl_env += (
+            " The deterministic gateway selected the goal to satisfy these approved object-surface "
+            f"distance relations: {describe_goal_relations(goal_relations)}."
+        )
     constraints = (
         "Constraints:\n"
         f"- all waypoints in NED frame, z must stay {workspace['z']:.2f}\n"
@@ -391,6 +671,9 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("fixed_z", -0.5)
         self.declare_parameter("clearance_m", 0.40)
         self.declare_parameter("default_standoff_m", 0.60)
+        self.declare_parameter("goal_sample_resolution_m", 0.10)
+        self.declare_parameter("default_goal_range_half_width_m", 0.15)
+        self.declare_parameter("exact_goal_distance_tolerance_m", 0.10)
         self.declare_parameter("fresh_data_timeout_s", 2.0)
         self.declare_parameter("approval_timeout_s", 30.0)
         self.declare_parameter("scene_position_tolerance_m", 0.15)
@@ -404,6 +687,17 @@ class InteractiveMissionGateway(Node):
         self.fixed_z = float(self.get_parameter("fixed_z").value)
         self.clearance_m = float(self.get_parameter("clearance_m").value)
         self.default_standoff_m = float(self.get_parameter("default_standoff_m").value)
+        self.goal_sample_resolution_m = float(self.get_parameter("goal_sample_resolution_m").value)
+        self.default_goal_range_half_width_m = float(
+            self.get_parameter("default_goal_range_half_width_m").value
+        )
+        self.exact_goal_distance_tolerance_m = float(
+            self.get_parameter("exact_goal_distance_tolerance_m").value
+        )
+        if self.goal_sample_resolution_m <= 0.0:
+            raise ValueError("goal_sample_resolution_m must be positive")
+        if self.default_goal_range_half_width_m < 0.0 or self.exact_goal_distance_tolerance_m < 0.0:
+            raise ValueError("goal range tolerances must be non-negative")
         self.scene_position_tolerance_m = float(self.get_parameter("scene_position_tolerance_m").value)
         self.scene_size_tolerance_m = float(self.get_parameter("scene_size_tolerance_m").value)
         if self.scene_position_tolerance_m < 0.0 or self.scene_size_tolerance_m < 0.0:
@@ -431,6 +725,7 @@ class InteractiveMissionGateway(Node):
         self.active_plan_id = None
         self.pending_verified_plan = None
         self.latest_safety_tube_ready = None
+        self.last_failure = None
         self.require_safety_tubes = (
             str(self.get_parameter("visualizer").value).strip().lower() == "contraction"
         )
@@ -567,26 +862,17 @@ class InteractiveMissionGateway(Node):
         if operator_text.strip().lower() == "cancel":
             self.cancel_active_mission("Mission cancelled by operator.")
             return
-        if self.state in (
-            "PARSING_INTENT",
-            "WAITING_FOR_VERIFICATION",
-            "FORMING_SAFETY_TUBES",
-            "AWAITING_LAUNCH_APPROVAL",
-            "LAND_REQUESTED",
-            "RELEASED_TO_EXECUTOR",
-        ):
-            self.publish_response("BUSY", f"Cannot accept a new mission while state={self.state}.")
+        if self.intent_request_token is not None:
+            self.publish_response("BUSY", "Another command is still being interpreted.")
             return
-        error = self.context_error()
+        error = self.scene_context_error()
         if error:
             self.publish_response("NOT_READY", error)
             return
 
         scene = copy.deepcopy(self.latest_scene)
-        start = self.current_start()
         token = uuid.uuid4().hex
         self.intent_request_token = token
-        self.state = "PARSING_INTENT"
         self.conversation.append({"role": "operator", "content": operator_text})
         catalog = obstacle_catalog(scene["obstacles"])
         future = self.intent_executor.submit(
@@ -596,7 +882,7 @@ class InteractiveMissionGateway(Node):
             list(self.conversation),
         )
         future.add_done_callback(
-            lambda completed: self.intent_results.put((token, completed, scene, start, operator_text))
+            lambda completed: self.intent_results.put((token, completed, scene, operator_text))
         )
         self.publish_response("PARSING_INTENT", "Interpreting the command against the current object snapshot.")
 
@@ -613,73 +899,84 @@ class InteractiveMissionGateway(Node):
     def drain_intent_results(self):
         while True:
             try:
-                token, future, scene, start, operator_text = self.intent_results.get_nowait()
+                token, future, scene, operator_text = self.intent_results.get_nowait()
             except queue.Empty:
                 return
-            if token != self.intent_request_token or self.state != "PARSING_INTENT":
+            if token != self.intent_request_token:
                 continue
+            self.intent_request_token = None
             try:
                 intent = future.result()
             except Exception as exc:
-                self.state = "WAITING_FOR_COMMAND"
                 self.publish_response("INTENT_ERROR", f"Intent service failed; no mission was released: {exc}")
                 continue
-            self.handle_intent(intent, scene, start, operator_text)
+            self.handle_intent(intent, scene, operator_text)
 
-    def handle_intent(self, intent, scene, start, operator_text):
+    def handle_intent(self, intent, scene, operator_text):
         if intent.status == "CANCELLED":
             self.cancel_active_mission("Mission cancelled by parsed operator intent.")
             return
         if intent.status != "READY":
-            question = intent.clarifying_question or "Please clarify the requested detected object."
+            default_message = (
+                "Flight-control requests are not supported by this interface."
+                if intent.status == "UNSUPPORTED"
+                else "Please clarify the requested detected object or distance range."
+            )
+            question = intent.clarifying_question or default_message
             self.conversation.append({"role": "system", "content": question})
-            self.state = "WAITING_FOR_COMMAND"
             self.publish_response(intent.status, question)
             return
-        if intent.action not in ("HOVER_NEAR", "GO_TO") or intent.relation != "NEAR":
-            self.state = "WAITING_FOR_COMMAND"
-            self.publish_response("UNSUPPORTED", "Only a safe standoff near a detected object is currently supported.")
+        if intent.intent_type == "QUERY":
+            self.handle_query(intent, scene)
             return
-
-        by_id = {item["object_id"]: item for item in scene["obstacles"]}
-        target = by_id.get(intent.target_object_id)
-        if target is None:
-            self.state = "WAITING_FOR_COMMAND"
-            self.publish_response("NEEDS_CLARIFICATION", "The selected object ID is not in the current snapshot.")
-            return
-        if target["label"].strip().lower() != intent.target_label.strip().lower():
-            self.state = "WAITING_FOR_COMMAND"
-            self.publish_response("NEEDS_CLARIFICATION", "The selected object ID does not match the requested label.")
-            return
-        same_label = [
-            item for item in scene["obstacles"] if item["label"].strip().lower() == target["label"].strip().lower()
-        ]
-        if len(same_label) > 1:
-            self.state = "WAITING_FOR_COMMAND"
+        if intent.intent_type != "NAVIGATION" or intent.navigation_action not in ("HOVER", "GO_TO"):
             self.publish_response(
-                "NEEDS_CLARIFICATION",
-                f"I see {len(same_label)} objects labelled {target['label']}; specify which object you mean.",
+                "UNSUPPORTED",
+                "Supported commands are scene questions and object-relative HOVER or GO_TO navigation.",
             )
             return
+        if self.state in (
+            "WAITING_FOR_VERIFICATION",
+            "FORMING_SAFETY_TUBES",
+            "AWAITING_LAUNCH_APPROVAL",
+            "LAND_REQUESTED",
+            "RELEASED_TO_EXECUTOR",
+        ):
+            self.publish_response("BUSY", f"Cannot replace the active mission while state={self.state}.")
+            return
+        error = self.context_error()
+        if error:
+            self.publish_response("NOT_READY", error)
+            return
+        start = self.current_start()
         try:
             planning_obstacles = inflate_obstacles_xy(scene["obstacles"], self.scene_guard_band_m)
-            planning_target = next(
-                item for item in planning_obstacles if item["object_id"] == target["object_id"]
+            goal_relations = normalize_goal_relations(
+                intent.relations,
+                scene["obstacles"],
+                default_standoff=self.default_standoff_m,
+                clearance=self.clearance_m,
+                guard_band=self.scene_guard_band_m,
+                default_range_half_width=self.default_goal_range_half_width_m,
+                exact_distance_tolerance=self.exact_goal_distance_tolerance_m,
             )
-            goal = safe_standoff_goal(
+            goal, goal_relation_results = range_constrained_goal(
                 start,
-                planning_target,
+                goal_relations,
                 planning_obstacles,
                 self.workspace,
                 self.fixed_z,
-                intent.requested_standoff_m,
-                self.default_standoff_m,
                 self.clearance_m,
+                self.goal_sample_resolution_m,
             )
         except ValueError as exc:
-            self.state = "WAITING_FOR_COMMAND"
-            self.publish_response("NO_SAFE_GOAL", str(exc))
+            message = str(exc)
+            status = "NO_SAFE_GOAL" if message.startswith("no goal") else "NEEDS_CLARIFICATION"
+            self.publish_response(status, message)
             return
+
+        target_id = next(item["object_id"] for item in goal_relations if item["relation"] == "NEAR")
+        target = next(item for item in scene["obstacles"] if item["object_id"] == target_id)
 
         created_at = time.time()
         mission_id = f"M-{int(created_at * 1000)}-{uuid.uuid4().hex[:6]}"
@@ -693,6 +990,8 @@ class InteractiveMissionGateway(Node):
             "target": target,
             "start": start,
             "goal": goal,
+            "goal_relations": goal_relations,
+            "goal_relation_results": goal_relation_results,
             "workspace": copy.deepcopy(self.workspace),
             "observed_obstacles": copy.deepcopy(scene["obstacles"]),
             "obstacles": planning_obstacles,
@@ -702,7 +1001,16 @@ class InteractiveMissionGateway(Node):
         # The live hover position is rebound at approval within a configured limit.
         contract = {
             key: mission[key]
-            for key in ("mission_id", "snapshot_id", "intent", "target", "goal", "workspace", "obstacles")
+            for key in (
+                "mission_id",
+                "snapshot_id",
+                "intent",
+                "target",
+                "goal",
+                "goal_relations",
+                "workspace",
+                "obstacles",
+            )
         }
         mission["proposal_hash"] = hashlib.sha256(canonical_json(contract).encode("utf-8")).hexdigest()
         mission["base_prompt"], mission["nl_env"] = build_planner_prompt(
@@ -711,6 +1019,7 @@ class InteractiveMissionGateway(Node):
             mission["workspace"],
             mission["obstacles"],
             self.clearance_m,
+            mission["goal_relations"],
         )
         self.active_mission = mission
         self.active_plan_id = None
@@ -722,12 +1031,80 @@ class InteractiveMissionGateway(Node):
         self.publish_response(
             "AWAITING_APPROVAL",
             (
-                f"I found one {target['label']} ({target['object_id']}) and propose goal "
-                f"({goal['x']:.2f}, {goal['y']:.2f}, {goal['z']:.2f}). All detected objects remain obstacles. "
+                f"I grounded {len(goal_relations)} object relation(s) and propose goal "
+                f"({goal['x']:.2f}, {goal['y']:.2f}, {goal['z']:.2f}). "
+                f"Relations: {describe_goal_relations(goal_relations)}. All detected objects remain obstacles. "
                 f"Approve mission {mission_id}?"
             ),
             mission_id=mission_id,
         )
+
+    def handle_query(self, intent, scene):
+        query_type = intent.query_type
+        obstacles = scene["obstacles"]
+        by_id = {item["object_id"]: item for item in obstacles}
+        selected = [by_id[object_id] for object_id in intent.query_object_ids if object_id in by_id]
+        if query_type == "LOCATE_OBJECT" and len(selected) != len(intent.query_object_ids):
+            self.publish_response(
+                "NEEDS_CLARIFICATION",
+                "The selected object ID is not in the current snapshot; ask about one of the listed objects.",
+            )
+            return
+
+        if query_type == "DESCRIBE_SCENE":
+            details = "; ".join(self.object_location(item) for item in obstacles) or "no detected objects"
+            message = f"The current healthy scene contains {len(obstacles)} object(s): {details}."
+        elif query_type == "LIST_OBJECTS":
+            details = "; ".join(self.object_location(item) for item in obstacles) or "none"
+            message = f"Detected objects ({len(obstacles)}): {details}."
+        elif query_type == "LOCATE_OBJECT":
+            if not selected:
+                self.publish_response(
+                    "NEEDS_CLARIFICATION",
+                    "Which detected object should I locate?",
+                )
+                return
+            message = "Object location: " + "; ".join(self.object_location(item) for item in selected) + "."
+        elif query_type == "EXPLAIN_PROPOSAL":
+            if self.active_mission is None:
+                message = "There is no active mission proposal to explain."
+            else:
+                mission = self.active_mission
+                message = (
+                    f"Mission {mission['mission_id']} proposes goal "
+                    f"({mission['goal']['x']:.2f}, {mission['goal']['y']:.2f}, {mission['goal']['z']:.2f}) "
+                    f"from {len(mission['goal_relations'])} approved relation(s): "
+                    f"{describe_goal_relations(mission['goal_relations'])}. The path must keep "
+                    f"{self.clearance_m:.2f} m from obstacles after a {self.scene_guard_band_m:.2f} m scene guard band."
+                )
+        elif query_type == "EXPLAIN_FAILURE":
+            if self.last_failure is None:
+                message = "No intent, grounding, approval, or verification failure has been recorded."
+            else:
+                failed = self.last_failure.get("failed_constraints", [])
+                suffix = f" Failed constraints: {', '.join(failed)}." if failed else ""
+                message = (
+                    f"Last failure ({self.last_failure['status']}): "
+                    f"{self.last_failure['message'].rstrip('.')}.{suffix}"
+                )
+        else:
+            self.publish_response("UNSUPPORTED", "That non-motion query is not supported.")
+            return
+
+        self.conversation.append({"role": "system", "content": message})
+        self.publish_response(
+            "QUERY_RESULT",
+            message,
+            query_type=query_type,
+            object_ids=[item["object_id"] for item in selected],
+        )
+
+    def object_location(self, obstacle):
+        minimum = obstacle["min_corner"]
+        maximum = obstacle["max_corner"]
+        center_x = 0.5 * (float(minimum[0]) + float(maximum[0]))
+        center_y = 0.5 * (float(minimum[1]) + float(maximum[1]))
+        return f"{obstacle['label']} ({obstacle['object_id']}) centered at ({center_x:.2f}, {center_y:.2f}) m NED"
 
     def proposal_payload(self, mission):
         target = mission["target"]
@@ -750,6 +1127,8 @@ class InteractiveMissionGateway(Node):
                 ],
             },
             "goal": mission["goal"],
+            "goal_relations": mission["goal_relations"],
+            "goal_relation_results": mission["goal_relation_results"],
             "clearance_m": self.clearance_m,
             "scene_guard_band_m": round(self.scene_guard_band_m, 3),
             "obstacle_ids": [item["object_id"] for item in mission["obstacles"]],
@@ -815,6 +1194,7 @@ class InteractiveMissionGateway(Node):
             mission["workspace"],
             mission["obstacles"],
             self.clearance_m,
+            mission["goal_relations"],
         )
         mission["approved_at"] = time.time()
         self.publish_planning_attempt()
@@ -843,6 +1223,7 @@ class InteractiveMissionGateway(Node):
             "nl_env": mission["nl_env"],
             "start": mission["start"],
             "goal": mission["goal"],
+            "goal_relations": mission["goal_relations"],
             "workspace": mission["workspace"],
             "obstacles": mission["obstacles"],
             "timestamp": time.time(),
@@ -908,6 +1289,7 @@ class InteractiveMissionGateway(Node):
                         self.active_mission["observed_obstacles"]
                     ),
                     "scene_guard_band_m": self.scene_guard_band_m,
+                    "goal_relations": copy.deepcopy(self.active_mission["goal_relations"]),
                 }
             )
             self.pending_verified_plan = output
@@ -921,6 +1303,13 @@ class InteractiveMissionGateway(Node):
                     plan_id=self.active_plan_id,
                 )
             return
+        self.last_failure = {
+            "status": "VERIFICATION_FAILED",
+            "message": f"Plan {self.active_plan_id} did not pass deterministic verification",
+            "failed_constraints": list(candidate.get("failed_constraints", [])),
+            "verification_feedback_table": candidate.get("verification_feedback_table", ""),
+            "timestamp": time.time(),
+        }
         if self.active_mission["attempt"] >= int(self.get_parameter("max_planning_attempts").value):
             self.state = "PLANNING_FAILED"
             self.publish_response(
@@ -928,6 +1317,8 @@ class InteractiveMissionGateway(Node):
                 "No planning attempt passed verification; the vehicle remains holding.",
                 mission_id=self.active_mission["mission_id"],
                 plan_id=self.active_plan_id,
+                failed_constraints=list(candidate.get("failed_constraints", [])),
+                verification_feedback_table=candidate.get("verification_feedback_table", ""),
             )
             return
         self.publish_planning_attempt(feedback=candidate)
@@ -958,6 +1349,7 @@ class InteractiveMissionGateway(Node):
             "plan_id": self.active_plan_id,
             "proposal_hash": self.active_mission["proposal_hash"],
             "goal": self.active_mission["goal"],
+            "goal_relations": self.active_mission["goal_relations"],
             "verified_at": time.time(),
             "conformal_safety_tubes_ready": tube_ready,
             "safety_tube_samples": tube_status.get("sample_count", 0),
@@ -1054,7 +1446,7 @@ class InteractiveMissionGateway(Node):
 
     def candidate_contract_matches(self, candidate):
         mission = self.active_mission
-        for key in ("start", "goal", "workspace", "obstacles"):
+        for key in ("start", "goal", "goal_relations", "workspace", "obstacles"):
             if canonical_json(candidate.get(key)) != canonical_json(mission[key]):
                 return False
         return True
@@ -1075,14 +1467,11 @@ class InteractiveMissionGateway(Node):
         )
 
     def context_error(self):
+        error = self.scene_context_error()
+        if error:
+            return error
         now = time.time()
         timeout = float(self.get_parameter("fresh_data_timeout_s").value)
-        if self.latest_scene is None or self.latest_scene_received_s is None:
-            return "No obstacle snapshot is available."
-        if now - self.latest_scene_received_s > timeout:
-            return "The obstacle snapshot is stale."
-        if self.latest_scene.get("healthy") is False:
-            return "Perception reports an unhealthy obstacle snapshot."
         if bool(self.get_parameter("require_mission_state").value):
             if self.latest_mission_state is None or self.latest_mission_state_received_s is None:
                 return "No mission-state update is available."
@@ -1093,6 +1482,17 @@ class InteractiveMissionGateway(Node):
                 return f"Vehicle must be in {required} before accepting a mission."
         elif self.current_pose is None or now - self.current_pose["received_s"] > timeout:
             return "No fresh NED pose is available."
+        return None
+
+    def scene_context_error(self):
+        now = time.time()
+        timeout = float(self.get_parameter("fresh_data_timeout_s").value)
+        if self.latest_scene is None or self.latest_scene_received_s is None:
+            return "No obstacle snapshot is available."
+        if now - self.latest_scene_received_s > timeout:
+            return "The obstacle snapshot is stale."
+        if self.latest_scene.get("healthy") is False:
+            return "Perception reports an unhealthy obstacle snapshot."
         return None
 
     def current_start(self):
@@ -1124,6 +1524,16 @@ class InteractiveMissionGateway(Node):
         self.publish_response("CANCELLED", reason)
 
     def publish_response(self, status, message, **metadata):
+        if (
+            status in ("INTENT_ERROR", "NO_SAFE_GOAL", "PLANNING_FAILED")
+            or status.endswith("_REJECTED")
+        ):
+            self.last_failure = {
+                "status": status,
+                "message": message.rstrip("."),
+                "failed_constraints": list(metadata.get("failed_constraints", [])),
+                "timestamp": time.time(),
+            }
         payload = {
             "type": "OPERATOR_RESPONSE",
             "status": status,

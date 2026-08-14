@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from interactive_mission_gateway import (  # noqa: E402
+    GoalRelation,
     InteractiveMissionGateway,
     LATCHED_QOS,
     MissionIntent,
@@ -24,15 +25,35 @@ from interactive_mission_gateway import (  # noqa: E402
 
 class FixedIntentParser:
     def parse(self, operator_text, object_catalog, conversation):
-        del operator_text, conversation
+        del conversation
+        lowered = operator_text.lower()
+        if "what do you see" in lowered or "explain failure" in lowered:
+            return MissionIntent(
+                status="READY",
+                intent_type="QUERY",
+                navigation_action="NONE",
+                query_type="EXPLAIN_FAILURE" if "failure" in lowered else "DESCRIBE_SCENE",
+                relations=[],
+                query_object_ids=[],
+                clarifying_question="",
+            )
         chair = next(item for item in object_catalog if item["label"] == "chair")
         return MissionIntent(
             status="READY",
-            action="HOVER_NEAR",
-            target_object_id=chair["object_id"],
-            target_label="chair",
-            relation="NEAR",
-            requested_standoff_m=0.6,
+            intent_type="NAVIGATION",
+            navigation_action="HOVER",
+            query_type="NONE",
+            relations=[
+                GoalRelation(
+                    object_id=chair["object_id"],
+                    object_label="chair",
+                    relation="NEAR",
+                    min_distance_m=None,
+                    max_distance_m=None,
+                    optimize="NONE",
+                )
+            ],
+            query_object_ids=[],
             clarifying_question="",
         )
 
@@ -198,10 +219,25 @@ def run_test():
         harness.approval_pub.publish(String(data=json.dumps(approval)))
         spin_until(executor, harness, lambda: len(harness.prompts) == 1)
         first = harness.prompts[0]
+        assert len(first["goal_relations"]) == 1
         assert first["start"] == {"x": 0.26, "y": 0.23, "z": -0.5}
         planned_chair = next(item for item in first["obstacles"] if item["label"] == "chair")
         assert planned_chair["min_corner"][0] == 1.25
         assert planned_chair["max_corner"][0] == 2.05
+
+        response_count = len(harness.responses)
+        harness.command_pub.publish(String(data=json.dumps({"text": "What do you see?"})))
+        spin_until(
+            executor,
+            harness,
+            lambda: any(
+                item["status"] == "QUERY_RESULT" and item.get("query_type") == "DESCRIBE_SCENE"
+                for item in harness.responses[response_count:]
+            ),
+        )
+        assert gateway.state == "WAITING_FOR_VERIFICATION"
+        assert len(harness.prompts) == 1
+        assert len(harness.proposals) == 1
 
         failed = {
             "plan_id": first["plan_id"],
@@ -210,6 +246,7 @@ def run_test():
             "verification_feedback_table": "| Metric | Value | Required | Status |\n| collision_free | false | true | FAIL |",
             "start": first["start"],
             "goal": first["goal"],
+            "goal_relations": first["goal_relations"],
             "workspace": first["workspace"],
             "obstacles": first["obstacles"],
         }
@@ -223,12 +260,26 @@ def run_test():
         assert "Previous plan failed verification" in second["prompt"]
         assert "collision_free" in second["prompt"]
 
+        response_count = len(harness.responses)
+        harness.command_pub.publish(String(data=json.dumps({"text": "Explain failure"})))
+        spin_until(
+            executor,
+            harness,
+            lambda: any(
+                item["status"] == "QUERY_RESULT" and item.get("query_type") == "EXPLAIN_FAILURE"
+                for item in harness.responses[response_count:]
+            ),
+        )
+        assert gateway.state == "WAITING_FOR_VERIFICATION"
+        assert "collision_free" in harness.responses[-1]["message"]
+
         passed = {
             "plan_id": second["plan_id"],
             "passed": True,
             "failed_constraints": [],
             "start": second["start"],
             "goal": second["goal"],
+            "goal_relations": second["goal_relations"],
             "workspace": second["workspace"],
             "obstacles": second["obstacles"],
             "waypoints": [second["start"], second["goal"]],
@@ -326,6 +377,7 @@ def run_release_drift_rejection_test():
             "failed_constraints": [],
             "start": prompt["start"],
             "goal": prompt["goal"],
+            "goal_relations": prompt["goal_relations"],
             "workspace": prompt["workspace"],
             "obstacles": prompt["obstacles"],
             "waypoints": [prompt["start"], prompt["goal"]],
@@ -393,6 +445,7 @@ def run_launch_termination_test():
             "failed_constraints": [],
             "start": prompt["start"],
             "goal": prompt["goal"],
+            "goal_relations": prompt["goal_relations"],
             "workspace": prompt["workspace"],
             "obstacles": prompt["obstacles"],
             "waypoints": [prompt["start"], prompt["goal"]],

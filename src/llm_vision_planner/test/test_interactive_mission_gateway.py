@@ -10,9 +10,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from interactive_mission_gateway import (  # noqa: E402
+    GoalRelation,
+    MockIntentParser,
     build_planner_prompt,
     inflate_obstacles_xy,
+    normalize_goal_relations,
     normalize_obstacles,
+    range_constrained_goal,
+    relation_results,
     safe_standoff_goal,
     scene_signature,
     scenes_compatible,
@@ -65,6 +70,84 @@ def test_grounding_helpers():
     assert "bottle (obj-2)" in prompt
     assert "maintain >=0.40m clearance" in prompt
     assert nl_env in prompt
+
+
+def test_multi_object_range_goal():
+    obstacles = normalize_obstacles(scene())
+    planning_obstacles = inflate_obstacles_xy(obstacles, 0.25)
+    raw_relations = [
+        GoalRelation(
+            object_id="obj-1",
+            object_label="chair",
+            relation="NEAR",
+            min_distance_m=0.70,
+            max_distance_m=1.00,
+            optimize="NONE",
+        ),
+        GoalRelation(
+            object_id="obj-2",
+            object_label="bottle",
+            relation="FAR_FROM",
+            min_distance_m=None,
+            max_distance_m=None,
+            optimize="MAXIMIZE",
+        ),
+    ]
+    relations = normalize_goal_relations(
+        raw_relations,
+        obstacles,
+        default_standoff=0.60,
+        clearance=0.40,
+        guard_band=0.25,
+        default_range_half_width=0.15,
+        exact_distance_tolerance=0.10,
+    )
+    start = {"x": 0.2, "y": 0.2, "z": -0.5}
+    workspace = {"x": [0.0, 4.0], "y": [0.0, 4.0], "z": -0.5}
+    goal, results = range_constrained_goal(
+        start,
+        relations,
+        planning_obstacles,
+        workspace,
+        fixed_z=-0.5,
+        clearance=0.40,
+        resolution=0.10,
+    )
+    assert all(item["satisfied"] for item in results)
+    assert relation_results(goal, relations) == results
+    assert next(item for item in results if item["object_label"] == "chair")["distance_m"] <= 1.0
+    assert next(item for item in results if item["object_label"] == "bottle")["optimize"] == "MAXIMIZE"
+
+    prompt, _ = build_planner_prompt(start, goal, workspace, planning_obstacles, 0.4, relations)
+    assert "NEAR chair (obj-1)" in prompt
+    assert "FAR_FROM bottle (obj-2)" in prompt
+
+
+def test_mock_intent_queries_and_control_rejection():
+    parser = MockIntentParser()
+    catalog = [
+        {"object_id": "obj-1", "label": "chair", "center": [1.65, 1.65, -0.5]},
+        {"object_id": "obj-2", "label": "bottle", "center": [3.1, 3.1, -0.5]},
+    ]
+    query = parser.parse("What do you see?", catalog, [])
+    assert query.intent_type == "QUERY"
+    assert query.query_type == "DESCRIBE_SCENE"
+    assert parser.parse("List objects", catalog, []).query_type == "LIST_OBJECTS"
+    locate = parser.parse("Where is the chair?", catalog, [])
+    assert locate.query_type == "LOCATE_OBJECT"
+    assert locate.query_object_ids == ["obj-1"]
+    assert parser.parse("Explain the proposal", catalog, []).query_type == "EXPLAIN_PROPOSAL"
+    assert parser.parse("Why did it fail?", catalog, []).query_type == "EXPLAIN_FAILURE"
+
+    navigation = parser.parse(
+        "Hover near the chair and as far as possible from the bottle", catalog, []
+    )
+    assert navigation.status == "READY"
+    assert [item.relation for item in navigation.relations] == ["NEAR", "FAR_FROM"]
+    assert navigation.relations[1].optimize == "MAXIMIZE"
+
+    control = parser.parse("Land now", catalog, [])
+    assert control.status == "UNSUPPORTED"
 
 
 def test_invalid_obstacle_rejected():
@@ -144,6 +227,8 @@ def test_unsafe_live_scene_changes_are_rejected():
 
 if __name__ == "__main__":
     test_grounding_helpers()
+    test_multi_object_range_goal()
+    test_mock_intent_queries_and_control_rejection()
     test_invalid_obstacle_rejected()
     test_live_scene_jitter_is_bounded_and_conservative()
     test_unsafe_live_scene_changes_are_rejected()

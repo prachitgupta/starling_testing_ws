@@ -55,6 +55,7 @@ class PlannerHarness(Node):
             "prompt": payload["prompt"],
             "start": start,
             "goal": goal,
+            "goal_relations": payload.get("goal_relations", []),
             "workspace": payload["workspace"],
             "obstacles": payload["obstacles"],
             "timestamp": time.time(),

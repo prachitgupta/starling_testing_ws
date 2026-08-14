@@ -12,10 +12,11 @@
     form { display: flex; gap: 8px; }
     input { flex: 1; padding: 11px; border-radius: 8px; border: 1px solid #4b5563; background: #111827; color: white; }
     button { padding: 10px 16px; border: 0; border-radius: 8px; font-weight: 700; cursor: pointer; }
-    #send { background: #2563eb; color: white; } #approve, #launch { background: #16a34a; color: white; } #reject, #terminate { background: #dc2626; color: white; }
+    #send { background: #2563eb; color: white; } #speech { background: #4b5563; color: white; } #speech.listening { background: #dc2626; } #approve, #launch { background: #16a34a; color: white; } #reject, #terminate { background: #dc2626; color: white; }
     button:disabled { opacity: .45; cursor: not-allowed; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #d1d5db; }
     .status { font-size: 1.05rem; }
+    #speech-status { min-height: 1.3em; margin: 8px 0 0; color: #d1d5db; }
     #contraction-plot { display: none; width: 100%; border-radius: 8px; background: white; }
   </style>
 </head>
@@ -25,8 +26,10 @@
   <section>
     <form id="command-form">
       <input id="command" placeholder="Hover near the chair without touching it" autocomplete="off">
+      <button id="speech" type="button">Push to talk</button>
       <button id="send" type="submit">Send</button>
     </form>
+    <p id="speech-status">Speech fills the command box; review the transcript before sending.</p>
   </section>
   <section>
     <h2>Gateway status</h2>
@@ -55,6 +58,10 @@
     let launchProposal = {};
     let plotObjectUrl = '';
     let plotRequestRunning = false;
+    const commandInput = document.getElementById('command');
+    const speechButton = document.getElementById('speech');
+    const speechStatus = document.getElementById('speech-status');
+    const sendButton = document.getElementById('send');
     async function post(path, data) {
       const response = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
       if (!response.ok) throw new Error(await response.text());
@@ -65,6 +72,50 @@
       await post('/api/command', {text: input.value});
       input.value = '';
     });
+    const BrowserSpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!BrowserSpeechRecognition) {
+      speechButton.disabled = true;
+      speechStatus.textContent = 'Speech recognition is unavailable in this browser; type the command instead.';
+    } else {
+      const recognition = new BrowserSpeechRecognition();
+      let listening = false;
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+      recognition.lang = navigator.language || 'en-US';
+      recognition.onstart = () => {
+        listening = true;
+        speechButton.classList.add('listening');
+        speechButton.textContent = 'Stop listening';
+        sendButton.disabled = true;
+        speechStatus.textContent = `Listening in ${recognition.lang}. Speak one command or question.`;
+      };
+      recognition.onresult = event => {
+        commandInput.value = event.results[event.resultIndex][0].transcript.trim();
+        commandInput.focus();
+        speechStatus.textContent = 'Transcript ready. Review it, then press Send.';
+      };
+      recognition.onerror = event => {
+        speechStatus.textContent = `Speech recognition error: ${event.error}. You can still type the command.`;
+      };
+      recognition.onend = () => {
+        listening = false;
+        speechButton.classList.remove('listening');
+        speechButton.textContent = 'Push to talk';
+        sendButton.disabled = false;
+      };
+      speechButton.onclick = () => {
+        if (listening) {
+          recognition.stop();
+          return;
+        }
+        try {
+          recognition.start();
+        } catch (error) {
+          speechStatus.textContent = `Speech recognition could not start: ${error.message}`;
+        }
+      };
+    }
     async function decide(decision) {
       await post('/api/decision', {decision, mission_id: proposal.mission_id, proposal_hash: proposal.proposal_hash});
     }
@@ -88,11 +139,11 @@
         launchProposal = state.launch_proposal || {};
         document.getElementById('status').textContent = `${response.status || 'WAITING'} — ${response.message || ''}`;
         document.getElementById('proposal').textContent = proposal.mission_id ? JSON.stringify(proposal, null, 2) : 'No proposal yet.';
-        const awaiting = response.status === 'AWAITING_APPROVAL' && Boolean(proposal.mission_id);
+        const awaiting = (response.gateway_state === 'AWAITING_APPROVAL' || response.status === 'AWAITING_APPROVAL') && Boolean(proposal.mission_id);
         document.getElementById('approve').disabled = !awaiting;
         document.getElementById('reject').disabled = !awaiting;
         document.getElementById('launch-proposal').textContent = launchProposal.plan_id ? JSON.stringify(launchProposal, null, 2) : 'No verified trajectory awaiting launch.';
-        const awaitingLaunch = response.status === 'AWAITING_LAUNCH_APPROVAL' && Boolean(launchProposal.plan_id);
+        const awaitingLaunch = (response.gateway_state === 'AWAITING_LAUNCH_APPROVAL' || response.status === 'AWAITING_LAUNCH_APPROVAL') && Boolean(launchProposal.plan_id);
         document.getElementById('launch').disabled = !awaitingLaunch;
         document.getElementById('terminate').disabled = !awaitingLaunch;
       } catch (error) {

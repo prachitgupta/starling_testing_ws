@@ -157,6 +157,8 @@ class LLMPlanner(Node):
             "model": self.model_name,
             "llm_provider": self.llm_provider,
         }
+        if "goal_relations" in payload:
+            result["goal_relations"] = payload["goal_relations"]
 
         out = String()
         out.data = json.dumps(result)

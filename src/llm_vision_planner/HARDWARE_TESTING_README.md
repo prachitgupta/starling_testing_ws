@@ -794,10 +794,17 @@ ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
 #### Brief user guide
 
 1. Wait until `/llm_vision/mission_state` reports `HOLDING_FOR_PLAN`.
-2. Open `http://127.0.0.1:8080`, enter `Hover near the chair`, and submit.
-3. Check the detected target, proposed goal, and clearance, then approve or
-   reject the proposal. A planner prompt is published only after approval.
-4. The page shows detected objects, the proposed goal, and every refined path.
+2. Open `http://127.0.0.1:8080`, type a request or press **Push to talk**,
+   review the transcript, and press **Send**. Browser speech uses the browser
+   locale and requires microphone permission; typing remains available.
+3. Scene questions such as `What do you see?`, `List objects`, `Where is the
+   chair?`, `Explain the proposal`, and `Explain failure` return text without
+   creating a plan. Navigation can combine ranges, for example `Hover 0.8 to
+   1.2 m from the chair and as far as possible from the bottle`.
+4. Check every grounded object relation, the proposed goal, and clearance,
+   then approve or reject the proposal. A planner prompt is published only
+   after approval.
+5. The page shows detected objects, the proposed goal, and every refined path.
    Once verification latches the trajectory and forms the safety tubes, use
    **Final launch command** to approve control-law execution or terminate. A
    termination keeps Offboard mode and commands an x/y-hold landing waypoint

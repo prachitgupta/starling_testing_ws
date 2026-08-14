@@ -79,6 +79,7 @@ source /opt/ros/humble/setup.bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 ```
 
 #### Run in every VOXL ROS 2 terminal
@@ -260,6 +261,7 @@ source /opt/ros/humble/setup.bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 
 ros2 launch mavros px4.launch \
   fcu_url:="udp://0.0.0.0:14550@${Starling2}:14550" \
@@ -273,6 +275,7 @@ source /opt/ros/humble/setup.bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 ros2 topic echo /mavros/state
 ```
 
@@ -367,6 +370,7 @@ source ~/Desktop/starling_testing_ws/install/setup.bash
 source ~/colcon_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 ```
 
 For a Vicon rate of 50 Hz:
@@ -476,6 +480,7 @@ source /opt/ros/humble/setup.bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 
 ros2 topic info -v /tflite_data
 ros2 topic info -v /tflite
@@ -661,6 +666,7 @@ Use an empty obstacle snapshot:
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
   "{data: '{\"obstacles\":[],\"timestamp\":0.0}'}"
 ```
@@ -680,6 +686,7 @@ cd ~/Desktop/starling_testing_ws
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -732,6 +739,7 @@ cd ~/Desktop/starling_testing_ws
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -756,6 +764,7 @@ cd ~/Desktop/starling_testing_ws
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -775,6 +784,7 @@ In another terminal, continuously publish a fresh dummy COCO-object scene:
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 
 ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
   "{data: '{\"healthy\":true,\"frame\":\"local_ned\",\"obstacles\":[{\"id\":1,\"label\":\"chair\",\"shape\":\"box\",\"min_corner\":[2.20,2.00,-0.75],\"max_corner\":[2.70,2.50,0.25],\"confidence\":1.0},{\"id\":2,\"label\":\"bottle\",\"shape\":\"box\",\"min_corner\":[1.00,2.80,-0.75],\"max_corner\":[1.30,3.10,0.25],\"confidence\":1.0}],\"timestamp\":0.0}'}"
@@ -897,6 +907,7 @@ Terminal 1:
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 ros2 run llm_vision_planner perception_detection.py --ros-args \
   --params-file ~/Desktop/starling_testing_ws/src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
@@ -907,6 +918,7 @@ Terminal 2:
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 ros2 topic echo --full-length /llm_vision/semantic_obstacles
 ```
 
@@ -916,6 +928,7 @@ ros2 topic echo --full-length /llm_vision/semantic_obstacles
 source ~/Desktop/starling_testing_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 ros2 run llm_vision_planner debug_perception.py
 ```
 
@@ -939,6 +952,7 @@ cd ~/Desktop/starling_testing_ws
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
+ros2 daemon start
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \

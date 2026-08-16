@@ -39,10 +39,10 @@ semantic_obstacle_perception:
     min_confidence: 0.70
     detection_timeout_s: 2.0
     detector_timeout_s: 2.0
-    point_cloud_timeout_s: 1.5
+    point_cloud_timeout_s: 3.0
     pose_timeout_s: 1.0
-    # Hardware hover validation observed bursty RGB/ToF deltas up to 0.687 s.
-    max_sync_slop_s: 1.0
+    # Static-hover validation needed tolerance for bursty RGB/ToF gaps up to 1.395 s.
+    max_sync_slop_s: 2.0
     detection_to_depth_offset_s: 0.0
     z_estimation_mode: depth
     min_tof_depth_m: 0.20
@@ -53,7 +53,7 @@ semantic_obstacle_perception:
     bbox_inner_margin_fraction: 0.30
     depth_near_percentile: 25.0
     depth_cluster_tolerance_m: 0.35
-    obstacle_hold_s: 5.0
+    obstacle_hold_s: 10.0
     obstacle_match_distance_m: 0.75
     publish_hz: 2.0
     debug: False

@@ -679,6 +679,11 @@ Important:
 
 Tracker reference: <https://vicon-help.atlassian.net/wiki/spaces/Tracker44/pages/376309034/Create+objects>
 
+For a different object, repeat these steps with a new Tracker name and measured
+X/Y dimensions. In the launch command change `trial_id`, `object_label` to the
+exact detector class, `object_vicon_topic`, `object_width_m`, and
+`object_depth_m`; the same raw CSV may be reused to combine object classes.
+
 ### 11.2 Start the Vicon bridge
 
 ```bash

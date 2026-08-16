@@ -655,7 +655,151 @@ grep -n '"offboard_mode"' /etc/modalai/voxl-vision-hub.conf
 Do not run any other Offboard publisher. `control_law_executer.py`, launched by
 `full_plot.launch.py`, must be the only publisher controlling PX4.
 
-## 11. Hardware flight with a simulated obstacle message
+## 11. Generate the Vicon vision-error calibration dataset
+
+Generate this dataset before using `obs_safety_bracket:=conformal` with real
+perception. The recorder synchronizes GPT-nano-derived nominal footprints from
+`/llm_vision/nominal_obstacles` with known-object Vicon transforms, computes the
+x/y footprint-containment score, and appends rows to:
+
+```text
+~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv
+```
+
+The tracked `calibration_vision_error_dummy.csv` is a simulation-only
+placeholder. A real conformal mission rejects it.
+
+### Publish the Starling and calibration objects from Vicon
+
+In Vicon Tracker, create a rigid-body subject for every known calibration
+object. If the subject and segment are both named `chair1`, its transform topic
+is:
+
+```text
+/vicon/chair1/chair1
+```
+
+During calibration, run the step 5 bridge with
+`publish_specific_segment:=false` so the same bridge publishes both the
+Starling and all object segments. Keep the Starling pose remap used by EKF2.
+For a 50 Hz Vicon stream, the complete command is:
+
+```bash
+ros2 run vicon_bridge vicon_bridge --ros-args \
+  -p host_name:="${VICON_COMPUTER_IP}:801" \
+  -p stream_mode:="ServerPush" \
+  -p update_rate_hz:=125.0 \
+  -p expected_rate_hz:=50.0 \
+  -p publish_specific_segment:=false \
+  -p world_frame_id:="vicon_world" \
+  -p tf_namespace:="vicon" \
+  -r /vicon/Starling2/Starling2/pose:=/mavros/vision_pose/pose
+```
+
+Run only one Vicon bridge. Verify both transforms before recording:
+
+```bash
+ros2 topic echo /vicon/Starling2/Starling2 --once
+ros2 topic echo /vicon/chair1/chair1 --once
+ros2 topic hz /vicon/chair1/chair1 --window 500
+```
+
+### Configure measured object geometry and frame transforms
+
+Edit the `vision_error_dataset_generator.ros__parameters` block in
+`config/llm_vision_planner.yaml`. The following shows the required JSON shape;
+replace every uppercase token with a measured finite number before launching:
+
+```yaml
+output_csv: "~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv"
+vicon_objects_json: >-
+  [{"object_id":"obj-1","label":"chair","topic":"/vicon/chair1/chair1",
+    "dimensions_m":[OBJECT_X_WIDTH_M,OBJECT_Y_DEPTH_M,OBJECT_HEIGHT_M],
+    "marker_to_object":{"translation_m":[MARKER_TO_OBJECT_X_M,MARKER_TO_OBJECT_Y_M,MARKER_TO_OBJECT_Z_M],
+    "quaternion_xyzw":[MARKER_TO_OBJECT_QX,MARKER_TO_OBJECT_QY,MARKER_TO_OBJECT_QZ,MARKER_TO_OBJECT_QW]}}]
+vicon_world_to_ned_json: >-
+  {"translation_m":[VICON_TO_NED_X_M,VICON_TO_NED_Y_M,VICON_TO_NED_Z_M],
+   "quaternion_xyzw":[VICON_TO_NED_QX,VICON_TO_NED_QY,VICON_TO_NED_QZ,VICON_TO_NED_QW]}
+```
+
+`dimensions_m` is the physical object-x width, object-y depth, and optional
+height. `marker_to_object` maps the Vicon marker origin into the physical object
+center. `vicon_world_to_ned_json` must map Vicon-world coordinates into the
+same local NED frame used by perception. Do not use identity transforms unless
+the measured frames and origins actually coincide.
+
+### Record one independent trial
+
+Build and source the workspace, export `OPENAI_API_KEY`, confirm the vehicle is
+ready for the real-perception interactive pipeline, and launch the recorder.
+Use `hardcoded` while collecting data because a real conformal mission cannot
+start until a non-placeholder calibration file exists:
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+
+ros2 launch llm_vision_planner full_plot.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  environment:=real \
+  interaction_mode:=interactive \
+  intent_provider:=openai \
+  llm_provider:=llama \
+  visualizer:=contraction \
+  obs_safety_bracket:=hardcoded \
+  record_vision_error_dataset:=true \
+  vision_error_trial_id:=chair1-pose-001 \
+  land_after_complete:=false
+```
+
+From the web UI, send a navigation request that names the visible calibration
+object, such as `Hover near the chair`. GPT nano must return a finite effective
+depth for the object; the nominal snapshot is published while the grounded
+mission proposal is formed. Mission approval is not required merely to write
+the snapshot, but all normal hardware precautions still apply because
+`full_plot.launch.py` starts the flight-control pipeline.
+
+Verify the synchronized input and recorded row:
+
+```bash
+ros2 topic echo /llm_vision/nominal_obstacles --once
+tail -n 5 \
+  ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv
+```
+
+Stop the launch, change the object pose/view or repeat the independent setup,
+then relaunch with a new ID such as `chair1-pose-002`. Never reuse a trial ID
+for an independent trial: all correlated frames sharing one ID are reduced to
+their maximum score. Missed detections are recorded rather than discarded. At
+`vision_error_delta:=0.10`, at least nine independent trial IDs are required by
+the finite-sample rank calculation; collect more trials to represent the
+deployment distribution.
+
+After recording, validate that rows have `placeholder=false`, then activate the
+dataset in a real interactive launch with both:
+
+```bash
+obs_safety_bracket:=conformal \
+vision_error_calibration_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv"
+```
+
+Use this instead to retain the existing fixed guard band and disable vision
+conformal enlargement:
+
+```bash
+obs_safety_bracket:=hardcoded
+```
+
+The selector applies to the interactive GPT-nano environment-determination
+path. Fixed-goal mode remains unchanged, although its launch examples below
+still set the argument explicitly so the selected behavior is visible at the
+command line.
+
+## 12. Hardware flight with a simulated obstacle message
 
 This test flies the real vehicle but supplies obstacle JSON instead of starting
 TFLite/ToF perception. `environment:=sim` changes only the obstacle source; PX4
@@ -696,6 +840,7 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   environment:=sim \
   llm_provider:=llama \
   visualizer:=contraction \
+  obs_safety_bracket:=conformal \
   show_rrt:=true
 ```
 
@@ -709,6 +854,7 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   environment:=sim \
   llm_provider:=llama \
   visualizer:=contraction \
+  obs_safety_bracket:=conformal \
   show_rrt:=false
 ```
 
@@ -752,7 +898,8 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   use_dataset_scene:=true \
   sim_sample_id:=4 \
   llm_provider:=llama \
-  visualizer:=contraction
+  visualizer:=contraction \
+  obs_safety_bracket:=conformal
 ```
 
 To open the operator UI from a phone on the same network, add
@@ -782,7 +929,8 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   intent_provider:=openai \
   use_dataset_scene:=false \
   llm_provider:=llama \
-  visualizer:=contraction
+  visualizer:=contraction \
+  obs_safety_bracket:=conformal
 ```
 
 In another terminal, continuously publish a fresh dummy COCO-object scene:
@@ -816,7 +964,9 @@ ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
 5. The page shows detected objects, the proposed goal, and every refined path.
    Once verification latches the trajectory and forms the safety tubes, use
    **Final launch command** to approve control-law execution or terminate. A
-   termination keeps Offboard mode and commands an x/y-hold landing waypoint
+   tube intersection is shown as **LLM prediction safety not certified**;
+   approving at that point deliberately releases the plan despite the warning.
+   Termination keeps Offboard mode and commands an x/y-hold landing waypoint
    through `control_law_executer.py`. Keep the obstacle publisher running and
    monitor the final result with:
 
@@ -824,7 +974,7 @@ ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
 ros2 topic echo /llm_vision/plan_verified
 ```
 
-## 12. TFLite and ToF perception
+## 13. TFLite and ToF perception
 
 TFLite detects object type from `hires_small_color`. ToF supplies distance
 from `/tof_pc`. The output topic is
@@ -978,6 +1128,7 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   environment:=real \
   llm_provider:=llama \
   visualizer:=contraction \
+  obs_safety_bracket:=hardcoded \
   show_rrt:=true
 ```
 
@@ -1004,10 +1155,12 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   intent_provider:=openai \
   llm_provider:=llama \
   visualizer:=contraction \
+  obs_safety_bracket:=conformal \
+  vision_error_calibration_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv" \
   land_after_complete:=false
 ```
 
 Open `http://127.0.0.1:8080` once `/llm_vision/mission_state` reports
-`HOLDING_FOR_PLAN`; see step 11's Interactive mode section for the approval
+`HOLDING_FOR_PLAN`; see step 12's Interactive mode section for the approval
 walkthrough. Use the RC kill switch or change PX4/QGroundControl mode to
 abort.

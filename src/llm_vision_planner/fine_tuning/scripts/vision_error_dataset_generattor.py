@@ -36,6 +36,20 @@ CSV_FIELDS = [
     "missed_detection",
     "placeholder",
 ]
+RAW_CSV_FIELDS = CSV_FIELDS + [
+    "session_id",
+    "capture_id",
+    "capture_index",
+    "raw_continuous",
+    "stable_pose",
+    "gt_center_x",
+    "gt_center_y",
+    "gt_yaw_rad",
+    "observer_x",
+    "observer_y",
+    "observer_z",
+    "observer_yaw_rad",
+]
 ODOM_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.BEST_EFFORT,
     history=QoSHistoryPolicy.KEEP_LAST,
@@ -249,7 +263,36 @@ def ground_truth_aabb(config, marker_position, marker_rotation, world_to_ned):
         "min_corner": [float(np.min(corners_ned[:, 0])), float(np.min(corners_ned[:, 1]))],
         "max_corner": [float(np.max(corners_ned[:, 0])), float(np.max(corners_ned[:, 1]))],
         "center_xy": [float(object_position_ned[0]), float(object_position_ned[1])],
+        "yaw_rad": math.atan2(float(object_rotation_ned[1, 0]), float(object_rotation_ned[0, 0])),
     }
+
+
+def wrapped_angle_difference(first, second):
+    return abs(math.atan2(math.sin(float(first) - float(second)), math.cos(float(first) - float(second))))
+
+
+def footprint_pose_stability(ground_truth_samples, position_tolerance_m, yaw_tolerance_rad):
+    """Return whether synchronized object poses stayed within configured tolerances."""
+    if not ground_truth_samples:
+        return False, {"sample_count": 0}
+    centers = np.asarray([sample["center_xy"] for sample in ground_truth_samples], dtype=float)
+    mean_center = np.mean(centers, axis=0)
+    position_deviation = float(np.max(np.linalg.norm(centers - mean_center, axis=1)))
+    yaws = [float(sample["yaw_rad"]) for sample in ground_truth_samples]
+    mean_yaw = math.atan2(
+        sum(math.sin(value) for value in yaws),
+        sum(math.cos(value) for value in yaws),
+    )
+    yaw_deviation = max(wrapped_angle_difference(value, mean_yaw) for value in yaws)
+    metrics = {
+        "sample_count": len(ground_truth_samples),
+        "max_position_deviation_m": position_deviation,
+        "max_yaw_deviation_deg": math.degrees(yaw_deviation),
+    }
+    return (
+        position_deviation <= float(position_tolerance_m)
+        and yaw_deviation <= float(yaw_tolerance_rad)
+    ), metrics
 
 
 def containment_score(predicted, ground_truth):
@@ -322,6 +365,11 @@ class VisionErrorDatasetGenerator(Node):
         self.declare_parameter("derived_transform_output_json", "")
         self.declare_parameter("sync_tolerance_s", 0.10)
         self.declare_parameter("match_distance_m", 0.75)
+        self.declare_parameter("continuous_recording", False)
+        self.declare_parameter("object_stability_window_s", 0.50)
+        self.declare_parameter("object_stability_min_samples", 5)
+        self.declare_parameter("object_stability_position_tolerance_m", 0.02)
+        self.declare_parameter("object_stability_yaw_tolerance_deg", 2.0)
 
         self.trial_id = str(self.get_parameter("trial_id").value).strip()
         if not self.trial_id or self.trial_id.lower() in ("unset", "placeholder"):
@@ -336,12 +384,32 @@ class VisionErrorDatasetGenerator(Node):
         self.frame_max_rotation_deviation_deg = float(
             self.get_parameter("frame_max_rotation_deviation_deg").value
         )
+        self.continuous_recording = bool(self.get_parameter("continuous_recording").value)
+        self.object_stability_window_s = float(
+            self.get_parameter("object_stability_window_s").value
+        )
+        self.object_stability_min_samples = int(
+            self.get_parameter("object_stability_min_samples").value
+        )
+        self.object_stability_position_tolerance_m = float(
+            self.get_parameter("object_stability_position_tolerance_m").value
+        )
+        self.object_stability_yaw_tolerance_rad = math.radians(
+            float(self.get_parameter("object_stability_yaw_tolerance_deg").value)
+        )
         if min(self.sync_tolerance_s, self.match_distance_m, self.frame_sync_tolerance_s) <= 0.0:
             raise ValueError("synchronization tolerances and match_distance_m must be positive")
         if self.frame_calibration_samples < 3:
             raise ValueError("frame_calibration_samples must be at least three")
         if self.frame_max_translation_deviation_m <= 0.0 or self.frame_max_rotation_deviation_deg <= 0.0:
             raise ValueError("frame transform deviation limits must be positive")
+        if (
+            self.object_stability_window_s <= 0.0
+            or self.object_stability_min_samples < 2
+            or self.object_stability_position_tolerance_m <= 0.0
+            or self.object_stability_yaw_tolerance_rad <= 0.0
+        ):
+            raise ValueError("continuous-recording stability parameters must be positive")
 
         objects_json = str(self.get_parameter("vicon_objects_json").value)
         try:
@@ -391,26 +459,46 @@ class VisionErrorDatasetGenerator(Node):
         self.output_csv = output if output.is_absolute() else Path.cwd() / output
         self.output_csv.parent.mkdir(parents=True, exist_ok=True)
         existed = self.output_csv.exists() and self.output_csv.stat().st_size > 0
+        self.csv_fields = RAW_CSV_FIELDS if self.continuous_recording else CSV_FIELDS
+        self.capture_index = 0
         self.output_stream = self.output_csv.open("a+", newline="", encoding="utf-8")
         if existed:
             self.output_stream.seek(0)
-            fields = next(csv.reader(self.output_stream), [])
-            if fields != CSV_FIELDS:
+            reader = csv.DictReader(self.output_stream)
+            fields = reader.fieldnames or []
+            if fields != self.csv_fields:
                 self.output_stream.close()
                 raise ValueError(f"existing output CSV has an incompatible header: {self.output_csv}")
+            if self.continuous_recording:
+                for row in reader:
+                    if str(row.get("session_id", "")) == self.trial_id:
+                        try:
+                            self.capture_index = max(
+                                self.capture_index,
+                                int(row.get("capture_index", 0)),
+                            )
+                        except (TypeError, ValueError):
+                            self.output_stream.close()
+                            raise ValueError(
+                                f"existing raw CSV has an invalid capture_index: {self.output_csv}"
+                            )
             self.output_stream.seek(0, 2)
-        self.writer = csv.DictWriter(self.output_stream, fieldnames=CSV_FIELDS, lineterminator="\n")
+        self.writer = csv.DictWriter(
+            self.output_stream,
+            fieldnames=self.csv_fields,
+            lineterminator="\n",
+        )
         if not existed:
             self.writer.writeheader()
             self.output_stream.flush()
 
         self.latest_nominal = None
         self.vicon_history = {
-            config["topic"]: deque(maxlen=1000) for config in self.objects
+            config["topic"]: deque(maxlen=3000) for config in self.objects
         }
         self.recorded_pairs = set()
         self.vehicle_vicon_samples = deque(maxlen=100)
-        self.px4_pose_samples = deque(maxlen=100)
+        self.px4_pose_samples = deque(maxlen=3000)
         self.frame_candidates = deque(maxlen=max(100, self.frame_calibration_samples * 4))
         self.frame_pair_keys = set()
         self.paired_vehicle_vicon_keys = set()
@@ -607,7 +695,18 @@ class VisionErrorDatasetGenerator(Node):
         if not math.isfinite(timestamp):
             self.get_logger().error("nominal-obstacle timestamp is non-finite")
             return
-        self.latest_nominal = {"payload": payload, "timestamp": timestamp}
+        if self.continuous_recording:
+            self.capture_index += 1
+            safe_session = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.trial_id)
+            capture_id = f"{safe_session}-capture-{self.capture_index:06d}"
+        else:
+            capture_id = self.trial_id
+        self.latest_nominal = {
+            "payload": payload,
+            "timestamp": timestamp,
+            "capture_id": capture_id,
+            "capture_index": self.capture_index,
+        }
         for config in self.objects:
             self.try_record(config)
 
@@ -627,6 +726,53 @@ class VisionErrorDatasetGenerator(Node):
         })
         self.try_record(config)
 
+    def stable_object_pose(self, config, nominal):
+        if not self.continuous_recording:
+            return True, None
+        history = self.vicon_history[config["topic"]]
+        half_window = 0.5 * self.object_stability_window_s
+        if not history or history[-1]["timestamp"] < nominal["timestamp"] + half_window:
+            return None, None
+        samples = [
+            sample
+            for sample in history
+            if abs(float(sample["timestamp"]) - nominal["timestamp"]) <= half_window
+        ]
+        if len(samples) < self.object_stability_min_samples:
+            return False, {"sample_count": len(samples)}
+        ground_truth_samples = [
+            ground_truth_aabb(
+                config,
+                sample["position"],
+                sample["rotation"],
+                self.world_to_ned,
+            )
+            for sample in samples
+        ]
+        return footprint_pose_stability(
+            ground_truth_samples,
+            self.object_stability_position_tolerance_m,
+            self.object_stability_yaw_tolerance_rad,
+        )
+
+    @staticmethod
+    def observer_pose_fields(payload):
+        pose = payload.get("observer_pose")
+        if not isinstance(pose, (list, tuple)) or len(pose) < 4:
+            return {field: "" for field in ("observer_x", "observer_y", "observer_z", "observer_yaw_rad")}
+        try:
+            values = [float(value) for value in pose[:4]]
+        except (TypeError, ValueError):
+            values = []
+        if len(values) != 4 or not all(math.isfinite(value) for value in values):
+            return {field: "" for field in ("observer_x", "observer_y", "observer_z", "observer_yaw_rad")}
+        return {
+            "observer_x": f"{values[0]:.9f}",
+            "observer_y": f"{values[1]:.9f}",
+            "observer_z": f"{values[2]:.9f}",
+            "observer_yaw_rad": f"{math.radians(values[3]):.9f}",
+        }
+
     def try_record(self, config):
         nominal = self.latest_nominal
         history = self.vicon_history.get(config["topic"])
@@ -641,6 +787,19 @@ class VisionErrorDatasetGenerator(Node):
         pair = (config["object_id"], round(nominal["timestamp"], 6))
         if pair in self.recorded_pairs:
             return
+        stable, stability = self.stable_object_pose(config, nominal)
+        if stable is None:
+            return
+        if not stable:
+            self.recorded_pairs.add(pair)
+            self.publish_status(
+                "SKIPPED_MOVING_OBJECT",
+                f"Skipped {nominal['capture_id']} because {config['object_id']} was moving.",
+                capture_id=nominal["capture_id"],
+                object_id=config["object_id"],
+                stability=stability,
+            )
+            return
         ground_truth = ground_truth_aabb(
             config,
             vicon["position"],
@@ -654,7 +813,7 @@ class VisionErrorDatasetGenerator(Node):
             self.match_distance_m,
         )
         row = {
-            "trial_id": self.trial_id,
+            "trial_id": nominal["capture_id"] if self.continuous_recording else self.trial_id,
             "timestamp_s": f"{nominal['timestamp']:.9f}",
             "vicon_timestamp_s": f"{vicon['timestamp']:.9f}",
             "object_id": config["object_id"],
@@ -666,6 +825,20 @@ class VisionErrorDatasetGenerator(Node):
             "missed_detection": str(predicted is None).lower(),
             "placeholder": "false",
         }
+        if self.continuous_recording:
+            row.update(
+                {
+                    "session_id": self.trial_id,
+                    "capture_id": nominal["capture_id"],
+                    "capture_index": str(nominal["capture_index"]),
+                    "raw_continuous": "true",
+                    "stable_pose": "true",
+                    "gt_center_x": f"{ground_truth['center_xy'][0]:.9f}",
+                    "gt_center_y": f"{ground_truth['center_xy'][1]:.9f}",
+                    "gt_yaw_rad": f"{ground_truth['yaw_rad']:.9f}",
+                    **self.observer_pose_fields(nominal["payload"]),
+                }
+            )
         if predicted is None:
             row.update(
                 {
@@ -693,7 +866,9 @@ class VisionErrorDatasetGenerator(Node):
         self.get_logger().info(f"recorded {config['object_id']} {outcome}")
         self.publish_status(
             "RECORDED",
-            f"Recorded {config['object_id']} for trial {self.trial_id}: {outcome}.",
+            f"Recorded {config['object_id']} for {nominal['capture_id']}: {outcome}.",
+            session_id=self.trial_id,
+            capture_id=nominal["capture_id"],
             object_id=config["object_id"],
             label=config["label"],
             missed_detection=predicted is None,

@@ -657,39 +657,29 @@ Do not run any other Offboard publisher. `control_law_executer.py`, launched by
 
 ## 11. Generate the Vicon vision-error calibration dataset
 
-Generate this dataset before enabling conformal enlargement with real
-perception. Use the dedicated `vision_error_calibration.launch.py`; it starts
-only semantic perception, GPT-nano nominal-environment generation, automatic
-frame alignment, and the CSV recorder. It does **not** start Llama, RRT, the
-mission gateway UI, verification, Offboard control, arming, or takeoff. Keep
-propellers removed and the vehicle disarmed.
+Important:
 
-### Define `chair1` in Vicon Tracker
+- Keep the vehicle disarmed with propellers removed.
+- Start the calibration launch once; it records continuously every 3 seconds.
+- Move the chair, then hold it still until `RECORDED` appears.
+- Captures made while the chair is moving are skipped.
+- Repeated captures at the same chair/camera pose are written to the raw CSV and
+  collapsed during post-processing.
+- For 500 effective samples, collect at least 500 clearly different stable
+  chair/camera poses. Collect extra raw captures because repeats will be removed.
 
-1. Rigidly attach at least four asymmetric markers to the chair; five or more
-   are recommended. The markers must not move relative to the chair.
-2. Put the chair in the calibrated capture volume. In Tracker open
-   **View > Tracking**, enable **Unlabeled Markers** and
-   **Enable Unlabeled Reconstructions**, then select only the chair markers.
-3. Enter `chair1` in the Object field and click **Create**.
-4. Use Tracker's translation and rotation manipulators to place the `chair1`
-   origin at the physical footprint center. Align local X with chair width,
-   local Y with chair depth, and local Z upward. This eliminates the need to
-   enter a marker-offset quaternion.
-5. Save the object, resume live tracking, and move it slowly to confirm that
-   its label and axes do not jump. Resolve Tracker evaluation warnings before
-   recording. Vicon's current object-creation procedure is documented at
-   <https://vicon-help.atlassian.net/wiki/spaces/Tracker44/pages/376309034/Create+objects>.
+### 11.1 Define `chair1` in Vicon Tracker
 
-Measure only the chair width along its local X axis and depth along local Y.
-Those two scalar measurements are the only object geometry required by the
-normal single-object launch.
+1. Attach at least four asymmetric rigid markers to the chair.
+2. Select those markers in Tracker and create an object named `chair1`.
+3. Set the object origin to the chair footprint center.
+4. Align object X with width, Y with depth, and Z upward.
+5. Save the object and confirm `/vicon/chair1/chair1` tracks continuously.
+6. Measure chair width along X and depth along Y in metres.
 
-### Publish the Starling and chair transforms
+Tracker reference: <https://vicon-help.atlassian.net/wiki/spaces/Tracker44/pages/376309034/Create+objects>
 
-Run the step 5 Vicon bridge with `publish_specific_segment:=false` so one bridge
-publishes both rigid bodies while retaining the Starling pose remap used by
-EKF2:
+### 11.2 Start the Vicon bridge
 
 ```bash
 ros2 run vicon_bridge vicon_bridge --ros-args \
@@ -703,7 +693,7 @@ ros2 run vicon_bridge vicon_bridge --ros-args \
   -r /vicon/Starling2/Starling2/pose:=/mavros/vision_pose/pose
 ```
 
-Run one bridge only, then verify all inputs:
+Run only one bridge. Verify the three required pose streams:
 
 ```bash
 ros2 topic echo /vicon/Starling2/Starling2 --once
@@ -712,15 +702,18 @@ ros2 topic echo /fmu/out/vehicle_odometry --once
 ros2 topic hz /vicon/chair1/chair1 --window 500
 ```
 
-Tracker's Starling frame should use X forward, Y left, Z up (`flu`), as required
-by the existing MAVROS external-vision setup. If it was deliberately defined
-as X forward, Y right, Z down, pass
-`vicon_vehicle_frame_convention:=frd` instead.
+- Use the default `flu` when the Starling Tracker axes are X forward, Y left,
+  Z up.
+- Add `vicon_vehicle_frame_convention:=frd` only for X forward, Y right, Z down.
 
-### Record one independent trial without launching a mission
+### 11.3 Record continuously
 
-Keep the Starling and chair stationary, point the camera at the chair, export
-`OPENAI_API_KEY`, and substitute the two measured dimensions below:
+1. Place the chair at the first pose and point the camera at it.
+2. Export `OPENAI_API_KEY`.
+3. Replace `MEASURED_WIDTH_M` and `MEASURED_DEPTH_M` below.
+4. Choose one unique session ID for this recording run.
+5. Start the launch and keep the Starling and chair stationary until the first
+   `RECORDED` message.
 
 ```bash
 cd ~/Desktop/starling_testing_ws
@@ -732,77 +725,86 @@ ros2 daemon start
 
 ros2 launch llm_vision_planner vision_error_calibration.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
-  trial_id:=chair1-pose-001 \
+  trial_id:=chair-session-001 \
   object_id:=obj-1 \
   object_label:=chair \
   object_vicon_topic:=/vicon/chair1/chair1 \
   object_width_m:=MEASURED_WIDTH_M \
   object_depth_m:=MEASURED_DEPTH_M \
-  output_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv"
+  output_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv"
 ```
 
-No quaternion is requested. The recorder averages synchronized
-`/vicon/Starling2/Starling2` and `/fmu/out/vehicle_odometry` pose pairs to derive
-Vicon-world to local NED automatically. It checks transform consistency, saves
-the derived transform beside the CSV as
-`calibration_vision_error.<trial_id>.frame.json`, and publishes `FRAME_READY`.
-Only then does the calibration-only environment node request one GPT-nano depth
-snapshot and write the row. The recorder retains recent Vicon poses so the
-ground truth is paired to the perception time rather than the later GPT response
-time. If the known Vicon object was not detected, the row is retained as a
-missed detection. A missing, invalid, or abstaining GPT depth estimate is also
-retained as a miss rather than being dropped from calibration.
-
-Monitor the automatic sequence:
+In another terminal, monitor progress:
 
 ```bash
 ros2 topic echo /llm_vision/vision_calibration_status
-ros2 topic echo /llm_vision/nominal_obstacles --once
 tail -n 5 \
-  ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv
+  ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv
 ```
 
-Wait for `RECORDED`, then stop the launch. Change the chair pose, distance,
-viewing angle, or occlusion and relaunch with a new independent ID such as
-`chair1-pose-002`. Never reuse an ID for an independent setup; correlated rows
-sharing an ID are reduced to their maximum score. At
-`vision_error_delta:=0.10`, at least nine independent IDs are required by the
-finite-sample rank calculation. Collect more trials to represent the intended
-deployment distribution.
+6. After `RECORDED`, move the chair to a clearly different position or yaw.
+7. Hold it still until the next `RECORDED` message.
+8. Repeat steps 6-7 without stopping the launch.
+9. Press `Ctrl+C` after collecting more than the required number of raw poses.
 
-The advanced `vicon_objects_json` and `marker_to_object_json` parameters remain
-available for multiple objects or a Tracker object whose origin cannot be
-aligned physically. Set `auto_vicon_world_to_ned:=false` only when deliberately
-using the legacy manual `vicon_world_to_ned_json` fallback.
+Automatic outputs:
 
-The output CSV is:
+- Raw CSV: `fine_tuning/datasets/calibration_vision_error_raw.csv`
+- Derived frame check: `calibration_vision_error_raw.<trial_id>.frame.json`
+- Missed detection or GPT depth abstention: retained as a calibration miss
+- `SKIPPED_MOVING_OBJECT`: wait until the chair is stationary
+- `FRAME_ALIGNMENT_UNSTABLE`: keep the Starling still and check both pose streams
 
-```text
-~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv
+### 11.4 Collapse repeated poses
+
+```bash
+RAW_CSV=~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv
+CALIBRATION_CSV=~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv
+
+ros2 run llm_vision_planner postprocess_vision_error_dataset.py \
+  --input "$RAW_CSV" \
+  --output "$CALIBRATION_CSV" \
+  --overwrite
 ```
 
-The tracked `calibration_vision_error_dummy.csv` remains simulation-only; real
-conformal missions reject it.
+The command prints the raw-capture count, independent-pose count, and number of
+collapsed repeats. It also creates
+`calibration_vision_error.groups.csv`, which lists each pose group and its raw
+capture IDs. By default, captures within 5 cm and 5 degrees at the same camera
+pose are treated as repeats.
 
-After recording, validate that rows have `placeholder=false`, then activate the
-dataset in a real interactive launch with both:
+Check the processed trial count:
+
+```bash
+tail -n +2 "$CALIBRATION_CSV" | cut -d, -f1 | sort -u | wc -l
+tail -n 5 "$CALIBRATION_CSV"
+```
+
+Collect more poses and rerun post-processing if the first command prints fewer
+than `500`. The raw CSV cannot be used directly for a mission.
+
+### 11.5 Use the completed dataset
+
+For conformal obstacle enlargement, add:
 
 ```bash
 obs_safety_bracket:=conformal \
 vision_error_calibration_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv"
 ```
 
-Use this instead to retain the existing fixed guard band and disable vision
-conformal enlargement:
+For the existing fixed guard band, add:
 
 ```bash
 obs_safety_bracket:=hardcoded
 ```
 
-The selector applies to the interactive GPT-nano environment-determination
-path. Fixed-goal mode remains unchanged, although its launch examples below
-still set the argument explicitly so the selected behavior is visible at the
-command line.
+Notes:
+
+- The dummy CSV is simulation-only and is rejected for real conformal missions.
+- Automatic Vicon-world to NED alignment is the default; no quaternion input is
+  required.
+- Use `vicon_objects_json` only for advanced multi-object calibration.
+- Set `auto_vicon_world_to_ned:=false` only for the legacy manual-transform path.
 
 ## 12. Hardware flight with a simulated obstacle message
 

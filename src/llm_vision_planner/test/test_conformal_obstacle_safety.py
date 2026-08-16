@@ -6,6 +6,7 @@ import json
 import math
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -31,13 +32,16 @@ from verify_contraction import evaluate_swept_tube  # noqa: E402
 from perception_detection import SemanticObstaclePerception  # noqa: E402
 from vision_error_dataset_generattor import (  # noqa: E402
     CSV_FIELDS,
+    RAW_CSV_FIELDS,
     aggregate_world_to_ned,
+    footprint_pose_stability,
     ground_truth_aabb,
     matrix_to_quaternion,
     parse_vicon_objects,
     quaternion_matrix,
     world_to_ned_candidate,
 )
+from postprocess_vision_error_dataset import collapse_raw_rows  # noqa: E402
 
 
 def calibration_row(trial_id, score, missed=False, placeholder=False):
@@ -71,6 +75,28 @@ def write_calibration(path, rows, fields=CSV_FIELDS):
         )
         writer.writeheader()
         writer.writerows(rows)
+
+
+def raw_calibration_row(capture_index, center_x, yaw_rad, score):
+    capture_id = f"chair-session-capture-{capture_index:06d}"
+    row = calibration_row(capture_id, score)
+    row.update(
+        {
+            "session_id": "chair-session",
+            "capture_id": capture_id,
+            "capture_index": str(capture_index),
+            "raw_continuous": "true",
+            "stable_pose": "true",
+            "gt_center_x": str(center_x),
+            "gt_center_y": "1.0",
+            "gt_yaw_rad": str(yaw_rad),
+            "observer_x": "0.0",
+            "observer_y": "0.0",
+            "observer_z": "-0.5",
+            "observer_yaw_rad": "0.0",
+        }
+    )
+    return row
 
 
 def test_containment_score_captures_extent_error():
@@ -140,6 +166,43 @@ def test_dummy_certificate_and_finite_sample_rank():
     assert certificate["trial_count"] == 9
     assert math.isclose(certificate["quantile_m"], 0.35)
     assert conformal_quantile([0.1] * 9, 0.10) == (0.1, 9)
+
+
+def test_continuous_raw_rows_are_rejected_until_repeats_are_collapsed():
+    rows = [
+        raw_calibration_row(1, 1.00, 0.00, 0.10),
+        raw_calibration_row(2, 1.01, 0.01, 0.30),
+        raw_calibration_row(3, 1.30, 0.20, 0.20),
+    ]
+    processed, audit = collapse_raw_rows(rows)
+    assert len(processed) == 2
+    assert len(audit) == 2
+    assert audit[0]["repeat_count"] == 2
+    assert math.isclose(float(processed[0]["score_m"]), 0.30)
+    assert processed[0]["trial_id"] != processed[1]["trial_id"]
+
+    with tempfile.TemporaryDirectory() as directory:
+        raw_path = Path(directory) / "raw.csv"
+        write_calibration(raw_path, rows, fields=RAW_CSV_FIELDS)
+        try:
+            load_vision_error_certificate(raw_path, 0.10)
+        except ValueError as exc:
+            assert "raw continuous captures" in str(exc)
+        else:
+            raise AssertionError("raw repeated captures were accepted as independent trials")
+
+
+def test_continuous_recorder_skips_moving_object_poses():
+    stable_samples = [
+        {"center_xy": [1.0 + offset, 2.0], "yaw_rad": 0.01 + offset}
+        for offset in (-0.002, -0.001, 0.0, 0.001, 0.002)
+    ]
+    stable, metrics = footprint_pose_stability(stable_samples, 0.02, math.radians(2.0))
+    assert stable is True
+    assert metrics["sample_count"] == 5
+    moving_samples = stable_samples + [{"center_xy": [1.10, 2.0], "yaw_rad": 0.20}]
+    stable, _ = footprint_pose_stability(moving_samples, 0.02, math.radians(2.0))
+    assert stable is False
 
 
 def test_placeholder_certificate_is_sim_only_and_hardcoded_is_preserved():
@@ -327,6 +390,34 @@ def test_calibration_only_gateway_converts_depth_abstention_to_a_miss():
     assert "recorded as misses" in published["message"]
 
 
+def test_calibration_gateway_repeats_capture_without_relaunching():
+    class Parameter:
+        def __init__(self, value):
+            self.value = value
+
+    gateway = object.__new__(InteractiveMissionGateway)
+    gateway.intent_request_token = None
+    gateway.calibration_frame_ready_s = time.time() - 10.0
+    gateway.calibration_capture_count = 0
+    gateway.last_calibration_capture_s = None
+    gateway.continuous_calibration_capture = True
+    gateway.latest_scene = {"obstacles": [], "timestamp": time.time(), "healthy": True}
+    gateway.scene_context_error = lambda: None
+    gateway.get_parameter = lambda name: Parameter(
+        {"calibration_capture_delay_s": 0.0, "calibration_capture_interval_s": 3.0}[name]
+    )
+    captures = []
+    gateway.handle_calibration_intent = lambda intent, scene: captures.append(scene)
+    gateway.maybe_start_calibration_capture()
+    assert gateway.calibration_capture_count == 1
+    gateway.maybe_start_calibration_capture()
+    assert gateway.calibration_capture_count == 1
+    gateway.last_calibration_capture_s -= 3.1
+    gateway.maybe_start_calibration_capture()
+    assert gateway.calibration_capture_count == 2
+    assert len(captures) == 2
+
+
 def test_perception_publishes_front_and_view_geometry_without_removing_legacy_box():
     perception = object.__new__(SemanticObstaclePerception)
     perception.detection_camera_translation_body = np.zeros(3)
@@ -454,10 +545,13 @@ if __name__ == "__main__":
     test_containment_score_captures_extent_error()
     test_certificate_uses_independent_trial_maxima_and_fails_closed()
     test_dummy_certificate_and_finite_sample_rank()
+    test_continuous_raw_rows_are_rejected_until_repeats_are_collapsed()
+    test_continuous_recorder_skips_moving_object_poses()
     test_placeholder_certificate_is_sim_only_and_hardcoded_is_preserved()
     test_gpt_depth_builds_nominal_footprint_and_preserves_llama_format()
     test_calibration_only_gateway_publishes_nominal_without_a_mission()
     test_calibration_only_gateway_converts_depth_abstention_to_a_miss()
+    test_calibration_gateway_repeats_capture_without_relaunching()
     test_perception_publishes_front_and_view_geometry_without_removing_legacy_box()
     test_vicon_yaw_marker_offset_and_world_to_ned_transform()
     test_vicon_world_to_ned_is_derived_from_synchronized_vehicle_poses()

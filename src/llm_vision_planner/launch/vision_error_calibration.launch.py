@@ -18,7 +18,7 @@ def generate_launch_description():
         DeclareLaunchArgument("trial_id", default_value="unset"),
         DeclareLaunchArgument(
             "output_csv",
-            default_value="fine_tuning/datasets/calibration_vision_error.csv",
+            default_value="fine_tuning/datasets/calibration_vision_error_raw.csv",
         ),
         DeclareLaunchArgument("object_id", default_value="obj-1"),
         DeclareLaunchArgument("object_label", default_value="chair"),
@@ -33,6 +33,8 @@ def generate_launch_description():
         DeclareLaunchArgument("vicon_world_to_ned_json", default_value="{}"),
         DeclareLaunchArgument("frame_calibration_samples", default_value="20"),
         DeclareLaunchArgument("calibration_capture_delay_s", default_value="1.0"),
+        DeclareLaunchArgument("calibration_capture_interval_s", default_value="3.0"),
+        DeclareLaunchArgument("object_stability_window_s", default_value="0.5"),
         DeclareLaunchArgument("openai_intent_model", default_value="gpt-5.4-nano"),
     ]
 
@@ -68,6 +70,10 @@ def generate_launch_description():
                 "frame_calibration_samples": ParameterValue(
                     LaunchConfiguration("frame_calibration_samples"), value_type=int
                 ),
+                "continuous_recording": True,
+                "object_stability_window_s": ParameterValue(
+                    LaunchConfiguration("object_stability_window_s"), value_type=float
+                ),
             },
         ],
     )
@@ -96,8 +102,12 @@ def generate_launch_description():
                 "require_mission_state": False,
                 "calibration_only": True,
                 "auto_calibration_capture": True,
+                "continuous_calibration_capture": True,
                 "calibration_capture_delay_s": ParameterValue(
                     LaunchConfiguration("calibration_capture_delay_s"), value_type=float
+                ),
+                "calibration_capture_interval_s": ParameterValue(
+                    LaunchConfiguration("calibration_capture_interval_s"), value_type=float
                 ),
                 "pose_topic": LaunchConfiguration("pose_topic"),
             },

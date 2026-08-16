@@ -222,6 +222,11 @@ vision_error_dataset_generator:
     derived_transform_output_json: ""
     sync_tolerance_s: 0.10
     match_distance_m: 0.75
+    continuous_recording: False
+    object_stability_window_s: 0.50
+    object_stability_min_samples: 5
+    object_stability_position_tolerance_m: 0.02
+    object_stability_yaw_tolerance_deg: 2.0
 
 llm_planner:
   ros__parameters:

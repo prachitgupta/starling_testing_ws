@@ -366,6 +366,12 @@ def load_vision_error_certificate(value, delta):
         rows = list(reader)
     if not rows:
         raise ValueError(f"{path} contains no calibration rows")
+    if "raw_continuous" in (reader.fieldnames or []) and any(
+        parse_csv_bool(row.get("raw_continuous"), "raw_continuous") for row in rows
+    ):
+        raise ValueError(
+            f"{path} contains raw continuous captures; run postprocess_vision_error_dataset.py first"
+        )
 
     trial_scores = {}
     placeholder_flags = set()
@@ -935,7 +941,9 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("calibration_status_topic", "/llm_vision/vision_calibration_status")
         self.declare_parameter("calibration_only", False)
         self.declare_parameter("auto_calibration_capture", False)
+        self.declare_parameter("continuous_calibration_capture", False)
         self.declare_parameter("calibration_capture_delay_s", 1.0)
+        self.declare_parameter("calibration_capture_interval_s", 3.0)
         self.declare_parameter("required_mission_state", "HOLDING_FOR_PLAN")
         self.declare_parameter("require_mission_state", True)
         self.declare_parameter("workspace_x_min", 0.0)
@@ -1031,8 +1039,12 @@ class InteractiveMissionGateway(Node):
         self.auto_calibration_capture = bool(
             self.get_parameter("auto_calibration_capture").value
         )
+        self.continuous_calibration_capture = bool(
+            self.get_parameter("continuous_calibration_capture").value
+        )
         self.calibration_frame_ready_s = None
-        self.calibration_capture_requested = False
+        self.calibration_capture_count = 0
+        self.last_calibration_capture_s = None
         self.require_safety_tubes = (
             str(self.get_parameter("visualizer").value).strip().lower() == "contraction"
         )
@@ -1211,6 +1223,7 @@ class InteractiveMissionGateway(Node):
             "source": source,
             "obstacles": copy.deepcopy(nominal),
             "observed_obstacles": copy.deepcopy(scene["obstacles"]),
+            "observer_pose": copy.deepcopy(scene.get("pose")),
             "depth_estimates": [item.model_dump() for item in intent.depth_estimates],
             **self.obstacle_safety_metadata(),
         }
@@ -1266,13 +1279,14 @@ class InteractiveMissionGateway(Node):
     def start_intent_request(self, operator_text, scene):
         token = uuid.uuid4().hex
         self.intent_request_token = token
-        self.conversation.append({"role": "operator", "content": operator_text})
+        if not self.calibration_only:
+            self.conversation.append({"role": "operator", "content": operator_text})
         catalog = obstacle_catalog(scene["obstacles"])
         future = self.intent_executor.submit(
             self.intent_parser.parse,
             operator_text,
             catalog,
-            list(self.conversation),
+            [] if self.calibration_only else list(self.conversation),
         )
         future.add_done_callback(
             lambda completed: self.intent_results.put((token, completed, scene, operator_text))
@@ -1292,17 +1306,25 @@ class InteractiveMissionGateway(Node):
 
     def maybe_start_calibration_capture(self):
         if (
-            self.calibration_capture_requested
-            or self.intent_request_token is not None
+            self.intent_request_token is not None
             or self.calibration_frame_ready_s is None
         ):
             return
-        delay = max(0.0, float(self.get_parameter("calibration_capture_delay_s").value))
-        if time.time() - self.calibration_frame_ready_s < delay:
+        if self.calibration_capture_count and not self.continuous_calibration_capture:
+            return
+        now = time.time()
+        if self.last_calibration_capture_s is None:
+            delay = max(0.0, float(self.get_parameter("calibration_capture_delay_s").value))
+            reference_s = self.calibration_frame_ready_s
+        else:
+            delay = max(0.1, float(self.get_parameter("calibration_capture_interval_s").value))
+            reference_s = self.last_calibration_capture_s
+        if now - reference_s < delay:
             return
         if self.scene_context_error() is not None:
             return
-        self.calibration_capture_requested = True
+        self.calibration_capture_count += 1
+        self.last_calibration_capture_s = now
         scene = copy.deepcopy(self.latest_scene)
         if not scene["obstacles"]:
             intent = MissionIntent(
@@ -1320,7 +1342,8 @@ class InteractiveMissionGateway(Node):
         self.start_intent_request("Describe all visible objects for vision calibration.", scene)
         self.publish_response(
             "CALIBRATION_ESTIMATING_DEPTH",
-            "The frame alignment is ready; GPT nano is estimating nominal object depths.",
+            f"Continuous calibration capture {self.calibration_capture_count}: GPT nano is estimating nominal object depths.",
+            capture_index=self.calibration_capture_count,
         )
 
     @staticmethod

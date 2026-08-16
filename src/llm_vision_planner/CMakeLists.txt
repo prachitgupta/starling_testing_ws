@@ -22,6 +22,7 @@ install(PROGRAMS
   scripts/trajectory_follower_continuous.py
   scripts/control_law_executer.py
   fine_tuning/scripts/vision_error_dataset_generattor.py
+  fine_tuning/scripts/postprocess_vision_error_dataset.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

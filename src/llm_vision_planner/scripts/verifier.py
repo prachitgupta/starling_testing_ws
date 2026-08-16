@@ -253,8 +253,8 @@ class PathVerifier(Node):
 
     @staticmethod
     def point_in_workspace(point, workspace):
-        x_limits = workspace.get("x", [0.0, 4.0])
-        y_limits = workspace.get("y", [0.0, 4.0])
+        x_limits = workspace.get("x", [-3.0, 3.0])
+        y_limits = workspace.get("y", [-3.0, 3.0])
         return (
             float(x_limits[0]) <= float(point["x"]) <= float(x_limits[1])
             and float(y_limits[0]) <= float(point["y"]) <= float(y_limits[1])

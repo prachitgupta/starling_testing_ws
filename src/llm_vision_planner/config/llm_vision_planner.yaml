@@ -41,8 +41,8 @@ semantic_obstacle_perception:
     detector_timeout_s: 2.0
     point_cloud_timeout_s: 1.5
     pose_timeout_s: 1.0
-    # Live source-stamp check observed 0.042-0.063 s RGB/ToF deltas at 10 Hz ToF.
-    max_sync_slop_s: 0.35
+    # Hardware hover validation observed bursty RGB/ToF deltas up to 0.687 s.
+    max_sync_slop_s: 1.0
     detection_to_depth_offset_s: 0.0
     z_estimation_mode: depth
     min_tof_depth_m: 0.20

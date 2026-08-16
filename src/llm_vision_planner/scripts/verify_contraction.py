@@ -42,8 +42,8 @@ PLAN_QOS = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1,
 )
-DEFAULT_WORKSPACE_X = (0.0, 4.0)
-DEFAULT_WORKSPACE_Y = (0.0, 4.0)
+DEFAULT_WORKSPACE_X = (-3.0, 3.0)
+DEFAULT_WORKSPACE_Y = (-3.0, 3.0)
 
 
 def point_to_aabb_distance(point, minimum, maximum):
@@ -852,8 +852,8 @@ class ContractionVisualizer(Node):
 
     @staticmethod
     def configure_workspace(axis, workspace):
-        x_limits = workspace.get("x", [0.0, 4.0])
-        y_limits = workspace.get("y", [0.0, 4.0])
+        x_limits = workspace.get("x", DEFAULT_WORKSPACE_X)
+        y_limits = workspace.get("y", DEFAULT_WORKSPACE_Y)
         axis.set_xlim(float(x_limits[0]) - 0.25, float(x_limits[1]) + 0.25)
         axis.set_ylim(float(y_limits[0]) - 0.25, float(y_limits[1]) + 0.25)
 

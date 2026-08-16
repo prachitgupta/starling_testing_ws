@@ -149,8 +149,8 @@ class PathRefinement(Node):
         return point
 
     def clamp_to_workspace(self, point, workspace):
-        x_limits = workspace.get("x", [0.0, 4.0])
-        y_limits = workspace.get("y", [0.0, 4.0])
+        x_limits = workspace.get("x", [-3.0, 3.0])
+        y_limits = workspace.get("y", [-3.0, 3.0])
         point["x"] = min(max(point["x"], float(x_limits[0])), float(x_limits[1]))
         point["y"] = min(max(point["y"], float(y_limits[0])), float(y_limits[1]))
         point["z"] = self.fixed_z

@@ -1,6 +1,7 @@
 import http.client
 import json
 import sys
+import tempfile
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
@@ -98,6 +99,37 @@ class InteractiveWebUiTest(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(body, {"ok": True, "text": "Hover near the chair."})
         self.assertEqual(bridge.request, (b"audio", "audio/webm", "en-US"))
+
+    def test_contraction_plot_endpoint_serves_visualizer_png(self):
+        class Logger:
+            def debug(self, message):
+                del message
+
+        with tempfile.TemporaryDirectory() as directory:
+            plot = Path(directory) / "live_contraction.png"
+            expected = b"\x89PNG\r\n\x1a\nvisualizer-output"
+            plot.write_bytes(expected)
+            bridge = object.__new__(WebUiBridge)
+            bridge.contraction_plot_enabled = True
+            bridge.contraction_plot_path = plot
+            bridge.get_logger = lambda: Logger()
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(bridge))
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+            try:
+                connection.request("GET", "/api/contraction.png")
+                response = connection.getresponse()
+                body = response.read()
+            finally:
+                connection.close()
+                server.shutdown()
+                server.server_close()
+                server_thread.join(timeout=2)
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.getheader("Content-Type"), "image/png")
+        self.assertEqual(body, expected)
 
 
 if __name__ == "__main__":

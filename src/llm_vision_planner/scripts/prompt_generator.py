@@ -9,8 +9,8 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import String
 
-DEFAULT_WORKSPACE_X = (0.0, 4.0)
-DEFAULT_WORKSPACE_Y = (0.0, 4.0)
+DEFAULT_WORKSPACE_X = (-3.0, 3.0)
+DEFAULT_WORKSPACE_Y = (-3.0, 3.0)
 DEFAULT_FIXED_Z = -0.5
 DEFAULT_GOAL = (0.0, 1.5, -0.5)
 DEFAULT_CLEARANCE_M = 0.40

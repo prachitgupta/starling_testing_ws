@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import rclpy
+from px4_msgs.msg import VehicleOdometry
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -17,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from dataset_scene_publisher import DatasetScenePublisher  # noqa: E402
-from interactive_mission_gateway import InteractiveMissionGateway, LATCHED_QOS  # noqa: E402
+from interactive_mission_gateway import InteractiveMissionGateway, LATCHED_QOS, ODOM_QOS  # noqa: E402
 from refinment import PathRefinement  # noqa: E402
 from verifier import PathVerifier  # noqa: E402
 from verify_contraction import ContractionVisualizer  # noqa: E402
@@ -46,7 +47,7 @@ class PlannerHarness(Node):
             waypoints = [first, goal]
             reasoning = "Simulation-injected start mismatch to exercise verifier feedback."
         else:
-            detour = {"x": 3.5, "y": 0.8, "z": start["z"]}
+            detour = {"x": 2.9, "y": 0.8, "z": start["z"]}
             waypoints = [start, detour, goal]
             reasoning = "Monotonic right-side detour with swept-tube clearance."
         output = {
@@ -78,6 +79,33 @@ class PlannerHarness(Node):
             if field in payload:
                 output[field] = payload[field]
         self.raw_pub.publish(String(data=json.dumps(output)))
+
+
+class PoseHarness(Node):
+    """Publish a hover pose so the live plot exercises its UAV overlay."""
+
+    def __init__(self, start):
+        super().__init__("interactive_sim_pose_harness")
+        self.position = [float(start["x"]), float(start["y"]), -0.5]
+        self.timestamp_us = int(time.time() * 1_000_000)
+        self.pose_pub = self.create_publisher(
+            VehicleOdometry,
+            "/fmu/out/vehicle_odometry",
+            ODOM_QOS,
+        )
+        self.create_timer(0.05, self.publish_pose)
+
+    def publish_pose(self):
+        self.timestamp_us += 50_000
+        msg = VehicleOdometry()
+        msg.timestamp = self.timestamp_us
+        msg.timestamp_sample = self.timestamp_us
+        msg.pose_frame = VehicleOdometry.POSE_FRAME_NED
+        msg.velocity_frame = VehicleOdometry.VELOCITY_FRAME_NED
+        msg.position = list(self.position)
+        msg.velocity = [0.0, 0.0, 0.0]
+        msg.q = [1.0, 0.0, 0.0, 0.0]
+        self.pose_pub.publish(msg)
 
 
 class OperatorHarness(Node):
@@ -199,9 +227,11 @@ def main():
             "output_png:=/tmp/llm_vision_contraction_backend_sim.png",
         ]
     )
+    scene_publisher = DatasetScenePublisher()
     contraction_visualizer = ContractionVisualizer()
     nodes = [
-        DatasetScenePublisher(),
+        scene_publisher,
+        PoseHarness(scene_publisher.environment["start"]),
         InteractiveMissionGateway(),
         PlannerHarness(),
         PathRefinement(),
@@ -239,7 +269,10 @@ def main():
             raise AssertionError(f"expected one final launch approval, got {len(operator.launch_proposals)}")
         launch_proposal = operator.launch_proposals[0]
         if launch_proposal.get("tube_gate_passed") is not True:
-            raise AssertionError("swept safety-tube gate did not report PASS")
+            raise AssertionError(
+                "swept safety-tube gate did not report PASS: "
+                f"proposal={launch_proposal}, waypoints={operator.final.get('waypoints')}"
+            )
         if launch_proposal.get("obs_safety_bracket") != "conformal":
             raise AssertionError("conformal obstacle certificate was not carried to the UI payload")
         if launch_proposal.get("vision_error_calibration_placeholder") is not True:
@@ -248,6 +281,18 @@ def main():
             raise AssertionError("q_p scope was not reported accurately")
         if not contraction_visualizer.reference_xy or not contraction_visualizer.launched:
             raise AssertionError("conformal safety tubes were not latched before final launch")
+        contraction_visualizer.render()
+        axis_limits = {
+            "x": list(contraction_visualizer.axis.get_xlim()),
+            "y": list(contraction_visualizer.axis.get_ylim()),
+        }
+        expected_limits = [-3.25, 3.25]
+        if axis_limits["x"] != expected_limits or axis_limits["y"] != expected_limits:
+            raise AssertionError(f"live plot did not use centered workspace bounds: {axis_limits}")
+        if contraction_visualizer.latest_pose is None:
+            raise AssertionError("live plot did not receive the simulated UAV pose")
+        if not any(text.get_text() == "UAV" for text in contraction_visualizer.axis.texts):
+            raise AssertionError("live plot did not draw the UAV marker")
         print(
             json.dumps(
                 {
@@ -258,6 +303,10 @@ def main():
                     "failed_constraints_attempt_1": operator.candidates[0]["failed_constraints"],
                     "final_plan_id": operator.final["plan_id"],
                     "final_launch_approved": True,
+                    "plot_axis_limits": axis_limits,
+                    "uav_position": list(contraction_visualizer.latest_pose),
+                    "uav_marker_drawn": True,
+                    "plot_png": contraction_visualizer.output_png,
                     "final_metrics": operator.final["metrics"],
                 },
                 indent=2,

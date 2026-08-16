@@ -5,7 +5,7 @@ import math
 import random
 
 
-DEFAULT_WORKSPACE = {"x": [0.0, 4.0], "y": [0.0, 4.0], "z": -0.25}
+DEFAULT_WORKSPACE = {"x": [-3.0, 3.0], "y": [-3.0, 3.0], "z": -0.25}
 DEFAULT_CLEARANCE_M = 0.40
 
 
@@ -27,8 +27,8 @@ def obstacle_bounds(obstacle, clearance_m=0.0):
 
 
 def in_workspace_xy(x, y, workspace):
-    x_limits = workspace.get("x", [0.0, 4.0])
-    y_limits = workspace.get("y", [0.0, 4.0])
+    x_limits = workspace.get("x", DEFAULT_WORKSPACE["x"])
+    y_limits = workspace.get("y", DEFAULT_WORKSPACE["y"])
     return float(x_limits[0]) <= x <= float(x_limits[1]) and float(y_limits[0]) <= y <= float(y_limits[1])
 
 
@@ -125,8 +125,8 @@ def plan_rrt(
 
     nodes = [start_xy]
     parents = [None]
-    x_limits = workspace.get("x", [0.0, 4.0])
-    y_limits = workspace.get("y", [0.0, 4.0])
+    x_limits = workspace.get("x", DEFAULT_WORKSPACE["x"])
+    y_limits = workspace.get("y", DEFAULT_WORKSPACE["y"])
 
     for _ in range(max_iterations):
         if random.random() < goal_sample_rate:

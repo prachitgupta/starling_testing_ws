@@ -28,7 +28,7 @@ from interactive_mission_gateway import (  # noqa: E402
     load_vision_error_certificate,
     nominal_obstacles_from_depth,
 )
-from verify_contraction import evaluate_swept_tube  # noqa: E402
+from verify_contraction import ContractionVisualizer, evaluate_swept_tube  # noqa: E402
 from perception_detection import SemanticObstaclePerception  # noqa: E402
 from vision_error_dataset_generattor import (  # noqa: E402
     CSV_FIELDS,
@@ -117,6 +117,27 @@ def test_containment_score_captures_extent_error():
     assert contained["max_corner"][0] >= ground_truth["max_corner"][0]
     assert contained["min_corner"][1] <= ground_truth["min_corner"][1]
     assert contained["max_corner"][1] >= ground_truth["max_corner"][1]
+
+
+def test_contraction_plot_uses_centered_fallback_and_payload_workspace():
+    class Axis:
+        def set_xlim(self, lower, upper):
+            self.x_limits = (lower, upper)
+
+        def set_ylim(self, lower, upper):
+            self.y_limits = (lower, upper)
+
+    axis = Axis()
+    ContractionVisualizer.configure_workspace(axis, {})
+    assert axis.x_limits == (-3.25, 3.25)
+    assert axis.y_limits == (-3.25, 3.25)
+
+    ContractionVisualizer.configure_workspace(
+        axis,
+        {"x": [-5.0, 2.0], "y": [-1.0, 7.0]},
+    )
+    assert axis.x_limits == (-5.25, 2.25)
+    assert axis.y_limits == (-1.25, 7.25)
 
 
 def test_certificate_uses_independent_trial_maxima_and_fails_closed():
@@ -543,6 +564,7 @@ def test_swept_tube_rejects_intersection_and_tangency():
 
 if __name__ == "__main__":
     test_containment_score_captures_extent_error()
+    test_contraction_plot_uses_centered_fallback_and_payload_workspace()
     test_certificate_uses_independent_trial_maxima_and_fails_closed()
     test_dummy_certificate_and_finite_sample_rank()
     test_continuous_raw_rows_are_rejected_until_repeats_are_collapsed()

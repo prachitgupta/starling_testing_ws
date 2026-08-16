@@ -159,6 +159,20 @@ class LLMPlanner(Node):
         }
         if "goal_relations" in payload:
             result["goal_relations"] = payload["goal_relations"]
+        for field in (
+            "nominal_obstacles",
+            "obstacle_safety",
+            "obs_safety_bracket",
+            "vision_error_quantile_m",
+            "vision_error_delta",
+            "vision_error_calibration_trials",
+            "vision_error_calibration_rank",
+            "vision_error_calibration_csv",
+            "vision_error_calibration_placeholder",
+            "scene_guard_band_m",
+        ):
+            if field in payload:
+                result[field] = payload[field]
 
         out = String()
         out.data = json.dumps(result)

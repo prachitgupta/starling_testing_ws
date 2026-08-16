@@ -2,6 +2,7 @@
 """Human-approved mission intent gateway for the existing planner pipeline."""
 
 import copy
+import csv
 import hashlib
 import json
 import math
@@ -11,6 +12,7 @@ import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Literal, Optional
 
 import rclpy
@@ -49,6 +51,12 @@ HOLD, LAND, RETURN_HOME, and all other flight-control requests are unsupported.
 Cancellations use status CANCELLED and do not return READY.
 If any safety-relevant meaning is uncertain, return NEEDS_CLARIFICATION.
 All detected objects remain mandatory avoidance obstacles.
+For every detected object, also estimate its effective physical occupancy depth in
+metres from the visible front surface away from the camera. Return exactly one item
+in depth_estimates for every detected object ID, including objects not named in the
+operator command. This is a scalar size estimate, not a coordinate or waypoint.
+If the label or view is insufficient for a defensible estimate, set abstained=true
+and effective_depth_along_view_m=null. Never invent or alter an object ID.
 """
 
 ODOM_QOS = QoSProfile(
@@ -77,6 +85,16 @@ class GoalRelation(BaseModel):
     optimize: Literal["NONE", "MAXIMIZE"]
 
 
+class ObjectDepthEstimate(BaseModel):
+    """One schema-constrained effective-depth estimate for a detected object."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    object_id: str
+    effective_depth_along_view_m: Optional[float] = Field(default=None, ge=0.05, le=5.0)
+    abstained: bool
+
+
 class MissionIntent(BaseModel):
     """Schema-constrained result returned by the intent model."""
 
@@ -95,6 +113,7 @@ class MissionIntent(BaseModel):
     ]
     relations: list[GoalRelation] = Field(default_factory=list, max_length=8)
     query_object_ids: list[str] = Field(default_factory=list, max_length=8)
+    depth_estimates: list[ObjectDepthEstimate] = Field(default_factory=list, max_length=32)
     clarifying_question: str
 
 
@@ -251,6 +270,251 @@ class MockIntentParser:
 
 def canonical_json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def containment_score(predicted, ground_truth):
+    """Smallest scalar x-y expansion that contains the ground-truth AABB."""
+    predicted_min = predicted["min_corner"]
+    predicted_max = predicted["max_corner"]
+    ground_truth_min = ground_truth["min_corner"]
+    ground_truth_max = ground_truth["max_corner"]
+    return max(
+        0.0,
+        float(predicted_min[0]) - float(ground_truth_min[0]),
+        float(ground_truth_max[0]) - float(predicted_max[0]),
+        float(predicted_min[1]) - float(ground_truth_min[1]),
+        float(ground_truth_max[1]) - float(predicted_max[1]),
+    )
+
+
+def containment_score_center_extent(predicted, ground_truth):
+    """Equivalent containment score expressed using centers and half extents."""
+    predicted_center, predicted_size = obstacle_xy_geometry(predicted)
+    ground_truth_center, ground_truth_size = obstacle_xy_geometry(ground_truth)
+    return max(
+        0.0,
+        abs(predicted_center[0] - ground_truth_center[0])
+        + 0.5 * ground_truth_size[0]
+        - 0.5 * predicted_size[0],
+        abs(predicted_center[1] - ground_truth_center[1])
+        + 0.5 * ground_truth_size[1]
+        - 0.5 * predicted_size[1],
+    )
+
+
+def conformal_quantile(values, delta):
+    """Finite-sample split-conformal order statistic without silent rank clipping."""
+    if not 0.0 < float(delta) < 1.0:
+        raise ValueError("vision_error_delta must be between zero and one")
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        raise ValueError("vision calibration requires at least one independent trial")
+    rank = math.ceil((len(ordered) + 1) * (1.0 - float(delta)))
+    if rank > len(ordered):
+        raise ValueError(
+            f"vision calibration has {len(ordered)} independent trials, insufficient for delta={float(delta):.3f}"
+        )
+    return ordered[rank - 1], rank
+
+
+def resolve_data_file(value):
+    requested = Path(value).expanduser()
+    candidates = [requested, Path.cwd() / requested]
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        candidates.append(Path(get_package_share_directory("llm_vision_planner")) / requested)
+    except Exception:
+        pass
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    raise FileNotFoundError(f"vision calibration CSV does not exist: {value}")
+
+
+def parse_csv_bool(value, field):
+    normalized = str(value).strip().lower()
+    if normalized in ("true", "1", "yes"):
+        return True
+    if normalized in ("false", "0", "no"):
+        return False
+    raise ValueError(f"invalid {field} value: {value!r}")
+
+
+def load_vision_error_certificate(value, delta):
+    """Load per-trial maximum containment scores and return a fail-closed certificate."""
+    path = resolve_data_file(value)
+    required = {
+        "trial_id",
+        "pred_min_x",
+        "pred_min_y",
+        "pred_max_x",
+        "pred_max_y",
+        "gt_min_x",
+        "gt_min_y",
+        "gt_max_x",
+        "gt_max_y",
+        "score_m",
+        "missed_detection",
+        "placeholder",
+    }
+    with path.open(newline="", encoding="utf-8") as stream:
+        reader = csv.DictReader(stream)
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"{path} is missing calibration columns: {sorted(missing)}")
+        rows = list(reader)
+    if not rows:
+        raise ValueError(f"{path} contains no calibration rows")
+
+    trial_scores = {}
+    placeholder_flags = set()
+    bounds_fields = (
+        "pred_min_x",
+        "pred_min_y",
+        "pred_max_x",
+        "pred_max_y",
+        "gt_min_x",
+        "gt_min_y",
+        "gt_max_x",
+        "gt_max_y",
+    )
+    for row_index, row in enumerate(rows, start=2):
+        trial_id = str(row.get("trial_id", "")).strip()
+        if not trial_id:
+            raise ValueError(f"{path}:{row_index} has an empty trial_id")
+        placeholder_flags.add(parse_csv_bool(row.get("placeholder"), "placeholder"))
+        missed = parse_csv_bool(row.get("missed_detection"), "missed_detection")
+        numeric_fields = bounds_fields[4:] if missed else bounds_fields
+        try:
+            bounds = {field: float(row[field]) for field in numeric_fields}
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{path}:{row_index} has invalid footprint bounds") from exc
+        if not all(math.isfinite(value) for value in bounds.values()):
+            raise ValueError(f"{path}:{row_index} has non-finite footprint bounds")
+        if not missed and (
+            bounds["pred_min_x"] > bounds["pred_max_x"]
+            or bounds["pred_min_y"] > bounds["pred_max_y"]
+        ):
+            raise ValueError(f"{path}:{row_index} has inverted predicted bounds")
+        if bounds["gt_min_x"] > bounds["gt_max_x"] or bounds["gt_min_y"] > bounds["gt_max_y"]:
+            raise ValueError(f"{path}:{row_index} has inverted ground-truth bounds")
+        if missed:
+            score = math.inf
+        else:
+            try:
+                score = float(row["score_m"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{path}:{row_index} has an invalid score_m") from exc
+            if not math.isfinite(score) or score < 0.0:
+                raise ValueError(f"{path}:{row_index} score_m must be finite and non-negative")
+            expected_score = containment_score(
+                {
+                    "min_corner": [bounds["pred_min_x"], bounds["pred_min_y"]],
+                    "max_corner": [bounds["pred_max_x"], bounds["pred_max_y"]],
+                },
+                {
+                    "min_corner": [bounds["gt_min_x"], bounds["gt_min_y"]],
+                    "max_corner": [bounds["gt_max_x"], bounds["gt_max_y"]],
+                },
+            )
+            if not math.isclose(score, expected_score, abs_tol=1e-6):
+                raise ValueError(
+                    f"{path}:{row_index} score_m={score} does not match containment score {expected_score}"
+                )
+        trial_scores[trial_id] = max(score, trial_scores.get(trial_id, 0.0))
+
+    if len(placeholder_flags) != 1:
+        raise ValueError(f"{path} mixes placeholder and real calibration rows")
+    quantile, rank = conformal_quantile(trial_scores.values(), delta)
+    if not math.isfinite(quantile):
+        raise ValueError(
+            f"{path} selects a non-finite quantile because detection misses exceed the requested risk"
+        )
+    return {
+        "quantile_m": quantile,
+        "delta": float(delta),
+        "trial_count": len(trial_scores),
+        "rank": rank,
+        "file": str(path),
+        "placeholder": placeholder_flags.pop(),
+    }
+
+
+def nominal_obstacles_from_depth(obstacles, depth_estimates):
+    """Extrude each perceived front segment away from the camera into a nominal footprint."""
+    estimates = {}
+    for raw in depth_estimates:
+        estimate = raw.model_dump() if isinstance(raw, ObjectDepthEstimate) else dict(raw)
+        object_id = str(estimate.get("object_id", ""))
+        if not object_id or object_id in estimates:
+            raise ValueError("GPT depth estimates must contain unique detected object IDs")
+        estimates[object_id] = estimate
+    expected_ids = {str(obstacle["object_id"]) for obstacle in obstacles}
+    if set(estimates) != expected_ids:
+        missing = sorted(expected_ids - set(estimates))
+        extra = sorted(set(estimates) - expected_ids)
+        raise ValueError(f"GPT depth estimates do not match the scene (missing={missing}, extra={extra})")
+
+    nominal = []
+    for obstacle in obstacles:
+        object_id = str(obstacle["object_id"])
+        estimate = estimates[object_id]
+        depth = estimate.get("effective_depth_along_view_m")
+        if bool(estimate.get("abstained")) or depth is None:
+            raise ValueError(f"GPT nano abstained from estimating depth for {object_id}")
+        depth = float(depth)
+        if not math.isfinite(depth) or depth <= 0.0:
+            raise ValueError(f"GPT nano returned invalid depth for {object_id}")
+
+        front = obstacle.get("front_surface_center")
+        view = obstacle.get("view_axis_xy")
+        lateral = obstacle.get("lateral_axis_xy")
+        width = obstacle.get("visible_width_m")
+        if not isinstance(front, list) or len(front) < 2:
+            raise ValueError(f"perception did not provide front_surface_center for {object_id}")
+        if not isinstance(view, list) or len(view) != 2:
+            raise ValueError(f"perception did not provide view_axis_xy for {object_id}")
+        if not isinstance(lateral, list) or len(lateral) != 2:
+            raise ValueError(f"perception did not provide lateral_axis_xy for {object_id}")
+        values = [float(front[0]), float(front[1]), float(view[0]), float(view[1]), float(lateral[0]), float(lateral[1]), float(width)]
+        if not all(math.isfinite(value) for value in values) or values[-1] <= 0.0:
+            raise ValueError(f"perception provided invalid front geometry for {object_id}")
+        view_norm = math.hypot(values[2], values[3])
+        lateral_norm = math.hypot(values[4], values[5])
+        if view_norm <= 1e-9 or lateral_norm <= 1e-9:
+            raise ValueError(f"perception provided a zero-length footprint axis for {object_id}")
+        view_xy = (values[2] / view_norm, values[3] / view_norm)
+        lateral_xy = (values[4] / lateral_norm, values[5] / lateral_norm)
+        if abs(view_xy[0] * lateral_xy[0] + view_xy[1] * lateral_xy[1]) > 0.05:
+            raise ValueError(f"perception footprint axes are not perpendicular for {object_id}")
+        half_width = 0.5 * values[-1]
+        front_xy = (values[0], values[1])
+        corners = [
+            [front_xy[0] - half_width * lateral_xy[0], front_xy[1] - half_width * lateral_xy[1]],
+            [front_xy[0] + half_width * lateral_xy[0], front_xy[1] + half_width * lateral_xy[1]],
+        ]
+        corners.extend([[point[0] + depth * view_xy[0], point[1] + depth * view_xy[1]] for point in corners])
+        minimum_z = float(obstacle.get("min_corner", [0.0, 0.0, 0.0])[2])
+        maximum_z = float(obstacle.get("max_corner", [0.0, 0.0, 0.0])[2])
+        item = copy.deepcopy(obstacle)
+        item["min_corner"] = [min(point[0] for point in corners), min(point[1] for point in corners), minimum_z]
+        item["max_corner"] = [max(point[0] for point in corners), max(point[1] for point in corners), maximum_z]
+        item["centroid"] = [
+            front_xy[0] + 0.5 * depth * view_xy[0],
+            front_xy[1] + 0.5 * depth * view_xy[1],
+            0.5 * (minimum_z + maximum_z),
+        ]
+        item["size"] = [
+            item["max_corner"][0] - item["min_corner"][0],
+            item["max_corner"][1] - item["min_corner"][1],
+            maximum_z - minimum_z,
+        ]
+        item["effective_depth_along_view_m"] = depth
+        item["depth_estimate_source"] = "gpt_nano"
+        item["nominal_footprint_corners_xy"] = corners
+        nominal.append(item)
+    return nominal
 
 
 def object_id_for(obstacle, index):
@@ -571,6 +835,11 @@ def obstacle_catalog(obstacles):
             "label": item["label"],
             "min_corner": item["min_corner"],
             "max_corner": item["max_corner"],
+            "front_surface_center": item.get("front_surface_center"),
+            "visible_width_m": item.get("visible_width_m"),
+            "front_range_m": item.get("front_range_m"),
+            "view_axis_xy": item.get("view_axis_xy"),
+            "lateral_axis_xy": item.get("lateral_axis_xy"),
             "confidence": item.get("confidence"),
         }
         for item in obstacles
@@ -657,6 +926,7 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("safety_tube_ready_topic", "/llm_vision/safety_tube_ready")
         self.declare_parameter("semantic_obstacle_topic", "/llm_vision/semantic_obstacles")
         self.declare_parameter("sim_obstacle_topic", "/llm_vision/sim_obstacles")
+        self.declare_parameter("nominal_obstacle_topic", "/llm_vision/nominal_obstacles")
         self.declare_parameter("mission_state_topic", "/llm_vision/mission_state")
         self.declare_parameter("pose_topic", "/fmu/out/vehicle_odometry")
         self.declare_parameter("prompt_topic", "/llm_vision/prompt")
@@ -678,6 +948,12 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("approval_timeout_s", 30.0)
         self.declare_parameter("scene_position_tolerance_m", 0.15)
         self.declare_parameter("scene_size_tolerance_m", 0.20)
+        self.declare_parameter("obs_safety_bracket", "conformal")
+        self.declare_parameter(
+            "vision_error_calibration_csv",
+            "fine_tuning/datasets/calibration_vision_error_dummy.csv",
+        )
+        self.declare_parameter("vision_error_delta", 0.10)
         self.declare_parameter("max_start_drift_m", 0.25)
         self.declare_parameter("max_release_start_drift_m", 0.08)
         self.declare_parameter("max_planning_attempts", 3)
@@ -702,7 +978,28 @@ class InteractiveMissionGateway(Node):
         self.scene_size_tolerance_m = float(self.get_parameter("scene_size_tolerance_m").value)
         if self.scene_position_tolerance_m < 0.0 or self.scene_size_tolerance_m < 0.0:
             raise ValueError("scene tolerances must be non-negative")
-        self.scene_guard_band_m = self.scene_position_tolerance_m + 0.5 * self.scene_size_tolerance_m
+        self.hardcoded_scene_guard_band_m = (
+            self.scene_position_tolerance_m + 0.5 * self.scene_size_tolerance_m
+        )
+        self.obs_safety_bracket = str(self.get_parameter("obs_safety_bracket").value).strip().lower()
+        if self.obs_safety_bracket not in ("hardcoded", "conformal"):
+            raise ValueError("obs_safety_bracket must be 'hardcoded' or 'conformal'")
+        if self.obs_safety_bracket == "conformal":
+            self.vision_error_certificate = load_vision_error_certificate(
+                str(self.get_parameter("vision_error_calibration_csv").value),
+                float(self.get_parameter("vision_error_delta").value),
+            )
+            self.scene_guard_band_m = float(self.vision_error_certificate["quantile_m"])
+        else:
+            self.vision_error_certificate = {
+                "quantile_m": None,
+                "delta": float(self.get_parameter("vision_error_delta").value),
+                "trial_count": 0,
+                "rank": None,
+                "file": "",
+                "placeholder": False,
+            }
+            self.scene_guard_band_m = self.hardcoded_scene_guard_band_m
         self.workspace = {
             "x": [
                 float(self.get_parameter("workspace_x_min").value),
@@ -807,6 +1104,11 @@ class InteractiveMissionGateway(Node):
             str(self.get_parameter("prompt_topic").value),
             LATCHED_QOS,
         )
+        self.nominal_obstacle_pub = self.create_publisher(
+            String,
+            str(self.get_parameter("nominal_obstacle_topic").value),
+            LATCHED_QOS,
+        )
         self.passed_plan_pub = self.create_publisher(
             String,
             str(self.get_parameter("passed_plan_topic").value),
@@ -815,8 +1117,13 @@ class InteractiveMissionGateway(Node):
         self.create_timer(0.05, self.drain_intent_results)
         self.get_logger().info(
             f"interactive gateway ready: intent_provider={self.get_parameter('intent_provider').value}, "
-            f"obstacles={obstacle_topic}"
+            f"obstacles={obstacle_topic}, obs_safety_bracket={self.obs_safety_bracket}, "
+            f"scene_guard_band={self.scene_guard_band_m:.3f} m"
         )
+        if self.obs_safety_bracket == "conformal" and self.vision_error_certificate["placeholder"]:
+            self.get_logger().warning(
+                "using the placeholder vision-error certificate; real conformal missions will fail closed"
+            )
 
     def create_intent_parser(self):
         provider = str(self.get_parameter("intent_provider").value).strip().lower()
@@ -825,6 +1132,63 @@ class InteractiveMissionGateway(Node):
         if provider != "openai":
             raise ValueError(f"unsupported intent_provider: {provider}")
         return OpenAIIntentParser(str(self.get_parameter("openai_intent_model").value))
+
+    def obstacle_safety_metadata(self):
+        certificate = self.vision_error_certificate
+        return {
+            "obs_safety_bracket": self.obs_safety_bracket,
+            "vision_error_quantile_m": certificate["quantile_m"],
+            "vision_error_delta": certificate["delta"],
+            "vision_error_calibration_trials": certificate["trial_count"],
+            "vision_error_calibration_rank": certificate["rank"],
+            "vision_error_calibration_csv": certificate["file"],
+            "vision_error_calibration_placeholder": certificate["placeholder"],
+            "scene_guard_band_m": self.scene_guard_band_m,
+        }
+
+    def environment_obstacles(self, scene, intent):
+        observed = scene["obstacles"]
+        if self.obs_safety_bracket == "hardcoded":
+            nominal = copy.deepcopy(observed)
+        elif self.environment == "sim":
+            nominal = copy.deepcopy(observed)
+        else:
+            if self.vision_error_certificate["placeholder"]:
+                raise ValueError(
+                    "real conformal missions require a non-placeholder vision calibration dataset"
+                )
+            nominal = nominal_obstacles_from_depth(observed, intent.depth_estimates)
+        return nominal, inflate_obstacles_xy(nominal, self.scene_guard_band_m)
+
+    def calibration_nominal_obstacles(self, scene, intent, mission_nominal):
+        if self.obs_safety_bracket != "hardcoded" or self.environment == "sim":
+            return mission_nominal
+        try:
+            return nominal_obstacles_from_depth(scene["obstacles"], intent.depth_estimates)
+        except ValueError as exc:
+            self.get_logger().warning(
+                f"hardcoded mission remains available, but no calibration snapshot was published: {exc}"
+            )
+            return None
+
+    def publish_nominal_obstacles(self, scene, nominal, snapshot_id, intent):
+        if nominal is None:
+            return
+        if self.environment == "sim":
+            source = "sim_complete_boxes"
+        else:
+            source = "gpt_nano_front_footprint"
+        payload = {
+            "snapshot_id": snapshot_id,
+            "timestamp": time.time(),
+            "frame": "local_ned",
+            "source": source,
+            "obstacles": copy.deepcopy(nominal),
+            "observed_obstacles": copy.deepcopy(scene["obstacles"]),
+            "depth_estimates": [item.model_dump() for item in intent.depth_estimates],
+            **self.obstacle_safety_metadata(),
+        }
+        self.nominal_obstacle_pub.publish(String(data=json.dumps(payload)))
 
     def obstacle_callback(self, msg):
         try:
@@ -950,10 +1314,14 @@ class InteractiveMissionGateway(Node):
             return
         start = self.current_start()
         try:
-            planning_obstacles = inflate_obstacles_xy(scene["obstacles"], self.scene_guard_band_m)
+            nominal_obstacles, planning_obstacles = self.environment_obstacles(scene, intent)
+        except ValueError as exc:
+            self.publish_response("ENVIRONMENT_UNCERTAIN", f"No mission was released: {exc}")
+            return
+        try:
             goal_relations = normalize_goal_relations(
                 intent.relations,
-                scene["obstacles"],
+                nominal_obstacles,
                 default_standoff=self.default_standoff_m,
                 clearance=self.clearance_m,
                 guard_band=self.scene_guard_band_m,
@@ -976,14 +1344,20 @@ class InteractiveMissionGateway(Node):
             return
 
         target_id = next(item["object_id"] for item in goal_relations if item["relation"] == "NEAR")
-        target = next(item for item in scene["obstacles"] if item["object_id"] == target_id)
+        target = next(item for item in nominal_obstacles if item["object_id"] == target_id)
 
         created_at = time.time()
         mission_id = f"M-{int(created_at * 1000)}-{uuid.uuid4().hex[:6]}"
         snapshot_hash = scene_signature(scene["obstacles"])
+        snapshot_id = f"S-{snapshot_hash[:12]}"
+        calibration_nominal = self.calibration_nominal_obstacles(
+            scene,
+            intent,
+            nominal_obstacles,
+        )
         mission = {
             "mission_id": mission_id,
-            "snapshot_id": f"S-{snapshot_hash[:12]}",
+            "snapshot_id": snapshot_id,
             "scene_signature": snapshot_hash,
             "operator_text": operator_text,
             "intent": intent.model_dump(),
@@ -994,10 +1368,13 @@ class InteractiveMissionGateway(Node):
             "goal_relation_results": goal_relation_results,
             "workspace": copy.deepcopy(self.workspace),
             "observed_obstacles": copy.deepcopy(scene["obstacles"]),
+            "nominal_obstacles": copy.deepcopy(nominal_obstacles),
             "obstacles": planning_obstacles,
+            "obstacle_safety": self.obstacle_safety_metadata(),
             "created_at": created_at,
             "attempt": 0,
         }
+        self.publish_nominal_obstacles(scene, calibration_nominal, snapshot_id, intent)
         # The live hover position is rebound at approval within a configured limit.
         contract = {
             key: mission[key]
@@ -1009,7 +1386,9 @@ class InteractiveMissionGateway(Node):
                 "goal",
                 "goal_relations",
                 "workspace",
+                "nominal_obstacles",
                 "obstacles",
+                "obstacle_safety",
             )
         }
         mission["proposal_hash"] = hashlib.sha256(canonical_json(contract).encode("utf-8")).hexdigest()
@@ -1127,12 +1506,15 @@ class InteractiveMissionGateway(Node):
                 ],
             },
             "goal": mission["goal"],
+            "workspace": copy.deepcopy(mission["workspace"]),
             "goal_relations": mission["goal_relations"],
             "goal_relation_results": mission["goal_relation_results"],
             "clearance_m": self.clearance_m,
-            "scene_guard_band_m": round(self.scene_guard_band_m, 3),
+            "nominal_obstacles": copy.deepcopy(mission["nominal_obstacles"]),
+            "obstacles": copy.deepcopy(mission["obstacles"]),
             "obstacle_ids": [item["object_id"] for item in mission["obstacles"]],
             "created_at": mission["created_at"],
+            **copy.deepcopy(mission["obstacle_safety"]),
         }
 
     def approval_callback(self, msg):
@@ -1225,7 +1607,10 @@ class InteractiveMissionGateway(Node):
             "goal": mission["goal"],
             "goal_relations": mission["goal_relations"],
             "workspace": mission["workspace"],
+            "nominal_obstacles": mission["nominal_obstacles"],
             "obstacles": mission["obstacles"],
+            "obstacle_safety": mission["obstacle_safety"],
+            **mission["obstacle_safety"],
             "timestamp": time.time(),
             "llm_provider": str(self.get_parameter("planner_llm_provider").value),
             "requested_model": str(self.get_parameter("planner_model_name").value),
@@ -1288,8 +1673,14 @@ class InteractiveMissionGateway(Node):
                     "observed_obstacles": copy.deepcopy(
                         self.active_mission["observed_obstacles"]
                     ),
-                    "scene_guard_band_m": self.scene_guard_band_m,
+                    "nominal_obstacles": copy.deepcopy(
+                        self.active_mission["nominal_obstacles"]
+                    ),
+                    "obstacle_safety": copy.deepcopy(
+                        self.active_mission["obstacle_safety"]
+                    ),
                     "goal_relations": copy.deepcopy(self.active_mission["goal_relations"]),
+                    **copy.deepcopy(self.active_mission["obstacle_safety"]),
                 }
             )
             self.pending_verified_plan = output
@@ -1329,6 +1720,31 @@ class InteractiveMissionGateway(Node):
         except json.JSONDecodeError as exc:
             self.get_logger().error(f"invalid safety-tube readiness JSON: {exc}")
             return
+        tube_status = self.latest_safety_tube_ready
+        if (
+            self.state == "FORMING_SAFETY_TUBES"
+            and tube_status.get("status") == "FAILED"
+            and tube_status.get("plan_id") == self.active_plan_id
+        ):
+            message = str(tube_status.get("reason") or "the swept safety tube intersects an obstacle")
+            self.last_failure = {
+                "status": "SAFETY_TUBE_FAILED",
+                "message": message,
+                "failed_constraints": ["swept_tube_clearance"],
+                "timestamp": time.time(),
+            }
+            self.pending_verified_plan = None
+            self.state = "SAFETY_TUBE_FAILED"
+            self.publish_response(
+                "SAFETY_TUBE_FAILED",
+                f"Launch blocked: {message}.",
+                mission_id=self.active_mission["mission_id"],
+                plan_id=self.active_plan_id,
+                minimum_clearance_m=tube_status.get("minimum_clearance_m"),
+                required_radius_m=tube_status.get("required_radius_m"),
+                failed_constraints=["swept_tube_clearance"],
+            )
+            return
         self.maybe_publish_launch_proposal()
 
     def maybe_publish_launch_proposal(self):
@@ -1353,6 +1769,11 @@ class InteractiveMissionGateway(Node):
             "verified_at": time.time(),
             "conformal_safety_tubes_ready": tube_ready,
             "safety_tube_samples": tube_status.get("sample_count", 0),
+            "tube_gate_passed": tube_status.get("tube_gate_passed", tube_ready),
+            "tube_minimum_clearance_m": tube_status.get("minimum_clearance_m"),
+            "tube_required_radius_m": tube_status.get("required_radius_m"),
+            "q_p_scope": tube_status.get("q_p_scope", "simulated_rrt_relative_cross_track"),
+            **copy.deepcopy(self.active_mission["obstacle_safety"]),
         }
         self.state = "AWAITING_LAUNCH_APPROVAL"
         self.launch_proposal_pub.publish(String(data=json.dumps(launch_proposal)))

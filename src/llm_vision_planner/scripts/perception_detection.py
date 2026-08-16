@@ -484,6 +484,9 @@ class SemanticObstaclePerception(Node):
             "tflite_tof_projected",
             point_cloud_sample.get("sync_delta_s"),
             str(getattr(detection, "cam", "")),
+            center_body,
+            width_m,
+            float(np.linalg.norm(center_body - self.detection_camera_translation_body)),
         ), None
 
     def build_hardcoded_obstacle(self, x1, y1, x2, y2, label, confidence, pose):
@@ -526,6 +529,9 @@ class SemanticObstaclePerception(Node):
             "tflite_class_prior",
             None,
             str(self.get_parameter("detection_camera").value),
+            center_body,
+            width_m,
+            float(np.linalg.norm(center_body - self.detection_camera_translation_body)),
         )
 
     def obstacle_payload(
@@ -539,17 +545,34 @@ class SemanticObstaclePerception(Node):
         source,
         sync_delta_s,
         camera,
+        front_center_body,
+        visible_width_m,
+        front_range_m,
     ):
         rotation = pose["rotation_body_to_world"]
         drone_pos = pose["position"]
         centroid = drone_pos + rotation @ center_body
         corners_world = drone_pos + (rotation @ corners_body.T).T
+        front_surface_center = drone_pos + rotation @ front_center_body
+        camera_world = drone_pos + rotation @ self.detection_camera_translation_body
+        view_delta_xy = front_surface_center[:2] - camera_world[:2]
+        view_norm = float(np.linalg.norm(view_delta_xy))
+        if view_norm <= 1e-9:
+            view_axis_xy = np.zeros(2, dtype=float)
+        else:
+            view_axis_xy = view_delta_xy / view_norm
+        lateral_axis_xy = np.array([-view_axis_xy[1], view_axis_xy[0]], dtype=float)
         min_corner = corners_world.min(axis=0)
         max_corner = corners_world.max(axis=0)
         size = max_corner - min_corner
         delta = centroid - drone_pos
         payload = {
             "centroid": np.round(centroid, 2).tolist(),
+            "front_surface_center": np.round(front_surface_center, 3).tolist(),
+            "visible_width_m": round(float(visible_width_m), 3),
+            "front_range_m": round(float(front_range_m), 3),
+            "view_axis_xy": np.round(view_axis_xy, 6).tolist(),
+            "lateral_axis_xy": np.round(lateral_axis_xy, 6).tolist(),
             "min_corner": np.round(min_corner, 2).tolist(),
             "max_corner": np.round(max_corner, 2).tolist(),
             "size": np.round(size, 2).tolist(),

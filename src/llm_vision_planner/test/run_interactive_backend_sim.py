@@ -46,8 +46,9 @@ class PlannerHarness(Node):
             waypoints = [first, goal]
             reasoning = "Simulation-injected start mismatch to exercise verifier feedback."
         else:
-            waypoints = [start, goal]
-            reasoning = "Direct monotonic standoff route for the recorded simulation scene."
+            detour = {"x": 3.5, "y": 0.8, "z": start["z"]}
+            waypoints = [start, detour, goal]
+            reasoning = "Monotonic right-side detour with swept-tube clearance."
         output = {
             "plan_id": plan_id,
             "reasoning": reasoning,
@@ -62,6 +63,20 @@ class PlannerHarness(Node):
             "model": "backend-simulation-harness",
             "llm_provider": "simulation",
         }
+        for field in (
+            "nominal_obstacles",
+            "obstacle_safety",
+            "obs_safety_bracket",
+            "vision_error_quantile_m",
+            "vision_error_delta",
+            "vision_error_calibration_trials",
+            "vision_error_calibration_rank",
+            "vision_error_calibration_csv",
+            "vision_error_calibration_placeholder",
+            "scene_guard_band_m",
+        ):
+            if field in payload:
+                output[field] = payload[field]
         self.raw_pub.publish(String(data=json.dumps(output)))
 
 
@@ -222,6 +237,15 @@ def main():
             raise AssertionError("wrong planning attempt was released")
         if len(operator.launch_proposals) != 1:
             raise AssertionError(f"expected one final launch approval, got {len(operator.launch_proposals)}")
+        launch_proposal = operator.launch_proposals[0]
+        if launch_proposal.get("tube_gate_passed") is not True:
+            raise AssertionError("swept safety-tube gate did not report PASS")
+        if launch_proposal.get("obs_safety_bracket") != "conformal":
+            raise AssertionError("conformal obstacle certificate was not carried to the UI payload")
+        if launch_proposal.get("vision_error_calibration_placeholder") is not True:
+            raise AssertionError("simulation did not identify the dummy vision certificate")
+        if launch_proposal.get("q_p_scope") != "simulated_rrt_relative_cross_track":
+            raise AssertionError("q_p scope was not reported accurately")
         if not contraction_visualizer.reference_xy or not contraction_visualizer.launched:
             raise AssertionError("conformal safety tubes were not latched before final launch")
         print(

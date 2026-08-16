@@ -45,6 +45,104 @@ PLAN_QOS = QoSProfile(
 PLOT_WORKSPACE = {"x": [0.0, 4.0], "y": [0.0, 4.0]}
 
 
+def point_to_aabb_distance(point, minimum, maximum):
+    dx = max(float(minimum[0]) - float(point[0]), 0.0, float(point[0]) - float(maximum[0]))
+    dy = max(float(minimum[1]) - float(point[1]), 0.0, float(point[1]) - float(maximum[1]))
+    return math.hypot(dx, dy)
+
+
+def point_to_segment_distance(point, start, end):
+    dx = float(end[0]) - float(start[0])
+    dy = float(end[1]) - float(start[1])
+    denominator = dx * dx + dy * dy
+    if denominator <= 1e-18:
+        return math.dist(point, start)
+    amount = (
+        (float(point[0]) - float(start[0])) * dx
+        + (float(point[1]) - float(start[1])) * dy
+    ) / denominator
+    amount = min(1.0, max(0.0, amount))
+    closest = (float(start[0]) + amount * dx, float(start[1]) + amount * dy)
+    return math.dist(point, closest)
+
+
+def segment_intersects_aabb(start, end, minimum, maximum):
+    """Inclusive Liang-Barsky segment/AABB test; tangency counts as intersection."""
+    t_min = 0.0
+    t_max = 1.0
+    for axis in (0, 1):
+        origin = float(start[axis])
+        delta = float(end[axis]) - origin
+        lower = float(minimum[axis])
+        upper = float(maximum[axis])
+        if abs(delta) <= 1e-12:
+            if origin < lower or origin > upper:
+                return False
+            continue
+        enter = (lower - origin) / delta
+        leave = (upper - origin) / delta
+        if enter > leave:
+            enter, leave = leave, enter
+        t_min = max(t_min, enter)
+        t_max = min(t_max, leave)
+        if t_min > t_max:
+            return False
+    return True
+
+
+def segment_to_aabb_distance(start, end, minimum, maximum):
+    if segment_intersects_aabb(start, end, minimum, maximum):
+        return 0.0
+    corners = (
+        (float(minimum[0]), float(minimum[1])),
+        (float(minimum[0]), float(maximum[1])),
+        (float(maximum[0]), float(minimum[1])),
+        (float(maximum[0]), float(maximum[1])),
+    )
+    return min(
+        point_to_aabb_distance(start, minimum, maximum),
+        point_to_aabb_distance(end, minimum, maximum),
+        *(point_to_segment_distance(corner, start, end) for corner in corners),
+    )
+
+
+def evaluate_swept_tube(reference_xy, obstacles, required_radius_m):
+    """Check every piecewise-linear QP segment against expanded obstacle AABBs."""
+    radius = float(required_radius_m)
+    if not math.isfinite(radius) or radius < 0.0:
+        raise ValueError("required tube radius must be finite and non-negative")
+    if len(reference_xy) < 2:
+        return {
+            "passed": False,
+            "minimum_clearance_m": None,
+            "required_radius_m": radius,
+            "colliding_obstacle_ids": [],
+            "reason": "QP reference contains fewer than two samples",
+        }
+    minimum_clearance = math.inf
+    colliding = set()
+    for start, end in zip(reference_xy, reference_xy[1:]):
+        for index, obstacle in enumerate(obstacles, start=1):
+            minimum = obstacle.get("min_corner")
+            maximum = obstacle.get("max_corner")
+            if not isinstance(minimum, list) or not isinstance(maximum, list) or len(minimum) < 2 or len(maximum) < 2:
+                raise ValueError("tube verification requires obstacle min_corner and max_corner")
+            expanded_minimum = [float(minimum[0]) - radius, float(minimum[1]) - radius]
+            expanded_maximum = [float(maximum[0]) + radius, float(maximum[1]) + radius]
+            if segment_intersects_aabb(start, end, expanded_minimum, expanded_maximum):
+                colliding.add(str(obstacle.get("object_id", obstacle.get("id", index))))
+            clearance = segment_to_aabb_distance(start, end, minimum, maximum) - radius
+            minimum_clearance = min(minimum_clearance, clearance)
+    passed = not colliding
+    return {
+        "passed": passed,
+        "minimum_clearance_m": None if math.isinf(minimum_clearance) else minimum_clearance,
+        "required_radius_m": radius,
+        "colliding_obstacle_ids": sorted(colliding),
+        "reason": "" if passed else "the swept QP safety tube intersects an enlarged obstacle",
+    }
+
+
 class ContractionVisualizer(Node):
     def __init__(self):
         super().__init__("verify_contraction")
@@ -75,6 +173,7 @@ class ContractionVisualizer(Node):
         self.declare_parameter("delta_p", 0.10)
         self.declare_parameter("delta_w", 0.10)
         self.declare_parameter("drone_radius_m", 0.10)
+        self.declare_parameter("discretization_allowance_m", 0.0)
         self.declare_parameter("debug", False)
 
         self.output_png = str(self.get_parameter("output_png").value)
@@ -85,6 +184,11 @@ class ContractionVisualizer(Node):
         self.delta_w = float(self.get_parameter("delta_w").value)
         self.q_p, self.q_w, self.state_radius_4d, self.projected_radius = self.load_certificate()
         self.drone_radius = float(self.get_parameter("drone_radius_m").value)
+        self.discretization_allowance = float(
+            self.get_parameter("discretization_allowance_m").value
+        )
+        if self.drone_radius < 0.0 or self.discretization_allowance < 0.0:
+            raise ValueError("drone_radius_m and discretization_allowance_m must be non-negative")
 
         self.environment = str(self.get_parameter("environment").value).strip().lower()
         self.plan = None
@@ -100,6 +204,7 @@ class ContractionVisualizer(Node):
         self.reference_start_timestamp_us = None
         self.latest_live_position_error = None
         self.max_live_position_error = None
+        self.tube_gate = None
         self.dirty = True
         self.figure, self.axis = plt.subplots(figsize=(8, 7))
         self.status_text = self.figure.text(0.77, 0.46, "", fontsize=9, va="top")
@@ -240,6 +345,7 @@ class ContractionVisualizer(Node):
         self.reference_xy = []
         self.pose_trail = []
         self.reference_start_timestamp_us = None
+        self.tube_gate = None
         self.dirty = True
 
     def refined_plan_callback(self, msg):
@@ -257,14 +363,43 @@ class ContractionVisualizer(Node):
         self.latest_verification = payload
         if payload.get("passed", False):
             if self.latch_plan(payload, launched=False):
+                gate = self.tube_gate or {}
                 ready = {
-                    "status": "READY",
+                    "status": "READY" if gate.get("passed", False) else "FAILED",
                     "plan_id": payload.get("plan_id"),
                     "sample_count": len(self.reference_xy),
                     "q_p": self.q_p,
                     "q_w": self.q_w,
+                    "q_p_scope": "simulated_rrt_relative_cross_track",
+                    "tube_gate_passed": bool(gate.get("passed", False)),
+                    "minimum_clearance_m": gate.get("minimum_clearance_m"),
+                    "required_radius_m": gate.get("required_radius_m"),
+                    "colliding_obstacle_ids": gate.get("colliding_obstacle_ids", []),
+                    "reason": gate.get("reason", ""),
                 }
+                for field in (
+                    "obs_safety_bracket",
+                    "vision_error_quantile_m",
+                    "vision_error_delta",
+                    "vision_error_calibration_trials",
+                    "vision_error_calibration_csv",
+                    "vision_error_calibration_placeholder",
+                ):
+                    if field in payload:
+                        ready[field] = payload[field]
                 self.safety_tube_ready_pub.publish(String(data=json.dumps(ready)))
+            else:
+                failed = {
+                    "status": "FAILED",
+                    "plan_id": payload.get("plan_id"),
+                    "sample_count": 0,
+                    "tube_gate_passed": False,
+                    "minimum_clearance_m": None,
+                    "required_radius_m": self.drone_radius + self.q_p + self.discretization_allowance,
+                    "colliding_obstacle_ids": [],
+                    "reason": "the QP reference could not be generated for tube verification",
+                }
+                self.safety_tube_ready_pub.publish(String(data=json.dumps(failed)))
         self.dirty = True
 
     def verified_plan_callback(self, msg):
@@ -280,6 +415,9 @@ class ContractionVisualizer(Node):
     def latch_plan(self, payload, launched):
         previous_plan_id = self.plan.get("plan_id") if self.plan else None
         if previous_plan_id == payload.get("plan_id") and self.reference_samples:
+            if launched and not (self.tube_gate or {}).get("passed", False):
+                self.get_logger().error("refusing launch because the swept safety-tube gate failed")
+                return False
             self.plan = payload
             if launched and not self.launched:
                 self.pose_trail = []
@@ -309,14 +447,36 @@ class ContractionVisualizer(Node):
         self.reference_xy = [
             (float(sample["x"][0]), float(sample["x"][1])) for sample in self.reference_samples
         ]
+        required_radius = self.drone_radius + self.q_p + self.discretization_allowance
+        try:
+            self.tube_gate = evaluate_swept_tube(
+                self.reference_xy,
+                payload.get("obstacles", []),
+                required_radius,
+            )
+        except ValueError as exc:
+            self.get_logger().error(f"could not verify swept safety tube: {exc}")
+            self.tube_gate = {
+                "passed": False,
+                "minimum_clearance_m": None,
+                "required_radius_m": required_radius,
+                "colliding_obstacle_ids": [],
+                "reason": str(exc),
+            }
+        if launched and not self.tube_gate["passed"]:
+            self.get_logger().error("refusing launch because the swept safety-tube gate failed")
+            self.launched = False
+            self.dirty = True
+            return False
         self.pose_trail = []
         self.reference_start_timestamp_us = None
         self.latest_live_position_error = None
         self.max_live_position_error = None
         self.dirty = True
+        gate_status = "passed" if self.tube_gate["passed"] else "FAILED"
         self.get_logger().info(
-            f"latched passed plan_id={payload.get('plan_id')} with {len(self.reference_xy)} QP samples; "
-            "conformal safety tubes formed"
+            f"latched plan_id={payload.get('plan_id')} with {len(self.reference_xy)} QP samples; "
+            f"swept safety-tube gate {gate_status}"
         )
         return True
 
@@ -358,34 +518,47 @@ class ContractionVisualizer(Node):
         axis.set_ylabel("y position [m]")
         axis.grid(True, alpha=0.25)
         active_path = self.plan or self.latest_refined
-        workspace = active_path.get("workspace", PLOT_WORKSPACE) if active_path else PLOT_WORKSPACE
+        geometry_payload = active_path or self.latest_proposal or {}
+        workspace = geometry_payload.get("workspace", PLOT_WORKSPACE)
         self.configure_workspace(axis, workspace)
 
         scene_obstacles = self.latest_scene.get("obstacles", []) if self.latest_scene else []
-        planning_obstacles = active_path.get("obstacles", []) if active_path else []
+        planning_obstacles = geometry_payload.get("obstacles", [])
+        nominal_obstacles = geometry_payload.get("nominal_obstacles", [])
         observed_obstacles = (
             scene_obstacles
             or (active_path.get("observed_obstacles", []) if active_path else [])
+            or nominal_obstacles
             or planning_obstacles
         )
-        if planning_obstacles and observed_obstacles != planning_obstacles:
+        if planning_obstacles:
             self.draw_obstacles(
                 axis,
                 planning_obstacles,
                 facecolor="#fecaca",
                 edgecolor="#dc2626",
-                alpha=0.16,
+                alpha=0.20,
                 linestyle="--",
                 annotate=False,
             )
-        self.draw_obstacles(
-            axis,
-            observed_obstacles,
-            facecolor="#ef4444",
-            edgecolor="#991b1b",
-            alpha=0.42,
-            annotate=True,
-        )
+        if nominal_obstacles:
+            self.draw_obstacles(
+                axis,
+                nominal_obstacles,
+                facecolor="#fbbf24",
+                edgecolor="#b45309",
+                alpha=0.38,
+                annotate=True,
+            )
+        else:
+            self.draw_obstacles(
+                axis,
+                observed_obstacles,
+                facecolor="#ef4444",
+                edgecolor="#991b1b",
+                alpha=0.42,
+                annotate=True,
+            )
 
         if active_path is not None:
             self.draw_candidate_path(axis, active_path)
@@ -446,8 +619,23 @@ class ContractionVisualizer(Node):
         scene_health = "unknown" if self.latest_scene is None else (
             "healthy" if self.latest_scene.get("healthy", True) else "unhealthy"
         )
+        safety_payload = active_path or self.latest_proposal or {}
+        strategy = safety_payload.get("obs_safety_bracket", "--")
+        quantile = safety_payload.get("vision_error_quantile_m")
+        quantile_text = "--" if quantile is None else f"{float(quantile):.3f} m"
+        placeholder = bool(safety_payload.get("vision_error_calibration_placeholder", False))
+        if self.tube_gate is None:
+            gate_text = "NOT RUN"
+            clearance_text = "--"
+        else:
+            gate_text = "PASS" if self.tube_gate.get("passed", False) else "FAIL"
+            clearance = self.tube_gate.get("minimum_clearance_m")
+            clearance_text = "unbounded" if clearance is None else f"{float(clearance):.3f} m"
         self.status_text.set_text(
-            f"Scene: {scene_health}\nObjects: {len(observed_obstacles)}\nPhase: {phase}"
+            f"Scene: {scene_health}\nObjects: {len(observed_obstacles)}\n"
+            f"Obstacle safety: {strategy}\nq_obs: {quantile_text}\n"
+            f"Placeholder: {'YES' if placeholder else 'NO'}\n"
+            f"Tube gate: {gate_text}\nMinimum clearance: {clearance_text}\nPhase: {phase}"
         )
         if self.plan is not None:
             legend_handles = [
@@ -455,7 +643,7 @@ class ContractionVisualizer(Node):
                     facecolor="#60a5fa",
                     edgecolor="none",
                     alpha=0.35,
-                    label=rf"Safety radius $q_p={self.q_p:.2f}$ m",
+                    label=rf"RRT-relative $q_p={self.q_p:.2f}$ m",
                 ),
                 Patch(
                     facecolor="#c4b5fd",
@@ -490,6 +678,8 @@ class ContractionVisualizer(Node):
         self.dirty = False
 
     def phase_text(self):
+        if self.tube_gate is not None and not self.tube_gate.get("passed", False):
+            return "Launch blocked - swept safety tube intersects an obstacle"
         if self.plan is not None:
             if self.launched:
                 return "Launch approved - safety tubes active"

@@ -130,6 +130,7 @@ interactive_mission_gateway:
     safety_tube_ready_topic: /llm_vision/safety_tube_ready
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
     sim_obstacle_topic: /llm_vision/sim_obstacles
+    nominal_obstacle_topic: /llm_vision/nominal_obstacles
     mission_state_topic: /llm_vision/mission_state
     pose_topic: /fmu/out/vehicle_odometry
     prompt_topic: /llm_vision/prompt
@@ -153,6 +154,9 @@ interactive_mission_gateway:
     # Obstacle envelope per x-y side = position tolerance + 0.5 * size tolerance.
     scene_position_tolerance_m: 0.20
     scene_size_tolerance_m: 0.30
+    obs_safety_bracket: conformal
+    vision_error_calibration_csv: fine_tuning/datasets/calibration_vision_error_dummy.csv
+    vision_error_delta: 0.10
     max_start_drift_m: 0.25
     # Keep margin below the executor's 0.10 m verified-plan start limit.
     max_release_start_drift_m: 0.08
@@ -185,6 +189,22 @@ dataset_scene_publisher:
     obstacle_topic: /llm_vision/sim_obstacles
     mission_state_topic: /llm_vision/mission_state
     publish_mission_state: False
+
+vision_error_dataset_generator:
+  ros__parameters:
+    nominal_obstacle_topic: /llm_vision/nominal_obstacles
+    trial_id: unset
+    output_csv: fine_tuning/datasets/calibration_vision_error.csv
+    # Configure known Vicon objects before enabling the recorder. For a Vicon
+    # subject and segment both named chair1, use topic /vicon/chair1/chair1.
+    # Each entry requires object_id, label, topic, dimensions_m=[object-x width,
+    # object-y depth, height], and marker_to_object={translation_m,quaternion_xyzw}.
+    vicon_objects_json: "[]"
+    # Full rigid transform mapping Vicon-world into local NED with the same
+    # {translation_m:[x,y,z], quaternion_xyzw:[x,y,z,w]} schema.
+    vicon_world_to_ned_json: "{}"
+    sync_tolerance_s: 0.10
+    match_distance_m: 0.75
 
 llm_planner:
   ros__parameters:
@@ -272,6 +292,8 @@ verify_contraction:
     delta_p: 0.10
     delta_w: 0.10
     drone_radius_m: 0.10
+    # Exact segment/AABB checks need no extra sampling allowance for a piecewise-linear reference.
+    discretization_allowance_m: 0.0
     debug: true
 
 control_law_executer:

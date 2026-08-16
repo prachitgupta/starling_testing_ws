@@ -172,6 +172,8 @@ def run_test():
             "-p",
             "visualizer:=contraction",
             "-p",
+            "obs_safety_bracket:=hardcoded",
+            "-p",
             "debug:=false",
         ]
     )
@@ -312,6 +314,8 @@ def run_test():
         assert final["plan_id"] == second["plan_id"]
         assert final["proposal_hash"] == proposal["proposal_hash"]
         assert final["scene_guard_band_m"] == 0.25
+        assert final["obs_safety_bracket"] == "hardcoded"
+        assert final["vision_error_quantile_m"] is None
         assert [item["label"] for item in final["observed_obstacles"]] == [
             "chair",
             "bottle",
@@ -337,6 +341,8 @@ def run_release_drift_rejection_test():
             "fresh_data_timeout_s:=5.0",
             "-p",
             "visualizer:=contraction",
+            "-p",
+            "obs_safety_bracket:=hardcoded",
             "-p",
             "debug:=false",
         ]
@@ -412,6 +418,8 @@ def run_launch_termination_test():
             "fresh_data_timeout_s:=5.0",
             "-p",
             "visualizer:=contraction",
+            "-p",
+            "obs_safety_bracket:=hardcoded",
             "-p",
             "debug:=false",
         ]

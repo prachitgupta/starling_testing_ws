@@ -21,6 +21,7 @@ install(PROGRAMS
   scripts/trajectory_follower.py
   scripts/trajectory_follower_continuous.py
   scripts/control_law_executer.py
+  fine_tuning/scripts/vision_error_dataset_generattor.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -45,6 +46,10 @@ if(BUILD_TESTING)
   add_test(
     NAME interactive_web_ui
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_interactive_web_ui.py
+  )
+  add_test(
+    NAME conformal_obstacle_safety
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_conformal_obstacle_safety.py
   )
 endif()
 

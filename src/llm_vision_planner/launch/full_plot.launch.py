@@ -87,6 +87,31 @@ def generate_launch_description():
         default_value="4",
         description="env_ros_commands.csv sample used by the optional simulation scene publisher.",
     )
+    obs_safety_bracket_arg = DeclareLaunchArgument(
+        "obs_safety_bracket",
+        default_value="conformal",
+        description="Interactive obstacle safety envelope: conformal or hardcoded.",
+    )
+    vision_error_calibration_csv_arg = DeclareLaunchArgument(
+        "vision_error_calibration_csv",
+        default_value="fine_tuning/datasets/calibration_vision_error_dummy.csv",
+        description="Vision containment-score calibration CSV.",
+    )
+    vision_error_delta_arg = DeclareLaunchArgument(
+        "vision_error_delta",
+        default_value="0.10",
+        description="Miscoverage level for the obstacle containment certificate.",
+    )
+    record_vision_error_dataset_arg = DeclareLaunchArgument(
+        "record_vision_error_dataset",
+        default_value="false",
+        description="Launch the Vicon-backed vision error dataset recorder.",
+    )
+    vision_error_trial_id_arg = DeclareLaunchArgument(
+        "vision_error_trial_id",
+        default_value="unset",
+        description="Independent calibration trial identifier required by the recorder.",
+    )
     params_file = LaunchConfiguration("params_file")
     fixed_goal = {
         "goal_x": ParameterValue(LaunchConfiguration("goal_x"), value_type=float),
@@ -114,6 +139,17 @@ def generate_launch_description():
                 LaunchConfiguration("environment"),
                 "' == 'sim' and '",
                 LaunchConfiguration("use_dataset_scene"),
+                "'.lower() == 'true'",
+            ]
+        )
+    )
+    use_vision_error_recorder = IfCondition(
+        PythonExpression(
+            [
+                "'",
+                LaunchConfiguration("interaction_mode"),
+                "' == 'interactive' and '",
+                LaunchConfiguration("record_vision_error_dataset"),
                 "'.lower() == 'true'",
             ]
         )
@@ -156,6 +192,13 @@ def generate_launch_description():
                 "intent_provider": LaunchConfiguration("intent_provider"),
                 "planner_llm_provider": LaunchConfiguration("llm_provider"),
                 "visualizer": LaunchConfiguration("visualizer"),
+                "obs_safety_bracket": LaunchConfiguration("obs_safety_bracket"),
+                "vision_error_calibration_csv": LaunchConfiguration(
+                    "vision_error_calibration_csv"
+                ),
+                "vision_error_delta": ParameterValue(
+                    LaunchConfiguration("vision_error_delta"), value_type=float
+                ),
             },
         ],
         condition=use_interactive_prompt,
@@ -184,6 +227,18 @@ def generate_launch_description():
         output="screen",
         parameters=[params_file, {"sample_id": ParameterValue(LaunchConfiguration("sim_sample_id"), value_type=int)}],
         condition=use_dataset_scene,
+    )
+
+    vision_error_dataset_generator = Node(
+        package="llm_vision_planner",
+        executable="vision_error_dataset_generattor.py",
+        name="vision_error_dataset_generator",
+        output="screen",
+        parameters=[
+            params_file,
+            {"trial_id": LaunchConfiguration("vision_error_trial_id")},
+        ],
+        condition=use_vision_error_recorder,
     )
 
     llm_planner = Node(
@@ -270,8 +325,14 @@ def generate_launch_description():
             web_ui_host_arg,
             use_dataset_scene_arg,
             sim_sample_id_arg,
+            obs_safety_bracket_arg,
+            vision_error_calibration_csv_arg,
+            vision_error_delta_arg,
+            record_vision_error_dataset_arg,
+            vision_error_trial_id_arg,
             semantic_perception,
             dataset_scene,
+            vision_error_dataset_generator,
             llm_planner,
             TimerAction(period=2.0, actions=[prompt_generator]),
             interactive_gateway,

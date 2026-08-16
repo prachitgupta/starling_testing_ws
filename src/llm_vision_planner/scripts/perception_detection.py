@@ -102,6 +102,7 @@ class SemanticObstaclePerception(Node):
                 ("depth_near_percentile", 25.0),
                 ("depth_cluster_tolerance_m", 0.35),
                 ("obstacle_hold_s", 10.0),
+                ("held_depth_health_grace_s", 3.0),
                 ("obstacle_match_distance_m", 0.75),
                 ("publish_hz", 2.0),
                 ("debug", True),
@@ -331,7 +332,7 @@ class SemanticObstaclePerception(Node):
 
         obstacles = self.update_obstacle_tracks(obstacles)
         obstacles.sort(key=lambda obstacle: obstacle["distance_m"])
-        status = self.health_status(no_depth)
+        status = self.health_status(no_depth, obstacles)
         payload = {
             "pose": self.pose_tuple(),
             "obstacles": obstacles,
@@ -815,7 +816,28 @@ class SemanticObstaclePerception(Node):
         except (AttributeError, TypeError, ValueError):
             return list(self.detections)
 
-    def health_status(self, no_depth):
+    @staticmethod
+    def held_depth_grace_labels(no_depth, obstacles, grace_s):
+        if not no_depth or grace_s <= 0.0:
+            return []
+        held_labels = {
+            str(obstacle.get("label", "")).strip().lower()
+            for obstacle in obstacles
+            if bool(obstacle.get("held"))
+            and float(obstacle.get("last_seen_age_s", math.inf)) <= grace_s
+            and str(obstacle.get("depth_source", "")).startswith("tof_projected_")
+            and math.isfinite(float(obstacle.get("front_range_m", math.nan)))
+        }
+        failed_labels = []
+        for failure in no_depth:
+            label = str(failure.get("label", "")).strip().lower()
+            reason = str(failure.get("reason", ""))
+            if not reason.startswith("point cloud sync delta=") or label not in held_labels:
+                return []
+            failed_labels.append(label)
+        return sorted(set(failed_labels))
+
+    def health_status(self, no_depth, obstacles):
         now = time.monotonic()
         detector_topic = str(self.get_parameter("detector_image_topic").value).strip()
         detector_timeout = float(self.get_parameter("detector_timeout_s").value)
@@ -866,12 +888,15 @@ class SemanticObstaclePerception(Node):
         calibration_valid = bool(
             self.get_parameter("camera_calibration_valid").value
         )
+        grace_s = max(0.0, float(self.get_parameter("held_depth_health_grace_s").value))
+        grace_labels = self.held_depth_grace_labels(no_depth, obstacles, grace_s)
+        grace_used = bool(no_depth) and bool(grace_labels)
         healthy = (
             detector_ok
             and pose == "ok"
             and depth_ok
             and calibration_valid
-            and not no_depth
+            and (not no_depth or grace_used)
         )
         latest_sample = self.point_cloud_samples[-1] if self.point_cloud_samples else None
         current_detections = self.current_detections()
@@ -915,6 +940,9 @@ class SemanticObstaclePerception(Node):
             "sync_basis": self.last_sync_basis,
             "point_cloud_sync_delta_s": self.last_point_cloud_sync_delta_s,
             "pose_sync_delta_s": self.last_pose_sync_delta_s,
+            "held_depth_grace_used": grace_used,
+            "held_depth_grace_s": grace_s,
+            "held_depth_grace_labels": grace_labels,
         }
 
     def log_summary(self, obstacles, no_depth_count, low_conf_count, status):

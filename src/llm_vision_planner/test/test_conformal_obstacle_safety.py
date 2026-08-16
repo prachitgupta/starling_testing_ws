@@ -477,6 +477,39 @@ def test_perception_publishes_front_and_view_geometry_without_removing_legacy_bo
     )
 
 
+def test_perception_health_grace_only_covers_recent_measured_sync_failures():
+    failure = [{"label": "chair", "reason": "point cloud sync delta=2.100s"}]
+    held_chair = {
+        "label": "chair",
+        "held": True,
+        "last_seen_age_s": 2.5,
+        "depth_source": "tof_projected_24of30pts",
+        "front_range_m": 1.8,
+    }
+    assert SemanticObstaclePerception.held_depth_grace_labels(
+        failure,
+        [held_chair],
+        3.0,
+    ) == ["chair"]
+
+    stale_chair = dict(held_chair, last_seen_age_s=3.1)
+    assert not SemanticObstaclePerception.held_depth_grace_labels(
+        failure,
+        [stale_chair],
+        3.0,
+    )
+    assert not SemanticObstaclePerception.held_depth_grace_labels(
+        [{"label": "chair", "reason": "no synchronized pose"}],
+        [held_chair],
+        3.0,
+    )
+    assert not SemanticObstaclePerception.held_depth_grace_labels(
+        failure,
+        [dict(held_chair, depth_source="class_prior_not_measured")],
+        3.0,
+    )
+
+
 def test_vicon_yaw_marker_offset_and_world_to_ned_transform():
     yaw_90 = quaternion_matrix([0.0, 0.0, math.sin(math.pi / 4.0), math.cos(math.pi / 4.0)])
     config = {
@@ -575,6 +608,7 @@ if __name__ == "__main__":
     test_calibration_only_gateway_converts_depth_abstention_to_a_miss()
     test_calibration_gateway_repeats_capture_without_relaunching()
     test_perception_publishes_front_and_view_geometry_without_removing_legacy_box()
+    test_perception_health_grace_only_covers_recent_measured_sync_failures()
     test_vicon_yaw_marker_offset_and_world_to_ned_transform()
     test_vicon_world_to_ned_is_derived_from_synchronized_vehicle_poses()
     test_aligned_tracker_object_defaults_marker_transform_to_identity()

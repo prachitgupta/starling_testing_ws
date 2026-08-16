@@ -54,6 +54,8 @@ semantic_obstacle_perception:
     depth_near_percentile: 25.0
     depth_cluster_tolerance_m: 0.35
     obstacle_hold_s: 10.0
+    # Reuse only recent, measured ToF geometry when the current failure is sync-only.
+    held_depth_health_grace_s: 3.0
     obstacle_match_distance_m: 0.75
     publish_hz: 2.0
     debug: False

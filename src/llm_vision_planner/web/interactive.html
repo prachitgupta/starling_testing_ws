@@ -16,6 +16,7 @@
     button:disabled { opacity: .45; cursor: not-allowed; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #d1d5db; }
     .status { font-size: 1.05rem; }
+    .warning { display: none; margin: 10px 0; padding: 12px; border: 1px solid #f59e0b; border-radius: 8px; background: #451a03; color: #fde68a; font-weight: 700; }
     #speech-status { min-height: 1.3em; margin: 8px 0 0; color: #d1d5db; }
     #contraction-plot { display: none; width: 100%; border-radius: 8px; background: white; }
   </style>
@@ -50,6 +51,7 @@
   <section>
     <h2>Final launch command</h2>
     <p>After verification, inspect the latched trajectory and conformal safety tubes before releasing control.</p>
+    <div id="safety-warning" class="warning"></div>
     <pre id="launch-proposal">No verified trajectory awaiting launch.</pre>
     <button id="launch" disabled>Approve &amp; Launch Mission</button>
     <button id="terminate" disabled>Terminate &amp; Land</button>
@@ -193,6 +195,12 @@
         document.getElementById('approve').disabled = !awaiting;
         document.getElementById('reject').disabled = !awaiting;
         document.getElementById('launch-proposal').textContent = launchProposal.plan_id ? JSON.stringify(launchProposal, null, 2) : 'No verified trajectory awaiting launch.';
+        const safetyWarning = document.getElementById('safety-warning');
+        safetyWarning.textContent = launchProposal.safety_warning || '';
+        safetyWarning.style.display = launchProposal.safety_warning ? 'block' : 'none';
+        document.getElementById('launch').textContent = launchProposal.safety_warning
+          ? 'Approve & Launch Despite Warning'
+          : 'Approve & Launch Mission';
         const awaitingLaunch = (response.gateway_state === 'AWAITING_LAUNCH_APPROVAL' || response.status === 'AWAITING_LAUNCH_APPROVAL') && Boolean(launchProposal.plan_id);
         document.getElementById('launch').disabled = !awaitingLaunch;
         document.getElementById('terminate').disabled = !awaitingLaunch;

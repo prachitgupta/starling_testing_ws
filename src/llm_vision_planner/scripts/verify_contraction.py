@@ -364,8 +364,11 @@ class ContractionVisualizer(Node):
         if payload.get("passed", False):
             if self.latch_plan(payload, launched=False):
                 gate = self.tube_gate or {}
+                intersects = bool(gate.get("colliding_obstacle_ids", []))
                 ready = {
-                    "status": "READY" if gate.get("passed", False) else "FAILED",
+                    "status": "READY" if gate.get("passed", False) else (
+                        "WARNING" if intersects else "FAILED"
+                    ),
                     "plan_id": payload.get("plan_id"),
                     "sample_count": len(self.reference_xy),
                     "q_p": self.q_p,
@@ -376,6 +379,13 @@ class ContractionVisualizer(Node):
                     "required_radius_m": gate.get("required_radius_m"),
                     "colliding_obstacle_ids": gate.get("colliding_obstacle_ids", []),
                     "reason": gate.get("reason", ""),
+                    "llm_prediction_safety_certified": bool(gate.get("passed", False)),
+                    "safety_warning": (
+                        "LLM prediction safety not certified: the predicted tube intersects "
+                        "an enlarged obstacle. Human approval is required to continue."
+                        if intersects
+                        else ""
+                    ),
                 }
                 for field in (
                     "obs_safety_bracket",
@@ -415,8 +425,12 @@ class ContractionVisualizer(Node):
     def latch_plan(self, payload, launched):
         previous_plan_id = self.plan.get("plan_id") if self.plan else None
         if previous_plan_id == payload.get("plan_id") and self.reference_samples:
-            if launched and not (self.tube_gate or {}).get("passed", False):
-                self.get_logger().error("refusing launch because the swept safety-tube gate failed")
+            if (
+                launched
+                and not (self.tube_gate or {}).get("passed", False)
+                and not (self.tube_gate or {}).get("colliding_obstacle_ids", [])
+            ):
+                self.get_logger().error("refusing launch because tube verification did not complete")
                 return False
             self.plan = payload
             if launched and not self.launched:
@@ -463,8 +477,8 @@ class ContractionVisualizer(Node):
                 "colliding_obstacle_ids": [],
                 "reason": str(exc),
             }
-        if launched and not self.tube_gate["passed"]:
-            self.get_logger().error("refusing launch because the swept safety-tube gate failed")
+        if launched and not self.tube_gate["passed"] and not self.tube_gate["colliding_obstacle_ids"]:
+            self.get_logger().error("refusing launch because tube verification did not complete")
             self.launched = False
             self.dirty = True
             return False
@@ -473,7 +487,7 @@ class ContractionVisualizer(Node):
         self.latest_live_position_error = None
         self.max_live_position_error = None
         self.dirty = True
-        gate_status = "passed" if self.tube_gate["passed"] else "FAILED"
+        gate_status = "passed" if self.tube_gate["passed"] else "WARNING (not certified)"
         self.get_logger().info(
             f"latched plan_id={payload.get('plan_id')} with {len(self.reference_xy)} QP samples; "
             f"swept safety-tube gate {gate_status}"
@@ -628,7 +642,7 @@ class ContractionVisualizer(Node):
             gate_text = "NOT RUN"
             clearance_text = "--"
         else:
-            gate_text = "PASS" if self.tube_gate.get("passed", False) else "FAIL"
+            gate_text = "PASS" if self.tube_gate.get("passed", False) else "WARNING - NOT CERTIFIED"
             clearance = self.tube_gate.get("minimum_clearance_m")
             clearance_text = "unbounded" if clearance is None else f"{float(clearance):.3f} m"
         self.status_text.set_text(
@@ -679,7 +693,9 @@ class ContractionVisualizer(Node):
 
     def phase_text(self):
         if self.tube_gate is not None and not self.tube_gate.get("passed", False):
-            return "Launch blocked - swept safety tube intersects an obstacle"
+            if self.launched:
+                return "Operator approved launch - LLM prediction safety NOT CERTIFIED"
+            return "WARNING - LLM prediction safety NOT CERTIFIED; awaiting operator approval"
         if self.plan is not None:
             if self.launched:
                 return "Launch approved - safety tubes active"

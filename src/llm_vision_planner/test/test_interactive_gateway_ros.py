@@ -82,6 +82,7 @@ class GatewayHarness(Node):
         self.launch_proposals = []
         self.executor_commands = []
         self.safety_ready_plan_id = None
+        self.safety_ready_status = "WARNING"
         self.responses = []
         self.scene = {
             "healthy": True,
@@ -121,9 +122,16 @@ class GatewayHarness(Node):
                 String(
                     data=json.dumps(
                         {
-                            "status": "READY",
+                            "status": self.safety_ready_status,
                             "plan_id": self.safety_ready_plan_id,
                             "sample_count": 24,
+                            "tube_gate_passed": False,
+                            "colliding_obstacle_ids": ["chair"],
+                            "reason": "the swept QP safety tube intersects an enlarged obstacle",
+                            "safety_warning": (
+                                "LLM prediction safety not certified: the predicted tube intersects "
+                                "an enlarged obstacle. Human approval is required to continue."
+                            ),
                         }
                     )
                 )
@@ -290,11 +298,23 @@ def run_test():
         spin_until(executor, harness, lambda: gateway.state == "FORMING_SAFETY_TUBES")
         assert not harness.launch_proposals, "final approval opened before safety tubes were ready"
         harness.safety_ready_plan_id = second["plan_id"]
-        spin_until(executor, harness, lambda: bool(harness.launch_proposals))
+        spin_until(
+            executor,
+            harness,
+            lambda: bool(harness.launch_proposals)
+            and any(
+                item["status"] == "AWAITING_LAUNCH_APPROVAL"
+                and "LLM prediction safety not certified" in item["message"]
+                for item in harness.responses
+            ),
+        )
         assert not harness.final_plans, "verified candidate bypassed final launch approval"
         launch_proposal = harness.launch_proposals[-1]
         assert launch_proposal["conformal_safety_tubes_ready"] is True
         assert launch_proposal["safety_tube_samples"] == 24
+        assert launch_proposal["tube_gate_passed"] is False
+        assert launch_proposal["llm_prediction_safety_certified"] is False
+        assert "LLM prediction safety not certified" in launch_proposal["safety_warning"]
         harness.launch_approval_pub.publish(
             String(
                 data=json.dumps(

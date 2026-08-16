@@ -22,6 +22,12 @@ class InteractiveWebUiTest(unittest.TestCase):
         self.assertIn('accept="audio/webm,audio/ogg,audio/mp4', html)
         self.assertIn("speechFileInput.click()", html)
 
+    def test_ui_displays_prediction_safety_warning(self):
+        html = (ROOT / "web" / "interactive.html").read_text(encoding="utf-8")
+        self.assertIn('id="safety-warning"', html)
+        self.assertIn("launchProposal.safety_warning", html)
+        self.assertIn("Approve & Launch Despite Warning", html)
+
     def test_audio_file_metadata_accepts_browser_recording_types(self):
         self.assertEqual(audio_file_metadata("audio/webm;codecs=opus"), ("audio/webm", "webm"))
         self.assertEqual(audio_file_metadata("audio/ogg; codecs=opus"), ("audio/ogg", "ogg"))

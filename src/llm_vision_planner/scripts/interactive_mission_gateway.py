@@ -1751,13 +1751,26 @@ class InteractiveMissionGateway(Node):
         if self.state != "FORMING_SAFETY_TUBES" or self.pending_verified_plan is None:
             return
         tube_status = self.latest_safety_tube_ready or {}
-        tube_ready = (
-            tube_status.get("status") == "READY"
+        tube_assessment_ready = (
+            tube_status.get("status") in ("READY", "WARNING")
             and tube_status.get("plan_id") == self.active_plan_id
             and int(tube_status.get("sample_count", 0)) > 0
         )
-        if self.require_safety_tubes and not tube_ready:
+        if self.require_safety_tubes and not tube_assessment_ready:
             return
+        prediction_certified = bool(
+            tube_status.get("tube_gate_passed", tube_status.get("status") == "READY")
+        )
+        safety_warning = str(tube_status.get("safety_warning") or "")
+        if (
+            tube_status.get("status") == "WARNING"
+            and not prediction_certified
+            and not safety_warning
+        ):
+            safety_warning = (
+                "LLM prediction safety not certified: the predicted tube intersects an enlarged obstacle. "
+                "Human approval is required to continue."
+            )
         launch_proposal = {
             "type": "LAUNCH_PROPOSAL",
             "status": "AWAITING_LAUNCH_APPROVAL",
@@ -1767,9 +1780,12 @@ class InteractiveMissionGateway(Node):
             "goal": self.active_mission["goal"],
             "goal_relations": self.active_mission["goal_relations"],
             "verified_at": time.time(),
-            "conformal_safety_tubes_ready": tube_ready,
+            "conformal_safety_tubes_ready": tube_assessment_ready,
             "safety_tube_samples": tube_status.get("sample_count", 0),
-            "tube_gate_passed": tube_status.get("tube_gate_passed", tube_ready),
+            "tube_gate_passed": prediction_certified,
+            "llm_prediction_safety_certified": prediction_certified,
+            "safety_warning": safety_warning,
+            "tube_colliding_obstacle_ids": tube_status.get("colliding_obstacle_ids", []),
             "tube_minimum_clearance_m": tube_status.get("minimum_clearance_m"),
             "tube_required_radius_m": tube_status.get("required_radius_m"),
             "q_p_scope": tube_status.get("q_p_scope", "simulated_rrt_relative_cross_track"),
@@ -1780,11 +1796,17 @@ class InteractiveMissionGateway(Node):
         self.publish_response(
             "AWAITING_LAUNCH_APPROVAL",
             (
-                f"Plan {self.active_plan_id} passed verification. Review the latched trajectory "
-                "and conformal safety tubes, then approve launch or terminate and land."
+                safety_warning
+                if safety_warning
+                else (
+                    f"Plan {self.active_plan_id} passed verification. Review the latched trajectory "
+                    "and conformal safety tubes, then approve launch or terminate and land."
+                )
             ),
             mission_id=self.active_mission["mission_id"],
             plan_id=self.active_plan_id,
+            llm_prediction_safety_certified=prediction_certified,
+            safety_warning=safety_warning,
         )
 
     def launch_approval_callback(self, msg):

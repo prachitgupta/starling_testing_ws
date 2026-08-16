@@ -657,32 +657,39 @@ Do not run any other Offboard publisher. `control_law_executer.py`, launched by
 
 ## 11. Generate the Vicon vision-error calibration dataset
 
-Generate this dataset before using `obs_safety_bracket:=conformal` with real
-perception. The recorder synchronizes GPT-nano-derived nominal footprints from
-`/llm_vision/nominal_obstacles` with known-object Vicon transforms, computes the
-x/y footprint-containment score, and appends rows to:
+Generate this dataset before enabling conformal enlargement with real
+perception. Use the dedicated `vision_error_calibration.launch.py`; it starts
+only semantic perception, GPT-nano nominal-environment generation, automatic
+frame alignment, and the CSV recorder. It does **not** start Llama, RRT, the
+mission gateway UI, verification, Offboard control, arming, or takeoff. Keep
+propellers removed and the vehicle disarmed.
 
-```text
-~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv
-```
+### Define `chair1` in Vicon Tracker
 
-The tracked `calibration_vision_error_dummy.csv` is a simulation-only
-placeholder. A real conformal mission rejects it.
+1. Rigidly attach at least four asymmetric markers to the chair; five or more
+   are recommended. The markers must not move relative to the chair.
+2. Put the chair in the calibrated capture volume. In Tracker open
+   **View > Tracking**, enable **Unlabeled Markers** and
+   **Enable Unlabeled Reconstructions**, then select only the chair markers.
+3. Enter `chair1` in the Object field and click **Create**.
+4. Use Tracker's translation and rotation manipulators to place the `chair1`
+   origin at the physical footprint center. Align local X with chair width,
+   local Y with chair depth, and local Z upward. This eliminates the need to
+   enter a marker-offset quaternion.
+5. Save the object, resume live tracking, and move it slowly to confirm that
+   its label and axes do not jump. Resolve Tracker evaluation warnings before
+   recording. Vicon's current object-creation procedure is documented at
+   <https://vicon-help.atlassian.net/wiki/spaces/Tracker44/pages/376309034/Create+objects>.
 
-### Publish the Starling and calibration objects from Vicon
+Measure only the chair width along its local X axis and depth along local Y.
+Those two scalar measurements are the only object geometry required by the
+normal single-object launch.
 
-In Vicon Tracker, create a rigid-body subject for every known calibration
-object. If the subject and segment are both named `chair1`, its transform topic
-is:
+### Publish the Starling and chair transforms
 
-```text
-/vicon/chair1/chair1
-```
-
-During calibration, run the step 5 bridge with
-`publish_specific_segment:=false` so the same bridge publishes both the
-Starling and all object segments. Keep the Starling pose remap used by EKF2.
-For a 50 Hz Vicon stream, the complete command is:
+Run the step 5 Vicon bridge with `publish_specific_segment:=false` so one bridge
+publishes both rigid bodies while retaining the Starling pose remap used by
+EKF2:
 
 ```bash
 ros2 run vicon_bridge vicon_bridge --ros-args \
@@ -696,44 +703,24 @@ ros2 run vicon_bridge vicon_bridge --ros-args \
   -r /vicon/Starling2/Starling2/pose:=/mavros/vision_pose/pose
 ```
 
-Run only one Vicon bridge. Verify both transforms before recording:
+Run one bridge only, then verify all inputs:
 
 ```bash
 ros2 topic echo /vicon/Starling2/Starling2 --once
 ros2 topic echo /vicon/chair1/chair1 --once
+ros2 topic echo /fmu/out/vehicle_odometry --once
 ros2 topic hz /vicon/chair1/chair1 --window 500
 ```
 
-### Configure measured object geometry and frame transforms
+Tracker's Starling frame should use X forward, Y left, Z up (`flu`), as required
+by the existing MAVROS external-vision setup. If it was deliberately defined
+as X forward, Y right, Z down, pass
+`vicon_vehicle_frame_convention:=frd` instead.
 
-Edit the `vision_error_dataset_generator.ros__parameters` block in
-`config/llm_vision_planner.yaml`. The following shows the required JSON shape;
-replace every uppercase token with a measured finite number before launching:
+### Record one independent trial without launching a mission
 
-```yaml
-output_csv: "~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv"
-vicon_objects_json: >-
-  [{"object_id":"obj-1","label":"chair","topic":"/vicon/chair1/chair1",
-    "dimensions_m":[OBJECT_X_WIDTH_M,OBJECT_Y_DEPTH_M,OBJECT_HEIGHT_M],
-    "marker_to_object":{"translation_m":[MARKER_TO_OBJECT_X_M,MARKER_TO_OBJECT_Y_M,MARKER_TO_OBJECT_Z_M],
-    "quaternion_xyzw":[MARKER_TO_OBJECT_QX,MARKER_TO_OBJECT_QY,MARKER_TO_OBJECT_QZ,MARKER_TO_OBJECT_QW]}}]
-vicon_world_to_ned_json: >-
-  {"translation_m":[VICON_TO_NED_X_M,VICON_TO_NED_Y_M,VICON_TO_NED_Z_M],
-   "quaternion_xyzw":[VICON_TO_NED_QX,VICON_TO_NED_QY,VICON_TO_NED_QZ,VICON_TO_NED_QW]}
-```
-
-`dimensions_m` is the physical object-x width, object-y depth, and optional
-height. `marker_to_object` maps the Vicon marker origin into the physical object
-center. `vicon_world_to_ned_json` must map Vicon-world coordinates into the
-same local NED frame used by perception. Do not use identity transforms unless
-the measured frames and origins actually coincide.
-
-### Record one independent trial
-
-Build and source the workspace, export `OPENAI_API_KEY`, confirm the vehicle is
-ready for the real-perception interactive pipeline, and launch the recorder.
-Use `hardcoded` while collecting data because a real conformal mission cannot
-start until a non-placeholder calibration file exists:
+Keep the Starling and chair stationary, point the camera at the chair, export
+`OPENAI_API_KEY`, and substitute the two measured dimensions below:
 
 ```bash
 cd ~/Desktop/starling_testing_ws
@@ -743,41 +730,59 @@ source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dd
   enable auto 42
 ros2 daemon start
 
-ros2 launch llm_vision_planner full_plot.launch.py \
+ros2 launch llm_vision_planner vision_error_calibration.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
-  environment:=real \
-  interaction_mode:=interactive \
-  intent_provider:=openai \
-  llm_provider:=llama \
-  visualizer:=contraction \
-  obs_safety_bracket:=hardcoded \
-  record_vision_error_dataset:=true \
-  vision_error_trial_id:=chair1-pose-001 \
-  land_after_complete:=false
+  trial_id:=chair1-pose-001 \
+  object_id:=obj-1 \
+  object_label:=chair \
+  object_vicon_topic:=/vicon/chair1/chair1 \
+  object_width_m:=MEASURED_WIDTH_M \
+  object_depth_m:=MEASURED_DEPTH_M \
+  output_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv"
 ```
 
-From the web UI, send a navigation request that names the visible calibration
-object, such as `Hover near the chair`. GPT nano must return a finite effective
-depth for the object; the nominal snapshot is published while the grounded
-mission proposal is formed. Mission approval is not required merely to write
-the snapshot, but all normal hardware precautions still apply because
-`full_plot.launch.py` starts the flight-control pipeline.
+No quaternion is requested. The recorder averages synchronized
+`/vicon/Starling2/Starling2` and `/fmu/out/vehicle_odometry` pose pairs to derive
+Vicon-world to local NED automatically. It checks transform consistency, saves
+the derived transform beside the CSV as
+`calibration_vision_error.<trial_id>.frame.json`, and publishes `FRAME_READY`.
+Only then does the calibration-only environment node request one GPT-nano depth
+snapshot and write the row. The recorder retains recent Vicon poses so the
+ground truth is paired to the perception time rather than the later GPT response
+time. If the known Vicon object was not detected, the row is retained as a
+missed detection. A missing, invalid, or abstaining GPT depth estimate is also
+retained as a miss rather than being dropped from calibration.
 
-Verify the synchronized input and recorded row:
+Monitor the automatic sequence:
 
 ```bash
+ros2 topic echo /llm_vision/vision_calibration_status
 ros2 topic echo /llm_vision/nominal_obstacles --once
 tail -n 5 \
   ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv
 ```
 
-Stop the launch, change the object pose/view or repeat the independent setup,
-then relaunch with a new ID such as `chair1-pose-002`. Never reuse a trial ID
-for an independent trial: all correlated frames sharing one ID are reduced to
-their maximum score. Missed detections are recorded rather than discarded. At
-`vision_error_delta:=0.10`, at least nine independent trial IDs are required by
-the finite-sample rank calculation; collect more trials to represent the
+Wait for `RECORDED`, then stop the launch. Change the chair pose, distance,
+viewing angle, or occlusion and relaunch with a new independent ID such as
+`chair1-pose-002`. Never reuse an ID for an independent setup; correlated rows
+sharing an ID are reduced to their maximum score. At
+`vision_error_delta:=0.10`, at least nine independent IDs are required by the
+finite-sample rank calculation. Collect more trials to represent the intended
 deployment distribution.
+
+The advanced `vicon_objects_json` and `marker_to_object_json` parameters remain
+available for multiple objects or a Tracker object whose origin cannot be
+aligned physically. Set `auto_vicon_world_to_ned:=false` only when deliberately
+using the legacy manual `vicon_world_to_ned_json` fallback.
+
+The output CSV is:
+
+```text
+~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv
+```
+
+The tracked `calibration_vision_error_dummy.csv` remains simulation-only; real
+conformal missions reject it.
 
 After recording, validate that rows have `placeholder=false`, then activate the
 dataset in a real interactive launch with both:
@@ -1155,12 +1160,15 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   intent_provider:=openai \
   llm_provider:=llama \
   visualizer:=contraction \
+  web_ui_host:=0.0.0.0 \
   obs_safety_bracket:=conformal \
   vision_error_calibration_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv" \
   land_after_complete:=false
 ```
 
-Open `http://127.0.0.1:8080` once `/llm_vision/mission_state` reports
-`HOLDING_FOR_PLAN`; see step 12's Interactive mode section for the approval
-walkthrough. Use the RC kill switch or change PX4/QGroundControl mode to
-abort.
+From another device on the same network, open
+`http://<ground-station-lan-ip>:8080` once `/llm_vision/mission_state` reports
+`HOLDING_FOR_PLAN`. The `0.0.0.0` value is the server bind address, not the
+address to type into the browser. See step 12's Interactive mode section for
+the approval walkthrough. Use the RC kill switch or change PX4/QGroundControl
+mode to abort.

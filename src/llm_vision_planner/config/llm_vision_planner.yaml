@@ -193,16 +193,33 @@ dataset_scene_publisher:
 vision_error_dataset_generator:
   ros__parameters:
     nominal_obstacle_topic: /llm_vision/nominal_obstacles
+    calibration_status_topic: /llm_vision/vision_calibration_status
     trial_id: unset
     output_csv: fine_tuning/datasets/calibration_vision_error.csv
-    # Configure known Vicon objects before enabling the recorder. For a Vicon
-    # subject and segment both named chair1, use topic /vicon/chair1/chair1.
-    # Each entry requires object_id, label, topic, dimensions_m=[object-x width,
-    # object-y depth, height], and marker_to_object={translation_m,quaternion_xyzw}.
+    # The calibration-only launch overrides these convenient single-object fields.
+    object_id: obj-1
+    object_label: chair
+    object_vicon_topic: /vicon/chair1/chair1
+    object_width_m: 0.0
+    object_depth_m: 0.0
+    # Identity is used when Tracker's object origin/axes are aligned to the
+    # physical footprint. Advanced deployments can provide the old rigid transform.
+    marker_to_object_json: "{}"
+    # Optional advanced multi-object configuration. A non-empty list takes
+    # precedence over the single-object fields above.
     vicon_objects_json: "[]"
-    # Full rigid transform mapping Vicon-world into local NED with the same
-    # {translation_m:[x,y,z], quaternion_xyzw:[x,y,z,w]} schema.
+    # Automatically derive Vicon-world -> local NED from synchronized Starling
+    # Vicon and PX4 VehicleOdometry poses. Manual JSON remains a fallback only.
+    auto_vicon_world_to_ned: True
     vicon_world_to_ned_json: "{}"
+    vicon_vehicle_topic: /vicon/Starling2/Starling2
+    vicon_vehicle_frame_convention: flu
+    pose_topic: /fmu/out/vehicle_odometry
+    frame_sync_tolerance_s: 0.10
+    frame_calibration_samples: 20
+    frame_max_translation_deviation_m: 0.15
+    frame_max_rotation_deviation_deg: 5.0
+    derived_transform_output_json: ""
     sync_tolerance_s: 0.10
     match_distance_m: 0.75
 

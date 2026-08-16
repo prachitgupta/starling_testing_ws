@@ -2,6 +2,7 @@
 """Focused tests for conformal obstacle geometry, calibration, Vicon, and tube gating."""
 
 import csv
+import json
 import math
 import sys
 import tempfile
@@ -30,8 +31,12 @@ from verify_contraction import evaluate_swept_tube  # noqa: E402
 from perception_detection import SemanticObstaclePerception  # noqa: E402
 from vision_error_dataset_generattor import (  # noqa: E402
     CSV_FIELDS,
+    aggregate_world_to_ned,
     ground_truth_aabb,
+    matrix_to_quaternion,
+    parse_vicon_objects,
     quaternion_matrix,
+    world_to_ned_candidate,
 )
 
 
@@ -226,6 +231,102 @@ def test_gpt_depth_builds_nominal_footprint_and_preserves_llama_format():
             raise AssertionError("missing or abstaining GPT depth was accepted")
 
 
+def test_calibration_only_gateway_publishes_nominal_without_a_mission():
+    scene = {
+        "obstacles": [
+            {
+                "object_id": "obj-1",
+                "label": "chair",
+                "front_surface_center": [1.0, 1.0, -0.5],
+                "visible_width_m": 0.6,
+                "view_axis_xy": [1.0, 0.0],
+                "lateral_axis_xy": [0.0, 1.0],
+                "min_corner": [0.9, 0.7, -1.0],
+                "max_corner": [1.1, 1.3, 0.0],
+            }
+        ]
+    }
+    intent = MissionIntent(
+        status="READY",
+        intent_type="QUERY",
+        navigation_action="NONE",
+        query_type="DESCRIBE_SCENE",
+        depth_estimates=[
+            ObjectDepthEstimate(
+                object_id="obj-1",
+                effective_depth_along_view_m=0.5,
+                abstained=False,
+            )
+        ],
+        clarifying_question="",
+    )
+    gateway = object.__new__(InteractiveMissionGateway)
+    published = {}
+    gateway.publish_nominal_obstacles = (
+        lambda observed, nominal, snapshot_id, parsed: published.update(
+            {
+                "scene": observed,
+                "nominal": nominal,
+                "snapshot_id": snapshot_id,
+                "intent": parsed,
+            }
+        )
+    )
+    gateway.publish_response = lambda status, message, **metadata: published.update(
+        {"status": status, "message": message, "metadata": metadata}
+    )
+    gateway.handle_calibration_intent(intent, scene)
+    assert gateway.state == "CALIBRATION_SNAPSHOT_PUBLISHED"
+    assert published["status"] == "CALIBRATION_SNAPSHOT_PUBLISHED"
+    assert math.isclose(published["nominal"][0]["effective_depth_along_view_m"], 0.5)
+    assert "no mission was planned or released" in published["message"]
+
+
+def test_calibration_only_gateway_converts_depth_abstention_to_a_miss():
+    scene = {
+        "obstacles": [
+            {
+                "object_id": "obj-1",
+                "label": "chair",
+                "front_surface_center": [1.0, 1.0, -0.5],
+                "visible_width_m": 0.6,
+                "view_axis_xy": [1.0, 0.0],
+                "lateral_axis_xy": [0.0, 1.0],
+                "min_corner": [0.9, 0.7, -1.0],
+                "max_corner": [1.1, 1.3, 0.0],
+            }
+        ]
+    }
+    intent = MissionIntent(
+        status="READY",
+        intent_type="QUERY",
+        navigation_action="NONE",
+        query_type="DESCRIBE_SCENE",
+        depth_estimates=[
+            ObjectDepthEstimate(
+                object_id="obj-1",
+                effective_depth_along_view_m=None,
+                abstained=True,
+            )
+        ],
+        clarifying_question="",
+    )
+    gateway = object.__new__(InteractiveMissionGateway)
+    published = {}
+    gateway.publish_nominal_obstacles = (
+        lambda observed, nominal, snapshot_id, parsed: published.update(
+            {"nominal": nominal}
+        )
+    )
+    gateway.publish_response = lambda status, message, **metadata: published.update(
+        {"status": status, "message": message, "metadata": metadata}
+    )
+    gateway.handle_calibration_intent(intent, scene)
+    assert published["nominal"] == []
+    assert published["metadata"]["failures"][0]["object_id"] == "obj-1"
+    assert "recorded as misses" in published["message"]
+
+
 def test_perception_publishes_front_and_view_geometry_without_removing_legacy_box():
     perception = object.__new__(SemanticObstaclePerception)
     perception.detection_camera_translation_body = np.zeros(3)
@@ -282,6 +383,55 @@ def test_vicon_yaw_marker_offset_and_world_to_ned_transform():
     assert np.allclose(ground_truth["max_corner"], [10.0, 0.5], atol=1e-9)
 
 
+def test_vicon_world_to_ned_is_derived_from_synchronized_vehicle_poses():
+    world_to_ned_rotation = np.array(
+        [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]],
+        dtype=float,
+    )
+    world_to_ned_translation = np.array([1.2, -0.7, 0.3], dtype=float)
+    marker_yaw = math.radians(30.0)
+    marker_rotation = quaternion_matrix(
+        [0.0, 0.0, math.sin(0.5 * marker_yaw), math.cos(0.5 * marker_yaw)]
+    )
+    marker_position = np.array([2.0, 3.0, 0.5], dtype=float)
+    flu_from_frd = np.diag([1.0, -1.0, -1.0])
+    body_to_ned = world_to_ned_rotation @ marker_rotation @ flu_from_frd
+    ned_position = world_to_ned_translation + world_to_ned_rotation @ marker_position
+    candidate = world_to_ned_candidate(
+        (marker_position, marker_rotation),
+        (ned_position, body_to_ned),
+        convention="flu",
+    )
+    estimated, quality = aggregate_world_to_ned([candidate] * 20)
+    assert np.allclose(estimated[0], world_to_ned_translation, atol=1e-9)
+    assert np.allclose(estimated[1], world_to_ned_rotation, atol=1e-9)
+    assert quality["sample_count"] == 20
+    assert quality["max_translation_deviation_m"] < 1e-9
+    assert quality["max_rotation_deviation_deg"] < 1e-6
+    assert np.allclose(
+        quaternion_matrix(matrix_to_quaternion(estimated[1])),
+        world_to_ned_rotation,
+        atol=1e-9,
+    )
+
+
+def test_aligned_tracker_object_defaults_marker_transform_to_identity():
+    configured = parse_vicon_objects(
+        json.dumps(
+            [
+                {
+                    "object_id": "obj-1",
+                    "label": "chair",
+                    "topic": "/vicon/chair1/chair1",
+                    "dimensions_m": [0.5, 0.6],
+                }
+            ]
+        )
+    )[0]
+    assert np.allclose(configured["marker_translation"], np.zeros(3))
+    assert np.allclose(configured["marker_rotation"], np.eye(3))
+
+
 def test_swept_tube_rejects_intersection_and_tangency():
     obstacles = [
         {
@@ -306,7 +456,11 @@ if __name__ == "__main__":
     test_dummy_certificate_and_finite_sample_rank()
     test_placeholder_certificate_is_sim_only_and_hardcoded_is_preserved()
     test_gpt_depth_builds_nominal_footprint_and_preserves_llama_format()
+    test_calibration_only_gateway_publishes_nominal_without_a_mission()
+    test_calibration_only_gateway_converts_depth_abstention_to_a_miss()
     test_perception_publishes_front_and_view_geometry_without_removing_legacy_box()
     test_vicon_yaw_marker_offset_and_world_to_ned_transform()
+    test_vicon_world_to_ned_is_derived_from_synchronized_vehicle_poses()
+    test_aligned_tracker_object_defaults_marker_transform_to_identity()
     test_swept_tube_rejects_intersection_and_tangency()
     print("conformal obstacle safety tests passed")

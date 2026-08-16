@@ -4,12 +4,17 @@
 import csv
 import json
 import math
+import re
+import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
 import rclpy
 from geometry_msgs.msg import TransformStamped
+from px4_msgs.msg import VehicleOdometry
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import String
 
 
@@ -31,6 +36,17 @@ CSV_FIELDS = [
     "missed_detection",
     "placeholder",
 ]
+ODOM_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=20,
+)
+LATCHED_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.RELIABLE,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+)
 
 
 def quaternion_matrix(values, name="quaternion_xyzw"):
@@ -61,6 +77,89 @@ def rigid_transform(value, name):
     return translation, rotation
 
 
+def matrix_to_quaternion(rotation):
+    """Return a normalized x-y-z-w quaternion for a proper rotation matrix."""
+    matrix = np.asarray(rotation, dtype=float)
+    if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
+        raise ValueError("rotation must be a finite 3x3 matrix")
+    trace = float(np.trace(matrix))
+    if trace > 0.0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        values = [
+            (matrix[2, 1] - matrix[1, 2]) / scale,
+            (matrix[0, 2] - matrix[2, 0]) / scale,
+            (matrix[1, 0] - matrix[0, 1]) / scale,
+            0.25 * scale,
+        ]
+    else:
+        index = int(np.argmax(np.diag(matrix)))
+        if index == 0:
+            scale = math.sqrt(max(0.0, 1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2])) * 2.0
+            values = [0.25 * scale, (matrix[0, 1] + matrix[1, 0]) / scale,
+                      (matrix[0, 2] + matrix[2, 0]) / scale, (matrix[2, 1] - matrix[1, 2]) / scale]
+        elif index == 1:
+            scale = math.sqrt(max(0.0, 1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2])) * 2.0
+            values = [(matrix[0, 1] + matrix[1, 0]) / scale, 0.25 * scale,
+                      (matrix[1, 2] + matrix[2, 1]) / scale, (matrix[0, 2] - matrix[2, 0]) / scale]
+        else:
+            scale = math.sqrt(max(0.0, 1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1])) * 2.0
+            values = [(matrix[0, 2] + matrix[2, 0]) / scale,
+                      (matrix[1, 2] + matrix[2, 1]) / scale, 0.25 * scale,
+                      (matrix[1, 0] - matrix[0, 1]) / scale]
+    quaternion = np.asarray(values, dtype=float)
+    norm = float(np.linalg.norm(quaternion))
+    if norm <= 1e-12:
+        raise ValueError("rotation produced a zero quaternion")
+    return (quaternion / norm).tolist()
+
+
+def marker_from_body_rotation(convention):
+    """Known marker-frame coordinates of PX4 body FRD axes."""
+    normalized = str(convention).strip().lower()
+    if normalized == "flu":
+        return np.diag([1.0, -1.0, -1.0])
+    if normalized == "frd":
+        return np.eye(3)
+    raise ValueError("vicon_vehicle_frame_convention must be 'flu' or 'frd'")
+
+
+def world_to_ned_candidate(vicon_pose, ned_pose, convention="flu"):
+    """Derive Vicon-world -> NED from one synchronized vehicle pose pair."""
+    vicon_position, vicon_rotation = vicon_pose
+    ned_position, body_to_ned_rotation = ned_pose
+    marker_to_body = marker_from_body_rotation(convention)
+    body_to_vicon_world = np.asarray(vicon_rotation, dtype=float) @ marker_to_body
+    world_to_ned_rotation = np.asarray(body_to_ned_rotation, dtype=float) @ body_to_vicon_world.T
+    world_to_ned_translation = (
+        np.asarray(ned_position, dtype=float)
+        - world_to_ned_rotation @ np.asarray(vicon_position, dtype=float)
+    )
+    return world_to_ned_translation, world_to_ned_rotation
+
+
+def aggregate_world_to_ned(candidates):
+    """Average rigid transforms and report their worst deviation from the mean."""
+    if not candidates:
+        raise ValueError("at least one frame-transform candidate is required")
+    translations = np.asarray([item[0] for item in candidates], dtype=float)
+    rotations = np.asarray([item[1] for item in candidates], dtype=float)
+    u, _, vt = np.linalg.svd(np.sum(rotations, axis=0))
+    correction = np.eye(3)
+    correction[2, 2] = np.linalg.det(u @ vt)
+    mean_rotation = u @ correction @ vt
+    mean_translation = np.mean(translations, axis=0)
+    translation_errors = np.linalg.norm(translations - mean_translation, axis=1)
+    rotation_errors = []
+    for rotation in rotations:
+        cosine = min(1.0, max(-1.0, 0.5 * (float(np.trace(mean_rotation.T @ rotation)) - 1.0)))
+        rotation_errors.append(math.degrees(math.acos(cosine)))
+    return (mean_translation, mean_rotation), {
+        "sample_count": len(candidates),
+        "max_translation_deviation_m": float(np.max(translation_errors)),
+        "max_rotation_deviation_deg": float(np.max(rotation_errors)),
+    }
+
+
 def parse_vicon_objects(value):
     try:
         raw_objects = json.loads(value)
@@ -83,10 +182,14 @@ def parse_vicon_objects(value):
             raise ValueError(f"duplicate Vicon topic: {topic}")
         if dimensions.shape not in ((2,), (3,)) or not np.all(np.isfinite(dimensions)) or np.any(dimensions <= 0.0):
             raise ValueError(f"vicon object {index} dimensions_m must contain two or three positive values")
-        marker_translation, marker_rotation = rigid_transform(
-            raw.get("marker_to_object"),
-            f"vicon object {index}.marker_to_object",
-        )
+        marker_transform = raw.get("marker_to_object")
+        if marker_transform in (None, {}):
+            marker_translation, marker_rotation = np.zeros(3), np.eye(3)
+        else:
+            marker_translation, marker_rotation = rigid_transform(
+                marker_transform,
+                f"vicon object {index}.marker_to_object",
+            )
         configured.append(
             {
                 "object_id": object_id,
@@ -109,6 +212,20 @@ def transform_message_pose(msg):
     if not np.all(np.isfinite(position)):
         raise ValueError("Vicon translation is non-finite")
     return position, matrix
+
+
+def px4_message_pose(msg):
+    if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
+        raise ValueError("PX4 odometry pose frame is not NED")
+    position = np.asarray(msg.position[:3], dtype=float)
+    if position.shape != (3,) or not np.all(np.isfinite(position)):
+        raise ValueError("PX4 NED position is non-finite")
+    quaternion = list(msg.q)
+    rotation = quaternion_matrix(
+        [quaternion[1], quaternion[2], quaternion[3], quaternion[0]],
+        "PX4 body-to-NED quaternion",
+    )
+    return position, rotation
 
 
 def ground_truth_aabb(config, marker_position, marker_rotation, world_to_ned):
@@ -180,13 +297,29 @@ class VisionErrorDatasetGenerator(Node):
     def __init__(self):
         super().__init__("vision_error_dataset_generator")
         self.declare_parameter("nominal_obstacle_topic", "/llm_vision/nominal_obstacles")
+        self.declare_parameter("calibration_status_topic", "/llm_vision/vision_calibration_status")
         self.declare_parameter("trial_id", "unset")
         self.declare_parameter(
             "output_csv",
             "fine_tuning/datasets/calibration_vision_error.csv",
         )
         self.declare_parameter("vicon_objects_json", "[]")
+        self.declare_parameter("object_id", "obj-1")
+        self.declare_parameter("object_label", "chair")
+        self.declare_parameter("object_vicon_topic", "/vicon/chair1/chair1")
+        self.declare_parameter("object_width_m", 0.0)
+        self.declare_parameter("object_depth_m", 0.0)
+        self.declare_parameter("marker_to_object_json", "{}")
+        self.declare_parameter("auto_vicon_world_to_ned", True)
         self.declare_parameter("vicon_world_to_ned_json", "{}")
+        self.declare_parameter("vicon_vehicle_topic", "/vicon/Starling2/Starling2")
+        self.declare_parameter("vicon_vehicle_frame_convention", "flu")
+        self.declare_parameter("pose_topic", "/fmu/out/vehicle_odometry")
+        self.declare_parameter("frame_sync_tolerance_s", 0.10)
+        self.declare_parameter("frame_calibration_samples", 20)
+        self.declare_parameter("frame_max_translation_deviation_m", 0.15)
+        self.declare_parameter("frame_max_rotation_deviation_deg", 5.0)
+        self.declare_parameter("derived_transform_output_json", "")
         self.declare_parameter("sync_tolerance_s", 0.10)
         self.declare_parameter("match_distance_m", 0.75)
 
@@ -195,14 +328,64 @@ class VisionErrorDatasetGenerator(Node):
             raise ValueError("trial_id must identify one independent, non-placeholder calibration trial")
         self.sync_tolerance_s = float(self.get_parameter("sync_tolerance_s").value)
         self.match_distance_m = float(self.get_parameter("match_distance_m").value)
-        if self.sync_tolerance_s <= 0.0 or self.match_distance_m <= 0.0:
-            raise ValueError("sync_tolerance_s and match_distance_m must be positive")
-        self.objects = parse_vicon_objects(str(self.get_parameter("vicon_objects_json").value))
+        self.frame_sync_tolerance_s = float(self.get_parameter("frame_sync_tolerance_s").value)
+        self.frame_calibration_samples = int(self.get_parameter("frame_calibration_samples").value)
+        self.frame_max_translation_deviation_m = float(
+            self.get_parameter("frame_max_translation_deviation_m").value
+        )
+        self.frame_max_rotation_deviation_deg = float(
+            self.get_parameter("frame_max_rotation_deviation_deg").value
+        )
+        if min(self.sync_tolerance_s, self.match_distance_m, self.frame_sync_tolerance_s) <= 0.0:
+            raise ValueError("synchronization tolerances and match_distance_m must be positive")
+        if self.frame_calibration_samples < 3:
+            raise ValueError("frame_calibration_samples must be at least three")
+        if self.frame_max_translation_deviation_m <= 0.0 or self.frame_max_rotation_deviation_deg <= 0.0:
+            raise ValueError("frame transform deviation limits must be positive")
+
+        objects_json = str(self.get_parameter("vicon_objects_json").value)
         try:
-            world_to_ned_raw = json.loads(str(self.get_parameter("vicon_world_to_ned_json").value))
+            configured_objects = json.loads(objects_json)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"vicon_world_to_ned_json is invalid JSON: {exc}") from exc
-        self.world_to_ned = rigid_transform(world_to_ned_raw, "vicon_world_to_ned")
+            raise ValueError(f"vicon_objects_json is invalid JSON: {exc}") from exc
+        if configured_objects:
+            self.objects = parse_vicon_objects(objects_json)
+        else:
+            try:
+                marker_to_object = json.loads(str(self.get_parameter("marker_to_object_json").value))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"marker_to_object_json is invalid JSON: {exc}") from exc
+            self.objects = parse_vicon_objects(
+                json.dumps(
+                    [
+                        {
+                            "object_id": str(self.get_parameter("object_id").value),
+                            "label": str(self.get_parameter("object_label").value),
+                            "topic": str(self.get_parameter("object_vicon_topic").value),
+                            "dimensions_m": [
+                                float(self.get_parameter("object_width_m").value),
+                                float(self.get_parameter("object_depth_m").value),
+                            ],
+                            "marker_to_object": marker_to_object,
+                        }
+                    ]
+                )
+            )
+
+        self.auto_vicon_world_to_ned = bool(self.get_parameter("auto_vicon_world_to_ned").value)
+        self.vehicle_frame_convention = str(
+            self.get_parameter("vicon_vehicle_frame_convention").value
+        ).strip().lower()
+        marker_from_body_rotation(self.vehicle_frame_convention)
+        self.world_to_ned = None
+        self.frame_quality = None
+        if not self.auto_vicon_world_to_ned:
+            try:
+                world_to_ned_raw = json.loads(str(self.get_parameter("vicon_world_to_ned_json").value))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"vicon_world_to_ned_json is invalid JSON: {exc}") from exc
+            self.world_to_ned = rigid_transform(world_to_ned_raw, "vicon_world_to_ned")
+            self.frame_quality = {"sample_count": 0, "source": "configured_json"}
 
         output = Path(str(self.get_parameter("output_csv").value)).expanduser()
         self.output_csv = output if output.is_absolute() else Path.cwd() / output
@@ -222,14 +405,28 @@ class VisionErrorDatasetGenerator(Node):
             self.output_stream.flush()
 
         self.latest_nominal = None
-        self.latest_vicon = {}
+        self.vicon_history = {
+            config["topic"]: deque(maxlen=1000) for config in self.objects
+        }
         self.recorded_pairs = set()
+        self.vehicle_vicon_samples = deque(maxlen=100)
+        self.px4_pose_samples = deque(maxlen=100)
+        self.frame_candidates = deque(maxlen=max(100, self.frame_calibration_samples * 4))
+        self.frame_pair_keys = set()
+        self.paired_vehicle_vicon_keys = set()
+        self.paired_px4_keys = set()
+        self.last_frame_rejection_log_s = 0.0
         self.vicon_subscriptions = []
+        self.status_pub = self.create_publisher(
+            String,
+            str(self.get_parameter("calibration_status_topic").value),
+            LATCHED_QOS,
+        )
         self.create_subscription(
             String,
             str(self.get_parameter("nominal_obstacle_topic").value),
             self.nominal_callback,
-            10,
+            LATCHED_QOS,
         )
         for config in self.objects:
             subscription = self.create_subscription(
@@ -239,10 +436,159 @@ class VisionErrorDatasetGenerator(Node):
                 10,
             )
             self.vicon_subscriptions.append(subscription)
+        if self.auto_vicon_world_to_ned:
+            self.vehicle_vicon_subscription = self.create_subscription(
+                TransformStamped,
+                str(self.get_parameter("vicon_vehicle_topic").value),
+                self.vehicle_vicon_callback,
+                20,
+            )
+            self.px4_pose_subscription = self.create_subscription(
+                VehicleOdometry,
+                str(self.get_parameter("pose_topic").value),
+                self.px4_pose_callback,
+                ODOM_QOS,
+            )
+            self.publish_status(
+                "WAITING_FOR_FRAME_ALIGNMENT",
+                "Collecting synchronized Starling Vicon and PX4 NED poses; keep the vehicle still and visible.",
+            )
+        else:
+            self.save_derived_transform()
+            self.publish_status("FRAME_READY", "Using the configured Vicon-world to NED transform.")
         self.get_logger().info(
             f"recording trial_id={self.trial_id} to {self.output_csv} from "
             f"{', '.join(config['topic'] for config in self.objects)}"
         )
+
+    def publish_status(self, status, message, **metadata):
+        payload = {
+            "status": status,
+            "message": message,
+            "trial_id": self.trial_id,
+            "timestamp": time.time(),
+            **metadata,
+        }
+        self.status_pub.publish(String(data=json.dumps(payload)))
+        if status in ("FRAME_READY", "RECORDED"):
+            self.get_logger().info(message)
+
+    def save_derived_transform(self):
+        if self.world_to_ned is None:
+            return
+        configured_path = str(self.get_parameter("derived_transform_output_json").value).strip()
+        if configured_path:
+            output = Path(configured_path).expanduser()
+            output = output if output.is_absolute() else Path.cwd() / output
+        else:
+            safe_trial = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.trial_id)
+            output = self.output_csv.with_name(
+                f"{self.output_csv.stem}.{safe_trial}.frame.json"
+            )
+        translation, rotation = self.world_to_ned
+        payload = {
+            "trial_id": self.trial_id,
+            "source": "synchronized_starling_vicon_and_px4_odometry" if self.auto_vicon_world_to_ned else "configured_json",
+            "vicon_vehicle_frame_convention": self.vehicle_frame_convention,
+            "translation_m": [float(value) for value in translation],
+            "quaternion_xyzw": matrix_to_quaternion(rotation),
+            "rotation_matrix": np.asarray(rotation, dtype=float).tolist(),
+            "quality": self.frame_quality,
+            "timestamp": time.time(),
+        }
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        self.derived_transform_output = output
+
+    def vehicle_vicon_callback(self, msg):
+        try:
+            pose = transform_message_pose(msg)
+        except ValueError as exc:
+            self.get_logger().warning(f"ignored invalid Starling Vicon pose: {exc}")
+            return
+        stamp_key = (int(msg.header.stamp.sec), int(msg.header.stamp.nanosec))
+        if stamp_key == (0, 0):
+            stamp_key = (0, time.monotonic_ns())
+        self.vehicle_vicon_samples.append(
+            {
+                "key": stamp_key,
+                "arrival_s": time.monotonic(),
+                "pose": pose,
+            }
+        )
+        self.try_frame_pair()
+
+    def px4_pose_callback(self, msg):
+        try:
+            pose = px4_message_pose(msg)
+        except ValueError:
+            return
+        stamp_key = int(msg.timestamp_sample or msg.timestamp)
+        if stamp_key == 0:
+            stamp_key = time.monotonic_ns()
+        self.px4_pose_samples.append(
+            {
+                "key": stamp_key,
+                "arrival_s": time.monotonic(),
+                "pose": pose,
+            }
+        )
+        self.try_frame_pair()
+
+    def try_frame_pair(self):
+        if self.world_to_ned is not None or not self.vehicle_vicon_samples or not self.px4_pose_samples:
+            return
+        vicon = self.vehicle_vicon_samples[-1]
+        px4 = min(
+            self.px4_pose_samples,
+            key=lambda sample: abs(float(sample["arrival_s"]) - float(vicon["arrival_s"])),
+        )
+        if abs(float(px4["arrival_s"]) - float(vicon["arrival_s"])) > self.frame_sync_tolerance_s:
+            return
+        if (
+            vicon["key"] in self.paired_vehicle_vicon_keys
+            or px4["key"] in self.paired_px4_keys
+        ):
+            return
+        pair_key = (vicon["key"], px4["key"])
+        if pair_key in self.frame_pair_keys:
+            return
+        self.frame_pair_keys.add(pair_key)
+        self.paired_vehicle_vicon_keys.add(vicon["key"])
+        self.paired_px4_keys.add(px4["key"])
+        self.frame_candidates.append(
+            world_to_ned_candidate(vicon["pose"], px4["pose"], self.vehicle_frame_convention)
+        )
+        if len(self.frame_candidates) < self.frame_calibration_samples:
+            return
+        transform, quality = aggregate_world_to_ned(
+            list(self.frame_candidates)[-self.frame_calibration_samples :]
+        )
+        if (
+            quality["max_translation_deviation_m"] > self.frame_max_translation_deviation_m
+            or quality["max_rotation_deviation_deg"] > self.frame_max_rotation_deviation_deg
+        ):
+            now = time.monotonic()
+            if now - self.last_frame_rejection_log_s >= 1.0:
+                self.last_frame_rejection_log_s = now
+                self.publish_status(
+                    "FRAME_ALIGNMENT_UNSTABLE",
+                    "Pose-pair alignment is inconsistent; keep the Starling still and check Vicon/PX4 pose streams.",
+                    quality=quality,
+                )
+            return
+        quality["source"] = "synchronized_pose_pairs"
+        self.world_to_ned = transform
+        self.frame_quality = quality
+        self.save_derived_transform()
+        self.publish_status(
+            "FRAME_READY",
+            "Automatically derived Vicon-world to local-NED alignment; calibration capture may proceed.",
+            quality=quality,
+            derived_transform_json=str(self.derived_transform_output),
+        )
+        for config in self.objects:
+            self.try_record(config)
 
     def nominal_callback(self, msg):
         try:
@@ -274,18 +620,22 @@ class VisionErrorDatasetGenerator(Node):
         except ValueError as exc:
             self.get_logger().warning(f"ignored invalid Vicon transform on {config['topic']}: {exc}")
             return
-        self.latest_vicon[config["topic"]] = {
+        self.vicon_history[config["topic"]].append({
             "timestamp": timestamp,
             "position": position,
             "rotation": rotation,
-        }
+        })
         self.try_record(config)
 
     def try_record(self, config):
         nominal = self.latest_nominal
-        vicon = self.latest_vicon.get(config["topic"])
-        if nominal is None or vicon is None:
+        history = self.vicon_history.get(config["topic"])
+        if nominal is None or not history or self.world_to_ned is None:
             return
+        vicon = min(
+            history,
+            key=lambda sample: abs(float(sample["timestamp"]) - nominal["timestamp"]),
+        )
         if abs(nominal["timestamp"] - vicon["timestamp"]) > self.sync_tolerance_s:
             return
         pair = (config["object_id"], round(nominal["timestamp"], 6))
@@ -341,6 +691,15 @@ class VisionErrorDatasetGenerator(Node):
         self.recorded_pairs.add(pair)
         outcome = "MISS" if predicted is None else f"score={row['score_m']} m"
         self.get_logger().info(f"recorded {config['object_id']} {outcome}")
+        self.publish_status(
+            "RECORDED",
+            f"Recorded {config['object_id']} for trial {self.trial_id}: {outcome}.",
+            object_id=config["object_id"],
+            label=config["label"],
+            missed_detection=predicted is None,
+            score_m=None if predicted is None else float(row["score_m"]),
+            output_csv=str(self.output_csv),
+        )
 
     def destroy_node(self):
         if hasattr(self, "output_stream") and not self.output_stream.closed:

@@ -932,6 +932,10 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("prompt_topic", "/llm_vision/prompt")
         self.declare_parameter("candidate_verification_topic", "/llm_vision/plan_candidate_verified")
         self.declare_parameter("passed_plan_topic", "/llm_vision/plan_verified")
+        self.declare_parameter("calibration_status_topic", "/llm_vision/vision_calibration_status")
+        self.declare_parameter("calibration_only", False)
+        self.declare_parameter("auto_calibration_capture", False)
+        self.declare_parameter("calibration_capture_delay_s", 1.0)
         self.declare_parameter("required_mission_state", "HOLDING_FOR_PLAN")
         self.declare_parameter("require_mission_state", True)
         self.declare_parameter("workspace_x_min", 0.0)
@@ -1023,6 +1027,12 @@ class InteractiveMissionGateway(Node):
         self.pending_verified_plan = None
         self.latest_safety_tube_ready = None
         self.last_failure = None
+        self.calibration_only = bool(self.get_parameter("calibration_only").value)
+        self.auto_calibration_capture = bool(
+            self.get_parameter("auto_calibration_capture").value
+        )
+        self.calibration_frame_ready_s = None
+        self.calibration_capture_requested = False
         self.require_safety_tubes = (
             str(self.get_parameter("visualizer").value).strip().lower() == "contraction"
         )
@@ -1079,6 +1089,13 @@ class InteractiveMissionGateway(Node):
             self.safety_tube_ready_callback,
             LATCHED_QOS,
         )
+        if self.calibration_only:
+            self.create_subscription(
+                String,
+                str(self.get_parameter("calibration_status_topic").value),
+                self.calibration_status_callback,
+                LATCHED_QOS,
+            )
         self.response_pub = self.create_publisher(
             String,
             str(self.get_parameter("operator_response_topic").value),
@@ -1115,6 +1132,8 @@ class InteractiveMissionGateway(Node):
             LATCHED_QOS,
         )
         self.create_timer(0.05, self.drain_intent_results)
+        if self.calibration_only and self.auto_calibration_capture:
+            self.create_timer(0.20, self.maybe_start_calibration_capture)
         self.get_logger().info(
             f"interactive gateway ready: intent_provider={self.get_parameter('intent_provider').value}, "
             f"obstacles={obstacle_topic}, obs_safety_bracket={self.obs_safety_bracket}, "
@@ -1178,9 +1197,16 @@ class InteractiveMissionGateway(Node):
             source = "sim_complete_boxes"
         else:
             source = "gpt_nano_front_footprint"
+        try:
+            observation_timestamp = float(scene.get("timestamp", time.time()))
+        except (TypeError, ValueError):
+            observation_timestamp = time.time()
+        if not math.isfinite(observation_timestamp) or observation_timestamp <= 0.0:
+            observation_timestamp = time.time()
         payload = {
             "snapshot_id": snapshot_id,
-            "timestamp": time.time(),
+            "timestamp": observation_timestamp,
+            "published_at": time.time(),
             "frame": "local_ned",
             "source": source,
             "obstacles": copy.deepcopy(nominal),
@@ -1234,7 +1260,10 @@ class InteractiveMissionGateway(Node):
             self.publish_response("NOT_READY", error)
             return
 
-        scene = copy.deepcopy(self.latest_scene)
+        self.start_intent_request(operator_text, copy.deepcopy(self.latest_scene))
+        self.publish_response("PARSING_INTENT", "Interpreting the command against the current object snapshot.")
+
+    def start_intent_request(self, operator_text, scene):
         token = uuid.uuid4().hex
         self.intent_request_token = token
         self.conversation.append({"role": "operator", "content": operator_text})
@@ -1248,7 +1277,51 @@ class InteractiveMissionGateway(Node):
         future.add_done_callback(
             lambda completed: self.intent_results.put((token, completed, scene, operator_text))
         )
-        self.publish_response("PARSING_INTENT", "Interpreting the command against the current object snapshot.")
+
+    def calibration_status_callback(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        if payload.get("status") == "FRAME_READY" and self.calibration_frame_ready_s is None:
+            self.calibration_frame_ready_s = time.time()
+            self.publish_response(
+                "CALIBRATION_FRAME_READY",
+                "Vicon-world to local-NED alignment was derived automatically; waiting for a stable perception snapshot.",
+            )
+
+    def maybe_start_calibration_capture(self):
+        if (
+            self.calibration_capture_requested
+            or self.intent_request_token is not None
+            or self.calibration_frame_ready_s is None
+        ):
+            return
+        delay = max(0.0, float(self.get_parameter("calibration_capture_delay_s").value))
+        if time.time() - self.calibration_frame_ready_s < delay:
+            return
+        if self.scene_context_error() is not None:
+            return
+        self.calibration_capture_requested = True
+        scene = copy.deepcopy(self.latest_scene)
+        if not scene["obstacles"]:
+            intent = MissionIntent(
+                status="READY",
+                intent_type="QUERY",
+                navigation_action="NONE",
+                query_type="DESCRIBE_SCENE",
+                relations=[],
+                query_object_ids=[],
+                depth_estimates=[],
+                clarifying_question="",
+            )
+            self.handle_calibration_intent(intent, scene)
+            return
+        self.start_intent_request("Describe all visible objects for vision calibration.", scene)
+        self.publish_response(
+            "CALIBRATION_ESTIMATING_DEPTH",
+            "The frame alignment is ready; GPT nano is estimating nominal object depths.",
+        )
 
     @staticmethod
     def command_text(raw):
@@ -1290,9 +1363,13 @@ class InteractiveMissionGateway(Node):
             self.conversation.append({"role": "system", "content": question})
             self.publish_response(intent.status, question)
             return
+        if self.calibration_only:
+            self.handle_calibration_intent(intent, scene)
+            return
         if intent.intent_type == "QUERY":
             self.handle_query(intent, scene)
             return
+
         if intent.intent_type != "NAVIGATION" or intent.navigation_action not in ("HOVER", "GO_TO"):
             self.publish_response(
                 "UNSUPPORTED",
@@ -1416,6 +1493,36 @@ class InteractiveMissionGateway(Node):
                 f"Approve mission {mission_id}?"
             ),
             mission_id=mission_id,
+        )
+
+    def handle_calibration_intent(self, intent, scene):
+        nominal = []
+        failures = []
+        for obstacle in scene["obstacles"]:
+            object_id = str(obstacle["object_id"])
+            estimates = [
+                estimate
+                for estimate in intent.depth_estimates
+                if estimate.object_id == object_id
+            ]
+            try:
+                nominal.extend(nominal_obstacles_from_depth([obstacle], estimates))
+            except ValueError as exc:
+                failures.append({"object_id": object_id, "reason": str(exc)})
+        snapshot_id = f"CAL-{scene_signature(scene['obstacles'])[:12]}-{uuid.uuid4().hex[:6]}"
+        self.publish_nominal_obstacles(scene, nominal, snapshot_id, intent)
+        self.state = "CALIBRATION_SNAPSHOT_PUBLISHED"
+        failure_note = (
+            f" {len(failures)} invalid or abstaining object(s) were omitted and will be recorded as misses."
+            if failures
+            else ""
+        )
+        self.publish_response(
+            "CALIBRATION_SNAPSHOT_PUBLISHED",
+            f"Published one nominal calibration snapshot containing {len(nominal)} object(s); no mission was planned or released.{failure_note}",
+            snapshot_id=snapshot_id,
+            object_count=len(nominal),
+            failures=failures,
         )
 
     def handle_query(self, intent, scene):

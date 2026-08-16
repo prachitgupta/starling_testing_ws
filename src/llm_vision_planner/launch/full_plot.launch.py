@@ -102,16 +102,6 @@ def generate_launch_description():
         default_value="0.10",
         description="Miscoverage level for the obstacle containment certificate.",
     )
-    record_vision_error_dataset_arg = DeclareLaunchArgument(
-        "record_vision_error_dataset",
-        default_value="false",
-        description="Launch the Vicon-backed vision error dataset recorder.",
-    )
-    vision_error_trial_id_arg = DeclareLaunchArgument(
-        "vision_error_trial_id",
-        default_value="unset",
-        description="Independent calibration trial identifier required by the recorder.",
-    )
     params_file = LaunchConfiguration("params_file")
     fixed_goal = {
         "goal_x": ParameterValue(LaunchConfiguration("goal_x"), value_type=float),
@@ -143,18 +133,6 @@ def generate_launch_description():
             ]
         )
     )
-    use_vision_error_recorder = IfCondition(
-        PythonExpression(
-            [
-                "'",
-                LaunchConfiguration("interaction_mode"),
-                "' == 'interactive' and '",
-                LaunchConfiguration("record_vision_error_dataset"),
-                "'.lower() == 'true'",
-            ]
-        )
-    )
-
     semantic_perception = Node(
         package="llm_vision_planner",
         executable="perception_detection.py",
@@ -227,18 +205,6 @@ def generate_launch_description():
         output="screen",
         parameters=[params_file, {"sample_id": ParameterValue(LaunchConfiguration("sim_sample_id"), value_type=int)}],
         condition=use_dataset_scene,
-    )
-
-    vision_error_dataset_generator = Node(
-        package="llm_vision_planner",
-        executable="vision_error_dataset_generattor.py",
-        name="vision_error_dataset_generator",
-        output="screen",
-        parameters=[
-            params_file,
-            {"trial_id": LaunchConfiguration("vision_error_trial_id")},
-        ],
-        condition=use_vision_error_recorder,
     )
 
     llm_planner = Node(
@@ -328,11 +294,8 @@ def generate_launch_description():
             obs_safety_bracket_arg,
             vision_error_calibration_csv_arg,
             vision_error_delta_arg,
-            record_vision_error_dataset_arg,
-            vision_error_trial_id_arg,
             semantic_perception,
             dataset_scene,
-            vision_error_dataset_generator,
             llm_planner,
             TimerAction(period=2.0, actions=[prompt_generator]),
             interactive_gateway,

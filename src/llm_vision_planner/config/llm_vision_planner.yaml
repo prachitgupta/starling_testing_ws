@@ -301,6 +301,10 @@ verify_contraction:
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
     sim_obstacle_topic: /llm_vision/sim_obstacles
     pose_topic: /fmu/out/vehicle_odometry
+    workspace_x_min: -3.0
+    workspace_x_max: 3.0
+    workspace_y_min: -3.0
+    workspace_y_max: 3.0
     output_png: src/llm_vision_planner/plots/contraction/live_contraction.png
     show_window: true
     plot_period_s: 0.2

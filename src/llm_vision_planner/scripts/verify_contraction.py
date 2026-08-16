@@ -42,7 +42,8 @@ PLAN_QOS = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1,
 )
-PLOT_WORKSPACE = {"x": [0.0, 4.0], "y": [0.0, 4.0]}
+DEFAULT_WORKSPACE_X = (0.0, 4.0)
+DEFAULT_WORKSPACE_Y = (0.0, 4.0)
 
 
 def point_to_aabb_distance(point, minimum, maximum):
@@ -158,6 +159,10 @@ class ContractionVisualizer(Node):
         self.declare_parameter("semantic_obstacle_topic", "/llm_vision/semantic_obstacles")
         self.declare_parameter("sim_obstacle_topic", "/llm_vision/sim_obstacles")
         self.declare_parameter("pose_topic", "/fmu/out/vehicle_odometry")
+        self.declare_parameter("workspace_x_min", DEFAULT_WORKSPACE_X[0])
+        self.declare_parameter("workspace_x_max", DEFAULT_WORKSPACE_X[1])
+        self.declare_parameter("workspace_y_min", DEFAULT_WORKSPACE_Y[0])
+        self.declare_parameter("workspace_y_max", DEFAULT_WORKSPACE_Y[1])
         self.declare_parameter("output_png", "src/llm_vision_planner/plots/contraction/live_contraction.png")
         self.declare_parameter("show_window", True)
         self.declare_parameter("plot_period_s", 0.2)
@@ -533,7 +538,17 @@ class ContractionVisualizer(Node):
         axis.grid(True, alpha=0.25)
         active_path = self.plan or self.latest_refined
         geometry_payload = active_path or self.latest_proposal or {}
-        workspace = geometry_payload.get("workspace", PLOT_WORKSPACE)
+        default_workspace = {
+            "x": [
+                float(self.get_parameter("workspace_x_min").value),
+                float(self.get_parameter("workspace_x_max").value),
+            ],
+            "y": [
+                float(self.get_parameter("workspace_y_min").value),
+                float(self.get_parameter("workspace_y_max").value),
+            ],
+        }
+        workspace = geometry_payload.get("workspace", default_workspace)
         self.configure_workspace(axis, workspace)
 
         scene_obstacles = self.latest_scene.get("obstacles", []) if self.latest_scene else []

@@ -1135,6 +1135,7 @@ source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
+export OPENAI_API_KEY="YOUR KEY"
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -1168,7 +1169,7 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   llm_provider:=llama \
   visualizer:=contraction \
   web_ui_host:=0.0.0.0 \
-  obs_safety_bracket:=backend \
+  obs_safety_bracket:=conformal \
   land_after_complete:=false
 ```
 

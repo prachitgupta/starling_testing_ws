@@ -958,6 +958,7 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("exact_goal_distance_tolerance_m", 0.10)
         self.declare_parameter("fresh_data_timeout_s", 2.0)
         self.declare_parameter("approval_timeout_s", 30.0)
+        self.declare_parameter("freeze_scene_after_approval", True)
         self.declare_parameter("scene_position_tolerance_m", 0.15)
         self.declare_parameter("scene_size_tolerance_m", 0.20)
         self.declare_parameter("obs_safety_bracket", "conformal")
@@ -1621,7 +1622,11 @@ class InteractiveMissionGateway(Node):
         maximum = target["max_corner"]
         return {
             "type": "MISSION_PROPOSAL",
-            "status": "AWAITING_APPROVAL",
+            "status": (
+                "ENVIRONMENT_CAPTURED"
+                if mission.get("environment_frozen", False)
+                else "AWAITING_APPROVAL"
+            ),
             "mission_id": mission["mission_id"],
             "snapshot_id": mission["snapshot_id"],
             "proposal_hash": mission["proposal_hash"],
@@ -1644,6 +1649,9 @@ class InteractiveMissionGateway(Node):
             "obstacles": copy.deepcopy(mission["obstacles"]),
             "obstacle_ids": [item["object_id"] for item in mission["obstacles"]],
             "created_at": mission["created_at"],
+            "observed_obstacles": copy.deepcopy(mission["observed_obstacles"]),
+            "environment_frozen": bool(mission.get("environment_frozen", False)),
+            "environment_frozen_at": mission.get("environment_frozen_at"),
             **copy.deepcopy(mission["obstacle_safety"]),
         }
 
@@ -1709,6 +1717,14 @@ class InteractiveMissionGateway(Node):
             mission["goal_relations"],
         )
         mission["approved_at"] = time.time()
+        mission["environment_frozen"] = bool(
+            self.get_parameter("freeze_scene_after_approval").value
+        )
+        mission["environment_frozen_at"] = (
+            mission["approved_at"] if mission["environment_frozen"] else None
+        )
+        if mission["environment_frozen"]:
+            self.proposal_pub.publish(String(data=json.dumps(self.proposal_payload(mission))))
         self.publish_planning_attempt()
 
     def publish_planning_attempt(self, feedback=None):
@@ -1766,14 +1782,15 @@ class InteractiveMissionGateway(Node):
         if str(candidate.get("plan_id")) != str(self.active_plan_id):
             self.log_debug(f"ignoring stale candidate plan_id={candidate.get('plan_id')}")
             return
-        context_error = self.context_error()
+        context_error = self.planning_context_error()
         if context_error:
             self.cancel_active_mission(f"Planning context became unsafe: {context_error}")
             return
-        scene_error = self.scene_compatibility_error(self.active_mission)
-        if scene_error:
-            self.cancel_active_mission(f"Scene changed during planning: {scene_error}.")
-            return
+        if not self.environment_frozen():
+            scene_error = self.scene_compatibility_error(self.active_mission)
+            if scene_error:
+                self.cancel_active_mission(f"Scene changed during planning: {scene_error}.")
+                return
         if not self.candidate_contract_matches(candidate):
             self.cancel_active_mission("Candidate plan contract differs from the approved mission.")
             return
@@ -1967,14 +1984,15 @@ class InteractiveMissionGateway(Node):
             self.publish_response("LAUNCH_APPROVAL_REJECTED", "Decision must be APPROVE or DENY.")
             return
 
-        error = self.context_error()
+        error = self.planning_context_error()
         if error:
             self.publish_response("LAUNCH_APPROVAL_REJECTED", f"Launch context is no longer safe: {error}")
             return
-        scene_error = self.scene_compatibility_error(mission)
-        if scene_error:
-            self.publish_response("LAUNCH_APPROVAL_REJECTED", f"Scene changed before launch: {scene_error}.")
-            return
+        if not self.environment_frozen():
+            scene_error = self.scene_compatibility_error(mission)
+            if scene_error:
+                self.publish_response("LAUNCH_APPROVAL_REJECTED", f"Scene changed before launch: {scene_error}.")
+                return
         current_position = self.current_position()
         release_drift = math.dist(
             [current_position["x"], current_position["y"], current_position["z"]],
@@ -2043,6 +2061,20 @@ class InteractiveMissionGateway(Node):
         error = self.scene_context_error()
         if error:
             return error
+        return self.vehicle_context_error()
+
+    def planning_context_error(self):
+        if self.environment_frozen():
+            return self.vehicle_context_error()
+        return self.context_error()
+
+    def environment_frozen(self):
+        return bool(
+            self.active_mission
+            and self.active_mission.get("environment_frozen", False)
+        )
+
+    def vehicle_context_error(self):
         now = time.time()
         timeout = float(self.get_parameter("fresh_data_timeout_s").value)
         if bool(self.get_parameter("require_mission_state").value):
@@ -2114,6 +2146,18 @@ class InteractiveMissionGateway(Node):
             "gateway_state": self.state,
             "timestamp": time.time(),
         }
+        if self.environment_frozen():
+            payload.update(
+                {
+                    "environment_frozen": True,
+                    "snapshot_id": self.active_mission["snapshot_id"],
+                    "environment_frozen_at": self.active_mission["environment_frozen_at"],
+                    "environment_warning": (
+                        "Environment captured for static planning. Do not move the vehicle or obstacles "
+                        "until launch or termination."
+                    ),
+                }
+            )
         payload.update(metadata)
         self.response_pub.publish(String(data=json.dumps(payload)))
         self.log_debug(f"{status}: {message}")

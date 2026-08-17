@@ -227,8 +227,25 @@ def run_test():
             "proposal_hash": proposal["proposal_hash"],
         }
         harness.approval_pub.publish(String(data=json.dumps(approval)))
-        spin_until(executor, harness, lambda: len(harness.prompts) == 1)
+        spin_until(
+            executor,
+            harness,
+            lambda: (
+                len(harness.prompts) == 1
+                and len(harness.proposals) == 2
+                and any(item.get("environment_frozen") is True for item in harness.responses)
+            ),
+        )
         first = harness.prompts[0]
+        frozen_proposal = harness.proposals[-1]
+        assert frozen_proposal["environment_frozen"] is True
+        assert frozen_proposal["environment_frozen_at"] is not None
+        assert frozen_proposal["observed_obstacles"][0]["min_corner"] == [1.5, 1.5, -1.0]
+        assert any(
+            item.get("environment_frozen") is True
+            and "Do not move the vehicle or obstacles" in item.get("environment_warning", "")
+            for item in harness.responses
+        )
         assert len(first["goal_relations"]) == 1
         assert first["start"] == {"x": 0.26, "y": 0.23, "z": -0.5}
         planned_chair = next(item for item in first["obstacles"] if item["label"] == "chair")
@@ -247,7 +264,25 @@ def run_test():
         )
         assert gateway.state == "WAITING_FOR_VERIFICATION"
         assert len(harness.prompts) == 1
-        assert len(harness.proposals) == 1
+        assert len(harness.proposals) == 2
+
+        harness.scene = {
+            "healthy": False,
+            "obstacles": [
+                {
+                    "id": 3,
+                    "label": "stop sign",
+                    "min_corner": [-1.0, 1.0, -1.0],
+                    "max_corner": [-0.5, 1.5, 0.0],
+                    "size": [0.5, 0.5, 1.0],
+                }
+            ],
+        }
+        spin_until(
+            executor,
+            harness,
+            lambda: gateway.latest_scene.get("healthy") is False,
+        )
 
         failed = {
             "plan_id": first["plan_id"],
@@ -270,6 +305,8 @@ def run_test():
         assert "Previous plan failed verification" in second["prompt"]
         assert "collision_free" in second["prompt"]
 
+        harness.scene["healthy"] = True
+        spin_until(executor, harness, lambda: gateway.latest_scene.get("healthy") is True)
         response_count = len(harness.responses)
         harness.command_pub.publish(String(data=json.dumps({"text": "Explain failure"})))
         spin_until(
@@ -282,6 +319,9 @@ def run_test():
         )
         assert gateway.state == "WAITING_FOR_VERIFICATION"
         assert "collision_free" in harness.responses[-1]["message"]
+
+        harness.scene["healthy"] = False
+        spin_until(executor, harness, lambda: gateway.latest_scene.get("healthy") is False)
 
         passed = {
             "plan_id": second["plan_id"],

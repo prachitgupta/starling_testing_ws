@@ -101,7 +101,7 @@ class SemanticObstaclePerception(Node):
                 ("bbox_inner_margin_fraction", 0.30),
                 ("depth_near_percentile", 25.0),
                 ("depth_cluster_tolerance_m", 0.35),
-                ("obstacle_hold_s", 10.0),
+                ("obstacle_hold_s", 5.0),
                 ("held_depth_health_grace_s", 3.0),
                 ("obstacle_match_distance_m", 0.75),
                 ("publish_hz", 2.0),

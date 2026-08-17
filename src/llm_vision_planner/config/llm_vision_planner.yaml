@@ -53,7 +53,7 @@ semantic_obstacle_perception:
     bbox_inner_margin_fraction: 0.30
     depth_near_percentile: 25.0
     depth_cluster_tolerance_m: 0.35
-    obstacle_hold_s: 10.0
+    obstacle_hold_s: 5.0
     # Reuse only recent, measured ToF geometry when the current failure is sync-only.
     held_depth_health_grace_s: 3.0
     obstacle_match_distance_m: 0.75
@@ -153,6 +153,8 @@ interactive_mission_gateway:
     exact_goal_distance_tolerance_m: 0.10
     fresh_data_timeout_s: 2.0
     approval_timeout_s: 30.0
+    # Freeze the approved static snapshot; later perception changes do not cancel planning.
+    freeze_scene_after_approval: True
     # Obstacle envelope per x-y side = position tolerance + 0.5 * size tolerance.
     scene_position_tolerance_m: 0.20
     scene_size_tolerance_m: 0.30

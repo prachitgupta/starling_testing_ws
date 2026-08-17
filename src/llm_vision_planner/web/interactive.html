@@ -36,6 +36,7 @@
   <section>
     <h2>Gateway status</h2>
     <div id="status" class="status">Waiting for ROS status…</div>
+    <div id="environment-warning" class="warning"></div>
   </section>
   <section>
     <h2>Grounded mission proposal</h2>
@@ -190,6 +191,14 @@
         proposal = state.proposal || {};
         launchProposal = state.launch_proposal || {};
         document.getElementById('status').textContent = `${response.status || 'WAITING'} — ${response.message || ''}`;
+        const environmentWarning = document.getElementById('environment-warning');
+        const environmentFrozen = response.environment_frozen === true;
+        environmentWarning.textContent = response.environment_warning || (
+          environmentFrozen
+            ? 'Environment captured for static planning. Do not move the vehicle or obstacles until launch or termination.'
+            : ''
+        );
+        environmentWarning.style.display = environmentFrozen ? 'block' : 'none';
         document.getElementById('proposal').textContent = proposal.mission_id ? JSON.stringify(proposal, null, 2) : 'No proposal yet.';
         const awaiting = (response.gateway_state === 'AWAITING_APPROVAL' || response.status === 'AWAITING_APPROVAL') && Boolean(proposal.mission_id);
         document.getElementById('approve').disabled = !awaiting;

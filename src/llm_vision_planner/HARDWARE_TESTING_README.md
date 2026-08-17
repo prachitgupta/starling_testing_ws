@@ -1013,7 +1013,7 @@ odometry. NED is x North, y East, z Down.
 | `min_confidence` | `0.70` | Raise it for false detections; lower it for missed detections |
 | `min_tof_depth_m`, `max_tof_depth_m` | `0.20`, `6.0` | The usable ToF range changes |
 | `bbox_inner_margin_fraction` | `0.30` | Increase it to reject box-edge background; decrease it when too few ToF points remain |
-| `obstacle_hold_s` | `10.0` | Retains intermittent static chair detections; lower it for moving obstacles |
+| `obstacle_hold_s` | `5.0` | Covers the longest observed static-flight dropout with margin; lower it for moving obstacles |
 | `held_depth_health_grace_s` | `3.0` | Reuses recent measured geometry only for synchronization failures; set to `0.0` for moving scenes |
 
 ### Calibrate the hires camera

@@ -1138,8 +1138,6 @@ ros2 daemon start
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
-  goal_x:=0.0 \
-  goal_y:=1.5 \
   environment:=real \
   llm_provider:=llama \
   visualizer:=contraction \
@@ -1160,19 +1158,17 @@ source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
+export OPENAI_API_KEY="YOUR KEY"
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
-  goal_x:=0.4 \
-  goal_y:=1.7 \
   environment:=real \
   interaction_mode:=interactive \
   intent_provider:=openai \
   llm_provider:=llama \
   visualizer:=contraction \
   web_ui_host:=0.0.0.0 \
-  obs_safety_bracket:=conformal \
-  vision_error_calibration_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv" \
+  obs_safety_bracket:=backend \
   land_after_complete:=false
 ```
 

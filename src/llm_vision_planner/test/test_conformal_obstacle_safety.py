@@ -435,12 +435,16 @@ def test_calibration_gateway_repeats_capture_without_relaunching():
     gateway.last_calibration_capture_s = None
     gateway.continuous_calibration_capture = True
     gateway.latest_scene = {"obstacles": [], "timestamp": time.time(), "healthy": True}
-    gateway.scene_context_error = lambda: None
+    context_error = ["Vehicle must be in HOLDING_FOR_PLAN before accepting a mission."]
+    gateway.context_error = lambda: context_error[0]
     gateway.get_parameter = lambda name: Parameter(
         {"calibration_capture_delay_s": 0.0, "calibration_capture_interval_s": 3.0}[name]
     )
     captures = []
     gateway.handle_calibration_intent = lambda intent, scene: captures.append(scene)
+    gateway.maybe_start_calibration_capture()
+    assert gateway.calibration_capture_count == 0
+    context_error[0] = None
     gateway.maybe_start_calibration_capture()
     assert gateway.calibration_capture_count == 1
     gateway.maybe_start_calibration_capture()

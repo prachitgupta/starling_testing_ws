@@ -86,6 +86,14 @@ def generate_launch_description():
         parameters=[params_file],
     )
 
+    takeoff = Node(
+        package="llm_vision_planner",
+        executable="control_law_executer.py",
+        name="control_law_executer",
+        output="screen",
+        parameters=[params_file],
+    )
+
     nominal_environment = Node(
         package="llm_vision_planner",
         executable="interactive_mission_gateway.py",
@@ -99,7 +107,7 @@ def generate_launch_description():
                 "openai_intent_model": LaunchConfiguration("openai_intent_model"),
                 "visualizer": "standard",
                 "obs_safety_bracket": "hardcoded",
-                "require_mission_state": False,
+                "require_mission_state": True,
                 "calibration_only": True,
                 "auto_calibration_capture": True,
                 "continuous_calibration_capture": True,
@@ -119,6 +127,7 @@ def generate_launch_description():
             *common_arguments,
             recorder,
             perception,
+            takeoff,
             TimerAction(period=1.0, actions=[nominal_environment]),
         ]
     )

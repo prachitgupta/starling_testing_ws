@@ -652,37 +652,59 @@ Verify:
 grep -n '"offboard_mode"' /etc/modalai/voxl-vision-hub.conf
 ```
 
-Do not run any other Offboard publisher. `control_law_executer.py`, launched by
-`full_plot.launch.py`, must be the only publisher controlling PX4.
+Do not run any other Offboard publisher. During planner missions,
+`control_law_executer.py` from `full_plot.launch.py` must be the only publisher
+controlling PX4. The calibration procedure below launches that same executable
+from its dedicated launch file instead.
 
 ## 11. Generate the Vicon vision-error calibration dataset
 
 Important:
 
-- Keep the vehicle disarmed with propellers removed.
-- Start the calibration launch once; it records continuously every 3 seconds.
-- Move the chair, then hold it still until `RECORDED` appears.
-- Captures made while the chair is moving are skipped.
-- Repeated captures at the same chair/camera pose are written to the raw CSV and
+- This is an autonomous low-altitude flight. Install propellers only in the
+  cleared flight area, keep the QGroundControl kill/land controls available,
+  and keep people outside the vehicle safety volume.
+- Run only `vision_error_calibration.launch.py`. It starts perception, the
+  recorder, the calibration gateway, and `control_law_executer.py`; do not also
+  run `full_plot.launch.py`, `mission_takeoff.py`, or another Offboard publisher.
+- The control executor reads `takeoff_z` from
+  `config/llm_vision_planner.yaml` (`-0.5` m NED by default). It uses the same
+  setpoint priming, Offboard/arm commands, takeoff checks, and position hold as
+  a normal mission.
+- Recording is blocked until the executor reports `HOLDING_FOR_PLAN`. The
+  aircraft then keeps commanding its initial X/Y and configured hover Z while
+  the launch records every 3 seconds.
+- Record `chair1`, `person`, and `stopsign` in separate sessions using one of
+  the commands below. Move only the tracked object between captures; captures
+  made while it is moving are skipped.
+- Repeated captures at the same object/camera pose are written to the raw CSV and
   collapsed during post-processing.
 - For 500 effective samples, collect at least 500 clearly different stable
-  chair/camera poses. Collect extra raw captures because repeats will be removed.
+  object/camera poses. Collect extra raw captures because repeats will be removed.
 
-### 11.1 Define `chair1` in Vicon Tracker
+### 11.1 Define the three ground-truth objects in Vicon Tracker
 
-1. Attach at least four asymmetric rigid markers to the chair.
-2. Select those markers in Tracker and create an object named `chair1`.
-3. Set the object origin to the chair footprint center.
-4. Align object X with width, Y with depth, and Z upward.
-5. Save the object and confirm `/vicon/chair1/chair1` tracks continuously.
-6. Measure chair width along X and depth along Y in metres.
+Create these Tracker objects with the exact names shown:
+
+| Detector label | Tracker object | Vicon ground-truth topic |
+| --- | --- | --- |
+| `chair` | `chair1` | `/vicon/chair1/chair1` |
+| `person` | `person` | `/vicon/person/person` |
+| `stop sign` | `stopsign` | `/vicon/stopsign/stopsign` |
+
+For each object:
+
+1. Attach at least four asymmetric rigid markers to the object or its rigid
+   carrier. Use a mannequin or other approved stationary target for the
+   `person` class whenever possible.
+2. Select the markers in Tracker and create the named object.
+3. Set its origin to the center of the physical ground footprint.
+4. Align object X with footprint width, Y with footprint depth, and Z upward.
+5. Measure the full X width and Y depth in metres. Include the base/stand in the
+   `stopsign` footprint.
+6. Save it and verify that its topic remains continuous and unoccluded.
 
 Tracker reference: <https://vicon-help.atlassian.net/wiki/spaces/Tracker44/pages/376309034/Create+objects>
-
-For a different object, repeat these steps with a new Tracker name and measured
-X/Y dimensions. In the launch command change `trial_id`, `object_label` to the
-exact detector class, `object_vicon_topic`, `object_width_m`, and
-`object_depth_m`; the same raw CSV may be reused to combine object classes.
 
 ### 11.2 Start the Vicon bridge
 
@@ -698,35 +720,58 @@ ros2 run vicon_bridge vicon_bridge --ros-args \
   -r /vicon/Starling2/Starling2/pose:=/mavros/vision_pose/pose
 ```
 
-Run only one bridge. Verify the three required pose streams:
+Run only one bridge. Verify the vehicle, PX4, and all three object streams:
 
 ```bash
 ros2 topic echo /vicon/Starling2/Starling2 --once
 ros2 topic echo /vicon/chair1/chair1 --once
+ros2 topic echo /vicon/person/person --once
+ros2 topic echo /vicon/stopsign/stopsign --once
 ros2 topic echo /fmu/out/vehicle_odometry --once
 ros2 topic hz /vicon/chair1/chair1 --window 500
+ros2 topic hz /vicon/person/person --window 500
+ros2 topic hz /vicon/stopsign/stopsign --window 500
 ```
 
 - Use the default `flu` when the Starling Tracker axes are X forward, Y left,
   Z up.
 - Add `vicon_vehicle_frame_convention:=frd` only for X forward, Y right, Z down.
 
-### 11.3 Record continuously
+### 11.3 Build once and prepare the flight
 
-1. Place the chair at the first pose and point the camera at it.
-2. Export `OPENAI_API_KEY`.
-3. Replace `MEASURED_WIDTH_M` and `MEASURED_DEPTH_M` below.
-4. Choose one unique session ID for this recording run.
-5. Start the launch and keep the Starling and chair stationary until the first
-   `RECORDED` message.
+1. Confirm Vicon fusion and `/fmu/out/vehicle_odometry` are healthy using the
+   checks in Sections 7-9.
+2. Confirm the configured hover altitude. `-0.5` means 0.5 m above the local
+   NED origin:
 
 ```bash
 cd ~/Desktop/starling_testing_ws
 source /opt/ros/humble/setup.bash
+grep -A15 '^control_law_executer:' \
+  src/llm_vision_planner/config/llm_vision_planner.yaml | grep takeoff_z
+colcon build --symlink-install --packages-select llm_vision_planner
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
+```
+
+3. Export `OPENAI_API_KEY`, place one tracked object at its first stable pose,
+   and aim the camera at it.
+4. Keep the aircraft at its takeoff point. On launch it records that X/Y,
+   primes Offboard setpoints, arms, climbs to `takeoff_z`, settles, and holds.
+
+### 11.4 Start one recording launch
+
+Use exactly one command for the object currently in view. Each prompt reads the
+measured dimensions without putting unsafe guessed dimensions in the dataset.
+All sessions may append to the same raw CSV.
+
+For `chair1`:
+
+```bash
+read -rp "Chair X width in metres: " CHAIR_WIDTH_M
+read -rp "Chair Y depth in metres: " CHAIR_DEPTH_M
 
 ros2 launch llm_vision_planner vision_error_calibration.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -734,33 +779,81 @@ ros2 launch llm_vision_planner vision_error_calibration.launch.py \
   object_id:=obj-1 \
   object_label:=chair \
   object_vicon_topic:=/vicon/chair1/chair1 \
-  object_width_m:=MEASURED_WIDTH_M \
-  object_depth_m:=MEASURED_DEPTH_M \
+  object_width_m:="$CHAIR_WIDTH_M" \
+  object_depth_m:="$CHAIR_DEPTH_M" \
   output_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv"
 ```
 
-In another terminal, monitor progress:
+For `person`:
 
 ```bash
+read -rp "Person target X width in metres: " PERSON_WIDTH_M
+read -rp "Person target Y depth in metres: " PERSON_DEPTH_M
+
+ros2 launch llm_vision_planner vision_error_calibration.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  trial_id:=person-session-001 \
+  object_id:=obj-1 \
+  object_label:=person \
+  object_vicon_topic:=/vicon/person/person \
+  object_width_m:="$PERSON_WIDTH_M" \
+  object_depth_m:="$PERSON_DEPTH_M" \
+  output_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv"
+```
+
+For `stopsign` (the detector label contains a space):
+
+```bash
+read -rp "Stop-sign target X width in metres: " STOPSIGN_WIDTH_M
+read -rp "Stop-sign target Y depth in metres: " STOPSIGN_DEPTH_M
+
+ros2 launch llm_vision_planner vision_error_calibration.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  trial_id:=stopsign-session-001 \
+  object_id:=obj-1 \
+  object_label:="stop sign" \
+  object_vicon_topic:=/vicon/stopsign/stopsign \
+  object_width_m:="$STOPSIGN_WIDTH_M" \
+  object_depth_m:="$STOPSIGN_DEPTH_M" \
+  output_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv"
+```
+
+In another terminal, monitor takeoff, ownership, and recording:
+
+```bash
+ros2 topic echo /llm_vision/mission_state
+ros2 topic echo /llm_vision/offboard_owner
 ros2 topic echo /llm_vision/vision_calibration_status
 tail -n 5 \
   ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv
 ```
 
-6. After `RECORDED`, move the chair to a clearly different position or yaw.
-7. Hold it still until the next `RECORDED` message.
-8. Repeat steps 6-7 without stopping the launch.
-9. Press `Ctrl+C` after collecting more than the required number of raw poses.
+Wait for `HOLDING_FOR_PLAN`; no calibration snapshot is published before that
+state. After each `RECORDED`, move the tracked object to a clearly different
+position or yaw and hold it still for the next capture. Do not move the aircraft
+by hand while it owns Offboard position hold.
+
+When the session is complete, land before stopping the launch:
+
+```bash
+ros2 topic pub --once /llm_vision/executor_command std_msgs/msg/String \
+  "{data: '{\"command\":\"LAND\",\"reason\":\"vision calibration complete\"}'}"
+ros2 topic echo /llm_vision/mission_state
+```
+
+Wait until the mission state is `COMPLETE` and QGroundControl shows the vehicle
+landed and disarmed. Then press `Ctrl+C` in the launch terminal. Use a new unique
+`trial_id` for the next object/session and repeat the same one-launch workflow.
 
 Automatic outputs:
 
 - Raw CSV: `fine_tuning/datasets/calibration_vision_error_raw.csv`
 - Derived frame check: `calibration_vision_error_raw.<trial_id>.frame.json`
 - Missed detection or GPT depth abstention: retained as a calibration miss
-- `SKIPPED_MOVING_OBJECT`: wait until the chair is stationary
+- `SKIPPED_MOVING_OBJECT`: wait until the tracked object is stationary
 - `FRAME_ALIGNMENT_UNSTABLE`: keep the Starling still and check both pose streams
 
-### 11.4 Collapse repeated poses
+### 11.5 Collapse repeated poses
 
 ```bash
 RAW_CSV=~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv
@@ -788,7 +881,7 @@ tail -n 5 "$CALIBRATION_CSV"
 Collect more poses and rerun post-processing if the first command prints fewer
 than `500`. The raw CSV cannot be used directly for a mission.
 
-### 11.5 Use the completed dataset
+### 11.6 Use the completed dataset
 
 For conformal obstacle enlargement, add:
 

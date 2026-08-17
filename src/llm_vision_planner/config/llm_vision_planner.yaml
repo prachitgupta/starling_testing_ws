@@ -339,6 +339,7 @@ control_law_executer:
     publish_hz: 20.0
     pose_timeout_s: 1.0
     prime_s: 1.5
+    # Shared mission and vision-calibration Offboard hover altitude (NED z).
     takeoff_z: -0.5
     takeoff_accept_m: 0.15
     takeoff_settle_s: 1.0

@@ -1322,7 +1322,7 @@ class InteractiveMissionGateway(Node):
             reference_s = self.last_calibration_capture_s
         if now - reference_s < delay:
             return
-        if self.scene_context_error() is not None:
+        if self.context_error() is not None:
             return
         self.calibration_capture_count += 1
         self.last_calibration_capture_s = now

@@ -70,6 +70,8 @@ class ControlLawExecuter(Node):
         self.declare_parameter("executor_command_topic", EXECUTOR_COMMAND_TOPIC)
         self.declare_parameter("pose_topic", POSE_TOPIC)
         self.declare_parameter("land_detected_topic", LAND_DETECTED_TOPIC)
+        self.declare_parameter("takeoff_gate_topic", "")
+        self.declare_parameter("takeoff_gate_status", "FRAME_READY")
         self.declare_parameter("publish_hz", 20.0)
         self.declare_parameter("pose_timeout_s", 1.0)
         self.declare_parameter("prime_s", 1.5)
@@ -95,6 +97,9 @@ class ControlLawExecuter(Node):
         self.executor_command_topic = str(self.get_parameter("executor_command_topic").value)
         self.pose_topic = str(self.get_parameter("pose_topic").value)
         self.land_detected_topic = str(self.get_parameter("land_detected_topic").value)
+        self.takeoff_gate_topic = str(self.get_parameter("takeoff_gate_topic").value).strip()
+        self.takeoff_gate_status = str(self.get_parameter("takeoff_gate_status").value).strip()
+        self.takeoff_gate_ready = not self.takeoff_gate_topic
         self.land_after_complete = bool(self.get_parameter("land_after_complete").value)
 
         self.offboard_pub = self.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
@@ -116,6 +121,14 @@ class ControlLawExecuter(Node):
             self.executor_command_callback,
             10,
         )
+        self.takeoff_gate_sub = None
+        if self.takeoff_gate_topic:
+            self.takeoff_gate_sub = self.create_subscription(
+                String,
+                self.takeoff_gate_topic,
+                self.takeoff_gate_callback,
+                LATCHED_QOS,
+            )
 
         self.position = None
         self.velocity = None
@@ -143,6 +156,19 @@ class ControlLawExecuter(Node):
         self.get_logger().info(
             f"unified offboard executor waiting for odometry on {self.pose_topic} and verified plans on {self.plan_topic}"
         )
+
+    def takeoff_gate_callback(self, msg):
+        if self.takeoff_gate_ready:
+            return
+        try:
+            status = str(json.loads(msg.data).get("status", "")).strip()
+        except (AttributeError, json.JSONDecodeError):
+            return
+        if status == self.takeoff_gate_status:
+            self.takeoff_gate_ready = True
+            self.get_logger().info(
+                f"takeoff gate opened by status={status} on {self.takeoff_gate_topic}"
+            )
 
     def odom_callback(self, msg):
         if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
@@ -246,7 +272,10 @@ class ControlLawExecuter(Node):
 
         if self.state == "PRIME_OFFBOARD":
             self.set_hold(self.takeoff_target)
-            if self.elapsed(now) >= float(self.get_parameter("prime_s").value):
+            if (
+                self.elapsed(now) >= float(self.get_parameter("prime_s").value)
+                and self.takeoff_gate_ready
+            ):
                 self.request_offboard_and_arm(now)
                 self.transition("ARM_TAKEOFF")
 

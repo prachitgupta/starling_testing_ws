@@ -47,6 +47,11 @@ class Px4Harness(Node):
         self.land_pub = self.create_publisher(VehicleLandDetected, "/fmu/out/vehicle_land_detected", ODOM_QOS)
         self.plan_pub = self.create_publisher(String, "/llm_vision/plan_verified", LATCHED_QOS)
         self.executor_command_pub = self.create_publisher(String, "/llm_vision/executor_command", 10)
+        self.takeoff_gate_pub = self.create_publisher(
+            String,
+            "/llm_vision/vision_calibration_status",
+            LATCHED_QOS,
+        )
         self.commands = []
         self.setpoints = []
         self.heartbeats = []
@@ -90,6 +95,9 @@ class Px4Harness(Node):
         self.executor_command_pub.publish(
             String(data=json.dumps({"command": "LAND", "reason": "operator denied final launch"}))
         )
+
+    def publish_takeoff_gate(self, status):
+        self.takeoff_gate_pub.publish(String(data=json.dumps({"status": status})))
 
     def command_callback(self, msg):
         self.commands.append((time.monotonic(), int(msg.command), float(msg.param1), float(msg.param2)))
@@ -353,6 +361,33 @@ def test_stale_odometry_lands():
         destroy_nodes(executor, node, harness)
 
 
+def test_takeoff_waits_for_calibration_frame():
+    executor, node, harness = make_nodes(
+        "takeoff_gate",
+        ["takeoff_gate_topic:=/llm_vision/vision_calibration_status"],
+    )
+    try:
+        spin_until(executor, node, harness, lambda: node.state == "PRIME_OFFBOARD", 1.0)
+        prime_started = node.state_start_s
+        spin_until(
+            executor,
+            node,
+            harness,
+            lambda: time.monotonic() - prime_started >= 0.30,
+            0.6,
+        )
+        assert node.state == "PRIME_OFFBOARD"
+        assert len(harness.setpoints) >= 5
+        assert not harness.commands, "executor armed before calibration FRAME_READY"
+
+        harness.publish_takeoff_gate("FRAME_READY")
+        spin_until(executor, node, harness, lambda: len(harness.commands) >= 2, 0.5)
+        assert node.state == "ARM_TAKEOFF"
+        assert node.takeoff_gate_ready is True
+    finally:
+        destroy_nodes(executor, node, harness)
+
+
 def test_operator_termination_lands_in_offboard():
     executor, node, harness = make_nodes("operator_termination")
     try:
@@ -382,5 +417,6 @@ if __name__ == "__main__":
     test_invalid_plans_land_without_qp()
     test_successful_mission_holds_when_landing_disabled()
     test_stale_odometry_lands()
+    test_takeoff_waits_for_calibration_frame()
     test_operator_termination_lands_in_offboard()
     print("unified PX4 offboard ROS harness passed")

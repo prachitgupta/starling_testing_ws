@@ -91,7 +91,13 @@ def generate_launch_description():
         executable="control_law_executer.py",
         name="control_law_executer",
         output="screen",
-        parameters=[params_file],
+        parameters=[
+            params_file,
+            {
+                "takeoff_gate_topic": "/llm_vision/vision_calibration_status",
+                "takeoff_gate_status": "FRAME_READY",
+            },
+        ],
     )
 
     nominal_environment = Node(

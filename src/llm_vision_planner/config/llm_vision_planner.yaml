@@ -336,6 +336,10 @@ control_law_executer:
     land_detected_topic: /fmu/out/vehicle_land_detected
     offboard_owner_topic: /llm_vision/offboard_owner
     executor_command_topic: /llm_vision/executor_command
+    # Empty for normal missions; the calibration launch overrides this so
+    # Offboard/arm commands wait for the ground-frame alignment certificate.
+    takeoff_gate_topic: ""
+    takeoff_gate_status: FRAME_READY
     publish_hz: 20.0
     pose_timeout_s: 1.0
     prime_s: 1.5

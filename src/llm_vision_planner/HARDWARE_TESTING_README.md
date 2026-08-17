@@ -674,6 +674,9 @@ Important:
 - Recording is blocked until the executor reports `HOLDING_FOR_PLAN`. The
   aircraft then keeps commanding its initial X/Y and configured hover Z while
   the launch records every 3 seconds.
+- The executor primes its normal Offboard setpoint stream on the ground but
+  cannot send Offboard/arm commands until the recorder has accepted 20
+  consistent Vicon/PX4 alignment pairs and published `FRAME_READY`.
 - Record `chair1`, `person`, and `stopsign` in separate sessions using one of
   the commands below. Move only the tracked object between captures; captures
   made while it is moving are skipped.

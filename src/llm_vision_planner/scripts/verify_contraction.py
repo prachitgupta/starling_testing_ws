@@ -337,6 +337,16 @@ class ContractionVisualizer(Node):
         self.latest_scene = payload
         self.dirty = True
 
+    @staticmethod
+    def display_scene(latest_scene, proposal):
+        if proposal and proposal.get("environment_frozen", False):
+            return {
+                "healthy": True,
+                "obstacles": proposal.get("observed_obstacles", []),
+                "environment_frozen": True,
+            }
+        return latest_scene
+
     def proposal_callback(self, msg):
         payload = self.parse_payload(msg, "mission proposal")
         if payload is None:
@@ -551,7 +561,8 @@ class ContractionVisualizer(Node):
         workspace = geometry_payload.get("workspace", default_workspace)
         self.configure_workspace(axis, workspace)
 
-        scene_obstacles = self.latest_scene.get("obstacles", []) if self.latest_scene else []
+        display_scene = self.display_scene(self.latest_scene, self.latest_proposal)
+        scene_obstacles = display_scene.get("obstacles", []) if display_scene else []
         planning_obstacles = geometry_payload.get("obstacles", [])
         nominal_obstacles = geometry_payload.get("nominal_obstacles", [])
         observed_obstacles = (
@@ -645,8 +656,10 @@ class ContractionVisualizer(Node):
         phase = self.phase_text()
         axis.set_title(f"Live mission safety view\n{phase}")
         live_error = "--" if self.latest_live_position_error is None else f"{self.latest_live_position_error:.2f} m"
-        scene_health = "unknown" if self.latest_scene is None else (
-            "healthy" if self.latest_scene.get("healthy", True) else "unhealthy"
+        scene_health = "unknown" if display_scene is None else (
+            "captured" if display_scene.get("environment_frozen", False) else (
+                "healthy" if display_scene.get("healthy", True) else "unhealthy"
+            )
         )
         safety_payload = active_path or self.latest_proposal or {}
         strategy = safety_payload.get("obs_safety_bracket", "--")
@@ -724,6 +737,8 @@ class ContractionVisualizer(Node):
                 return f"Refined path rejected - {suffix}"
             return "Refined candidate - verification pending"
         if self.latest_proposal is not None:
+            if self.latest_proposal.get("environment_frozen", False):
+                return "Environment captured - planning from frozen static snapshot"
             return "Proposed goal - awaiting operator approval"
         if self.latest_scene is not None:
             return "Scene ready - waiting for operator command"

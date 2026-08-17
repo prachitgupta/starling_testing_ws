@@ -140,6 +140,18 @@ def test_contraction_plot_uses_centered_fallback_and_payload_workspace():
     assert axis.y_limits == (-1.25, 7.25)
 
 
+def test_contraction_plot_uses_frozen_approved_scene_over_later_live_scene():
+    live_scene = {"healthy": False, "obstacles": [{"label": "stop sign"}]}
+    proposal = {
+        "environment_frozen": True,
+        "observed_obstacles": [{"label": "chair"}],
+    }
+    display = ContractionVisualizer.display_scene(live_scene, proposal)
+    assert display["healthy"] is True
+    assert display["environment_frozen"] is True
+    assert [item["label"] for item in display["obstacles"]] == ["chair"]
+
+
 def test_certificate_uses_independent_trial_maxima_and_fails_closed():
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "calibration.csv"

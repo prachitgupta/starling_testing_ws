@@ -29,6 +29,12 @@ class InteractiveWebUiTest(unittest.TestCase):
         self.assertIn("launchProposal.safety_warning", html)
         self.assertIn("Approve & Launch Despite Warning", html)
 
+    def test_ui_displays_frozen_environment_warning(self):
+        html = (ROOT / "web" / "interactive.html").read_text(encoding="utf-8")
+        self.assertIn('id="environment-warning"', html)
+        self.assertIn("response.environment_frozen", html)
+        self.assertIn("Do not move the vehicle or obstacles", html)
+
     def test_audio_file_metadata_accepts_browser_recording_types(self):
         self.assertEqual(audio_file_metadata("audio/webm;codecs=opus"), ("audio/webm", "webm"))
         self.assertEqual(audio_file_metadata("audio/ogg; codecs=opus"), ("audio/ogg", "ogg"))

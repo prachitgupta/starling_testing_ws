@@ -1008,13 +1008,15 @@ odometry. NED is x North, y East, z Down.
 | `point_cloud_frame` | `tof_optical` | Use `local_ned` only for an already transformed cloud |
 | `detection_cam_body_*` | `[0.068, 0.012, -0.015]` m; RPY `[0, 90, 90]` deg | The RGB mount changes or is remeasured |
 | `depth_cam_body_*` | `[0.066, 0.009, -0.012]` m; RPY `[0, 90, 180]` deg | The ToF mount changes or is remeasured |
-| `max_sync_slop_s` | `2.0` | Static-hover validation rejected gaps up to 1.395 s at the old limit; lower it for motion |
-| `point_cloud_timeout_s` | `3.0` | Allows bursty ToF delivery during a static snapshot; lower it for motion |
+| `detection_timeout_s`, `detector_timeout_s` | `5.0`, `5.0` | Allows bursty detector delivery during a static snapshot; lower them for motion |
+| `point_cloud_timeout_s`, `pose_timeout_s` | `5.0`, `5.0` | Allows bursty ToF and pose delivery during a static snapshot; lower them for motion |
+| `max_sync_slop_s` | `10.0` | Static-hover validation observed retained-pose gaps up to 5.318 s; lower it for motion |
+| `pose_history_size` | `2000` | Covers about 16 s at the observed 123 Hz pose rate, exceeding the sync window |
 | `min_confidence` | `0.70` | Raise it for false detections; lower it for missed detections |
 | `min_tof_depth_m`, `max_tof_depth_m` | `0.20`, `6.0` | The usable ToF range changes |
 | `bbox_inner_margin_fraction` | `0.30` | Increase it to reject box-edge background; decrease it when too few ToF points remain |
-| `obstacle_hold_s` | `5.0` | Covers the longest observed static-flight dropout with margin; lower it for moving obstacles |
-| `held_depth_health_grace_s` | `3.0` | Reuses recent measured geometry only for synchronization failures; set to `0.0` for moving scenes |
+| `obstacle_hold_s` | `10.0` | Covers observed static-scene detector dropouts; lower it for moving obstacles |
+| `held_depth_health_grace_s` | `10.0` | Reuses recent measured geometry only for synchronization failures; set to `0.0` for moving scenes |
 
 ### Calibrate the hires camera
 

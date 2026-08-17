@@ -87,11 +87,12 @@ class SemanticObstaclePerception(Node):
                 ("depth_cam_yaw_deg", 180.0),
                 ("point_cloud_frame", "tof_optical"),
                 ("min_confidence", 0.70),
-                ("detection_timeout_s", 2.0),
-                ("detector_timeout_s", 2.0),
-                ("point_cloud_timeout_s", 3.0),
-                ("pose_timeout_s", 1.0),
-                ("max_sync_slop_s", 2.0),
+                ("detection_timeout_s", 5.0),
+                ("detector_timeout_s", 5.0),
+                ("point_cloud_timeout_s", 5.0),
+                ("pose_timeout_s", 5.0),
+                ("max_sync_slop_s", 10.0),
+                ("pose_history_size", 2000),
                 ("detection_to_depth_offset_s", 0.0),
                 ("z_estimation_mode", "depth"),
                 ("min_tof_depth_m", 0.20),
@@ -101,8 +102,8 @@ class SemanticObstaclePerception(Node):
                 ("bbox_inner_margin_fraction", 0.30),
                 ("depth_near_percentile", 25.0),
                 ("depth_cluster_tolerance_m", 0.35),
-                ("obstacle_hold_s", 5.0),
-                ("held_depth_health_grace_s", 3.0),
+                ("obstacle_hold_s", 10.0),
+                ("held_depth_health_grace_s", 10.0),
                 ("obstacle_match_distance_m", 0.75),
                 ("publish_hz", 2.0),
                 ("debug", True),
@@ -151,7 +152,9 @@ class SemanticObstaclePerception(Node):
         self.detections = []
         self.detector_image_samples = deque(maxlen=50)
         self.point_cloud_samples = deque(maxlen=20)
-        self.pose_samples = deque(maxlen=100)
+        self.pose_samples = deque(
+            maxlen=max(100, int(self.get_parameter("pose_history_size").value))
+        )
         self.pose = None
         self.detection_count = 0
         self.last_detection_stamp = None

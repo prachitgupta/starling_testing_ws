@@ -57,7 +57,9 @@ def generate_launch_description():
                 "object_depth_m": ParameterValue(
                     LaunchConfiguration("object_depth_m"), value_type=float
                 ),
-                "marker_to_object_json": LaunchConfiguration("marker_to_object_json"),
+                "marker_to_object_json": ParameterValue(
+                    LaunchConfiguration("marker_to_object_json"), value_type=str
+                ),
                 "vicon_vehicle_topic": LaunchConfiguration("vicon_vehicle_topic"),
                 "vicon_vehicle_frame_convention": LaunchConfiguration(
                     "vicon_vehicle_frame_convention"
@@ -66,7 +68,9 @@ def generate_launch_description():
                 "auto_vicon_world_to_ned": ParameterValue(
                     LaunchConfiguration("auto_vicon_world_to_ned"), value_type=bool
                 ),
-                "vicon_world_to_ned_json": LaunchConfiguration("vicon_world_to_ned_json"),
+                "vicon_world_to_ned_json": ParameterValue(
+                    LaunchConfiguration("vicon_world_to_ned_json"), value_type=str
+                ),
                 "frame_calibration_samples": ParameterValue(
                     LaunchConfiguration("frame_calibration_samples"), value_type=int
                 ),

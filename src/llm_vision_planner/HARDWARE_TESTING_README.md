@@ -1238,8 +1238,11 @@ export OPENAI_API_KEY="YOUR KEY"
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
   environment:=real \
+  interaction_mode:=interactive \
+  intent_provider:=openai \
   llm_provider:=llama \
   visualizer:=contraction \
+  web_ui_host:=0.0.0.0 \
   obs_safety_bracket:=hardcoded \
   show_rrt:=true
 ```
@@ -1267,7 +1270,8 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   llm_provider:=llama \
   visualizer:=contraction \
   web_ui_host:=0.0.0.0 \
-  obs_safety_bracket:=conformal \
+  obs_safety_bracket:=hardcoded \
+  show_rrt:=true \
   land_after_complete:=false
 ```
 

@@ -1104,8 +1104,8 @@ odometry. NED is x North, y East, z Down.
 | `point_cloud_frame` | `tof_optical` | Use `local_ned` only for an already transformed cloud |
 | `detection_cam_body_*` | `[0.068, 0.012, -0.015]` m; RPY `[0, 90, 90]` deg | The RGB mount changes or is remeasured |
 | `depth_cam_body_*` | `[0.066, 0.009, -0.012]` m; RPY `[0, 90, 180]` deg | The ToF mount changes or is remeasured |
-| `detection_timeout_s`, `detector_timeout_s` | `5.0`, `5.0` | Allows bursty detector delivery during a static snapshot; lower them for motion |
-| `point_cloud_timeout_s`, `pose_timeout_s` | `5.0`, `5.0` | Allows bursty ToF and pose delivery during a static snapshot; lower them for motion |
+| `detection_timeout_s`, `detector_timeout_s` | `10.0`, `10.0` | Allows bursty detector delivery during a static snapshot; lower them for motion |
+| `point_cloud_timeout_s`, `pose_timeout_s` | `6.0`, `5.0` | Allows bursty ToF and pose delivery during a static snapshot; lower them for motion |
 | `max_sync_slop_s` | `10.0` | Static-hover validation observed retained-pose gaps up to 5.318 s; lower it for motion |
 | `pose_history_size` | `2000` | Covers about 16 s at the observed 123 Hz pose rate, exceeding the sync window |
 | `min_confidence` | `0.70` | Raise it for false detections; lower it for missed detections |

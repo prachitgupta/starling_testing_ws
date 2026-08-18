@@ -37,9 +37,9 @@ semantic_obstacle_perception:
     # Raw /tof_pc is sensor-relative even when its bridge header says "world".
     point_cloud_frame: tof_optical
     min_confidence: 0.70
-    detection_timeout_s: 5.0
-    detector_timeout_s: 5.0
-    point_cloud_timeout_s: 5.0
+    detection_timeout_s: 10.0
+    detector_timeout_s: 10.0
+    point_cloud_timeout_s: 6.0
     pose_timeout_s: 5.0
     # Static-hover validation observed retained-pose gaps up to 5.318 s.
     max_sync_slop_s: 10.0

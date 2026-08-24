@@ -87,6 +87,26 @@ scp ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/rr
 ```
 Upload the dataset to DeltaAI.
 
+### Semantic Theta* dataset
+
+Semantic Theta* uses a different expert generator and dataset filename; the
+remaining Hugging Face authentication and monitoring commands are unchanged.
+
+```bash
+cd ~/Desktop/starling_testing_ws/src
+python3 llm_vision_planner/fine_tuning/scripts/conformal_semantic_theta_dataset.py \
+  --semantic-theta-training --samples 20000 --random-goal --seed 17
+```
+Generate the label-conditioned Semantic Theta* expert dataset locally. The
+requested `conforml_semantic_theta_dataset.py` spelling is also retained as a
+compatible entry point.
+
+```bash
+scp ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/semantic_theta_expert_dataset.csv \
+  pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/
+```
+Upload the full Semantic Theta* dataset to DeltaAI.
+
 ```bash
 scp pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora.tar.gz .
 ```
@@ -140,12 +160,31 @@ sbatch train_peft_full.sbatch
 ```
 Submit a full training job with the current 20k-sample defaults.
 
+For Semantic Theta* PEFT training, submit the corresponding job directly:
+
+```bash
+cd /projects/bhkj/$USER/starling_testing_ws
+sbatch src/llm_vision_planner/fine_tuning/scripts/train_semantic_theta_peft_lora.sbatch
+```
+
 ## Unsloth Training Job
 
 ```bash
 sbatch src/llm_vision_planner/fine_tuning/scripts/train_rrt_lora.sbatch
 ```
 Submit the Unsloth LoRA job.
+
+For Semantic Theta* Unsloth training:
+
+```bash
+sbatch src/llm_vision_planner/fine_tuning/scripts/train_semantic_theta_lora.sbatch
+```
+
+Download either Semantic Theta* adapter archive after its job completes:
+
+```bash
+scp pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_semantic_theta_lora.tar.gz .
+```
 
 ## Submit And Monitor
 

@@ -34,6 +34,19 @@ hold rather than linearly interpolated.
 This separation makes stored vLLM predictions reusable: changing the QP,
 score, confidence level, or plotting does not require new LLM predictions.
 
+## Semantic Theta* expert
+
+The RRT pipeline above remains unchanged. The parallel semantic expert uses:
+
+- `scripts/semantic_theta.py` for deterministic any-angle Theta* search with
+  per-label hard margins and soft traversal costs.
+- `scripts/conformal_semantic_theta_dataset.py` for instruction datasets or
+  verified Semantic-Theta*/LLM prediction pairs. The requested
+  `conforml_semantic_theta_dataset.py` name is a compatibility entry point.
+- `datasets/semantic_theta_expert_dataset.csv` as a 100-row reproducible smoke
+  dataset; use `NCSA_COMMANDS.md` at the workspace root to regenerate 20,000
+  rows and submit the PEFT or Unsloth DeltaAI jobs.
+
 ## Build
 
 ```bash

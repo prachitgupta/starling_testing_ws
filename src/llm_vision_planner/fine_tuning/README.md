@@ -43,9 +43,13 @@ The RRT pipeline above remains unchanged. The parallel semantic expert uses:
 - `scripts/conformal_semantic_theta_dataset.py` for instruction datasets or
   verified Semantic-Theta*/LLM prediction pairs. The requested
   `conforml_semantic_theta_dataset.py` name is a compatibility entry point.
-- `datasets/semantic_theta_expert_dataset.csv` as a 100-row reproducible smoke
-  dataset; use `NCSA_COMMANDS.md` at the workspace root to regenerate 20,000
-  rows and submit the PEFT or Unsloth DeltaAI jobs.
+- `datasets/semantic_theta_expert_dataset.csv` as the validated 20,000-row
+  expert dataset.
+
+The workspace-root [`NCSA_COMMANDS.md`](../../../NCSA_COMMANDS.md) documents the
+RRT and Semantic Theta* workflows in the same numbered template. Each stage
+shows both commands: dataset generation, upload, PEFT or Unsloth submission,
+monitoring, adapter packaging, and local download.
 
 ## Build
 

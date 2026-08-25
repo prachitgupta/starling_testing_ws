@@ -73,57 +73,67 @@ git pull
 ```
 Update an existing clone.
 
-## Dataset Transfer
+## RRT And Semantic Theta* LoRA Workflows
+
+Use the same numbered stages for either expert. Stages 1, 2, and 7 run on your
+local laptop; stages 3 through 6 run after SSH or in Open OnDemand on DeltaAI.
+
+### 1. Generate the expert dataset locally
+
+#### RRT
 
 ```bash
 cd ~/Desktop/starling_testing_ws/src
-python3 llm_vision_planner/fine_tuning/scripts/conformal_rrt_dataset.py --rrt-training --samples 20000 --random-goal --seed 7
+python3 llm_vision_planner/fine_tuning/scripts/conformal_rrt_dataset.py \
+  --rrt-training --samples 20000 --random-goal --seed 7
 ```
-Generate the RRT expert dataset locally.
 
-```bash
-scp ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv \
-  pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/
-```
-Upload the dataset to DeltaAI.
+Creates `fine_tuning/datasets/rrt_expert_dataset.csv`.
 
-### Semantic Theta* dataset
-
-Semantic Theta* uses a different expert generator and dataset filename; the
-remaining Hugging Face authentication and monitoring commands are unchanged.
+#### Semantic Theta*
 
 ```bash
 cd ~/Desktop/starling_testing_ws/src
 python3 llm_vision_planner/fine_tuning/scripts/conformal_semantic_theta_dataset.py \
   --semantic-theta-training --samples 20000 --random-goal --seed 17
 ```
-Generate the label-conditioned Semantic Theta* expert dataset locally. The
-requested `conforml_semantic_theta_dataset.py` spelling is also retained as a
-compatible entry point.
+
+Creates `fine_tuning/datasets/semantic_theta_expert_dataset.csv`. The requested
+`conforml_semantic_theta_dataset.py` spelling remains a compatible entry point.
+
+### 2. Upload the dataset from your local machine
+
+#### RRT
+
+```bash
+scp ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv \
+  pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/
+```
+
+#### Semantic Theta*
 
 ```bash
 scp ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/semantic_theta_expert_dataset.csv \
   pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/
 ```
-Upload the full Semantic Theta* dataset to DeltaAI.
 
-```bash
-scp pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora.tar.gz .
-```
-Download trained adapter archive.
+### 3. Authenticate with Hugging Face on DeltaAI
 
-## Hugging Face Auth
+This one-time setup is shared by both experts.
 
 ```bash
 cd /projects/bhkj/$USER/starling_testing_ws
 module purge
 module load cray-python
-source /projects/bhkj/$USER/peft_env/bin/activate
+python -m venv /projects/bhkj/$USER/hf_auth_env
+source /projects/bhkj/$USER/hf_auth_env/bin/activate
 python -m pip install -U huggingface_hub
 export HF_HOME=/projects/bhkj/$USER/hf_cache
 hf auth login
 ```
-Save a Hugging Face read token for gated Llama model access.
+
+Save a Hugging Face read token with access to the gated Llama model, then verify
+that access:
 
 ```bash
 python - <<'PY'
@@ -131,92 +141,106 @@ from huggingface_hub import HfApi
 print(HfApi().model_info("meta-llama/Meta-Llama-3.1-8B-Instruct").modelId)
 PY
 ```
-Check that the saved token can access Llama 3.1 8B Instruct.
 
-## PEFT Training Job
+### 4. Submit the PEFT training job on DeltaAI
+
+PEFT is the recommended path. Prepare the shared log directory first:
 
 ```bash
 cd /projects/bhkj/$USER/starling_testing_ws
 mkdir -p logs
 ```
-Prepare the repo for Slurm logs.
 
-```bash
-sed -n '1,200p' src/llm_vision_planner/fine_tuning/scripts/train_peft_lora.sbatch
-```
-Inspect the PEFT Slurm script that avoids the Unsloth dependency.
+#### RRT
 
 ```bash
 sbatch src/llm_vision_planner/fine_tuning/scripts/train_peft_lora.sbatch
 ```
-Submit the sanity-check PEFT job.
+
+#### Semantic Theta*
 
 ```bash
-cp src/llm_vision_planner/fine_tuning/scripts/train_peft_lora.sbatch train_peft_full.sbatch
-sed -i 's/--epochs 0.05 \\/--epochs 3 \\/' train_peft_full.sbatch
-sed -i 's/--batch-size 1 \\/--batch-size 8 \\/' train_peft_full.sbatch
-sed -i 's/--grad-accum 2/--grad-accum 4/' train_peft_full.sbatch
-sbatch train_peft_full.sbatch
-```
-Submit a full training job with the current 20k-sample defaults.
-
-For Semantic Theta* PEFT training, submit the corresponding job directly:
-
-```bash
-cd /projects/bhkj/$USER/starling_testing_ws
 sbatch src/llm_vision_planner/fine_tuning/scripts/train_semantic_theta_peft_lora.sbatch
 ```
 
-## Unsloth Training Job
+Optional Unsloth jobs use the same datasets and output names:
+
+#### RRT with Unsloth
 
 ```bash
 sbatch src/llm_vision_planner/fine_tuning/scripts/train_rrt_lora.sbatch
 ```
-Submit the Unsloth LoRA job.
 
-For Semantic Theta* Unsloth training:
+#### Semantic Theta* with Unsloth
 
 ```bash
 sbatch src/llm_vision_planner/fine_tuning/scripts/train_semantic_theta_lora.sbatch
 ```
 
-Download either Semantic Theta* adapter archive after its job completes:
+### 5. Monitor the job on DeltaAI
+
+For either expert:
+
+```bash
+squeue -u $USER
+sacct -j JOB_ID --format=JobID,JobName,State,Elapsed,AllocTRES,ExitCode
+```
+
+Use the matching log command:
+
+#### RRT PEFT
+
+```bash
+tail -f logs/rrt-peft-JOB_ID.out
+```
+
+#### Semantic Theta* PEFT
+
+```bash
+tail -f logs/semantic-theta-peft-JOB_ID.out
+```
+
+Replace `JOB_ID` with the number printed by `sbatch`. Wait for `COMPLETED` before
+packaging or downloading the adapter. To cancel a job, run `scancel JOB_ID`.
+
+### 6. Verify and package the completed adapter on DeltaAI
+
+#### RRT
+
+```bash
+cd /projects/bhkj/$USER/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs
+test -f llama31_8b_rrt_lora/adapter_config.json
+tar -czf llama31_8b_rrt_lora.tar.gz llama31_8b_rrt_lora
+ls -lh llama31_8b_rrt_lora.tar.gz
+```
+
+#### Semantic Theta*
+
+```bash
+cd /projects/bhkj/$USER/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs
+test -f llama31_8b_semantic_theta_lora/adapter_config.json
+tar -czf llama31_8b_semantic_theta_lora.tar.gz llama31_8b_semantic_theta_lora
+ls -lh llama31_8b_semantic_theta_lora.tar.gz
+```
+
+The Semantic Theta* Slurm scripts already create their archive automatically;
+the explicit command above also documents how to recreate it if needed.
+
+### 7. Download the archive from your local machine
+
+Exit the NCSA shell first, then run the matching command on your laptop.
+
+#### RRT
+
+```bash
+scp pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora.tar.gz .
+```
+
+#### Semantic Theta*
 
 ```bash
 scp pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_semantic_theta_lora.tar.gz .
 ```
-
-## Submit And Monitor
-
-```bash
-sbatch src/llm_vision_planner/fine_tuning/scripts/train_peft_lora.sbatch
-```
-Submit the PEFT sanity-check job.
-
-```bash
-squeue -u $USER
-```
-Show queued/running jobs.
-
-```bash
-tail -f logs/rrt-peft-*.out
-```
-Watch training logs.
-
-```bash
-sacct -u $USER --starttime today
-```
-Show jobs from today.
-
-```bash
-sacct -j JOB_ID --format=JobID,JobName,State,Elapsed,AllocTRES,ExitCode
-```
-Show details for one job.
-
-```bash
-scancel JOB_ID
-```
-Cancel a job.
 
 ## Interactive GPU Test
 

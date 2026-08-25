@@ -27,7 +27,7 @@ python -m venv "$SEMANTIC_ENV_DIR"
 source "$SEMANTIC_ENV_DIR/bin/activate"
 
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install torch datasets transformers accelerate peft matplotlib
+python -m pip install torch datasets trl transformers accelerate peft matplotlib
 
 python - <<'PY'
 import torch

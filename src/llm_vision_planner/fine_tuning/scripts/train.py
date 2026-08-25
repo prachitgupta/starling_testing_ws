@@ -28,10 +28,13 @@ def build_tokenized_dataset(dataset, tokenizer, max_seq_length):
 
 
 def training_arguments(**kwargs):
+    parameters = inspect.signature(TrainingArguments.__init__).parameters
     strategy_key = "eval_strategy"
-    if strategy_key not in inspect.signature(TrainingArguments.__init__).parameters:
+    if strategy_key not in parameters:
         strategy_key = "evaluation_strategy"
     kwargs[strategy_key] = "steps"
+    if "warmup_ratio" in kwargs and "warmup_ratio" not in parameters:
+        kwargs["warmup_steps"] = kwargs.pop("warmup_ratio")
     return TrainingArguments(**kwargs)
 
 

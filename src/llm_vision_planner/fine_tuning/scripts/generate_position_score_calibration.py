@@ -39,6 +39,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--expert", choices=("rrt", "semantic_theta"), default="rrt", help="Expert trajectory column prefix in the QP CSV.")
     parser.add_argument("--samples", type=int, default=2000)
     parser.add_argument("--delta-p", type=float, default=0.10)
     parser.add_argument("--delta-w", type=float, default=0.10)
@@ -55,7 +56,7 @@ def main():
     metric, gain, _ = solve_care()
     for index, row in enumerate(rows):
         scores = position_scores(
-            json.loads(row["rrt_trajectory"]),
+            json.loads(row[f"{args.expert}_trajectory"]),
             json.loads(row["llm_trajectory"]),
             gain,
             args.control_dt,
@@ -63,7 +64,7 @@ def main():
         row["s_p"] = scores["s_p"]
         row["s_position_time"] = scores["s_position_time"]
         row["s_w"] = weighted_disturbance_score(
-            json.loads(row["rrt_trajectory"]),
+            json.loads(row[f"{args.expert}_trajectory"]),
             json.loads(row["llm_trajectory"]),
             metric,
             B_DOUBLE_INTEGRATOR,

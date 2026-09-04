@@ -1,5 +1,11 @@
 # Reproduce the retained QP calibration
 
+This file retains the original RRT commands. For separate, complete RRT and
+Semantic Theta* calibration/scoring/plot workflows, use
+[`README.md`](README.md#calibration-prerequisites). Semantic Theta requires
+`--expert semantic_theta` in all three downstream tools and its own CSV/plot paths;
+the QP and shared-clock calculations are shared with RRT.
+
 Generate fresh verified RRT/Llama prediction pairs (contacts the configured vLLM server):
 
 ```bash

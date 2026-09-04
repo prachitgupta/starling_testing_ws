@@ -52,6 +52,10 @@ if(BUILD_TESTING)
     NAME conformal_obstacle_safety
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_conformal_obstacle_safety.py
   )
+  add_test(
+    NAME expert_calibration_pipeline
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_expert_calibration_pipeline.py
+  )
 endif()
 
 ament_package()

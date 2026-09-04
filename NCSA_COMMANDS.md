@@ -78,6 +78,11 @@ Update an existing clone.
 Use the same numbered stages for either expert. Stages 1, 2, and 7 run on your
 local laptop; stages 3 through 6 run after SSH or in Open OnDemand on DeltaAI.
 
+After training and serving the adapter, generate fresh expert/LLM calibration
+pairs, shared-clock QP trajectories, scores, and dConformal plots using the
+separate RRT and Semantic Theta* workflows in the
+[`fine-tuning README`](src/llm_vision_planner/fine_tuning/README.md#calibration-prerequisites).
+
 ### 1. Generate the expert dataset locally
 
 #### RRT

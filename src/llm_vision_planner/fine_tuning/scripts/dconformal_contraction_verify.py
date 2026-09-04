@@ -181,7 +181,8 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
     axis.set_ylim(float(workspace["y"][0]) - 0.25, float(workspace["y"][1]) + 0.25)
     axis.set_xlabel("x position [m]")
     axis.set_ylabel("y position [m]")
-    axis.set_title("QP tracking certificate comparison")
+    expert_label = "Semantic Theta*" if result["expert"] == "semantic_theta" else "RRT"
+    axis.set_title(f"{expert_label}: QP tracking certificate comparison")
     axis.grid(True, alpha=0.25)
 
     for obstacle in obstacles:
@@ -211,7 +212,7 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
                 linewidth=0.6,
                 alpha=0.06,
                 label=(
-                    rf"90% projected 2D: $q_w={result['q_w']:.3f}$, "
+                    rf"{100 * (1 - result['delta_w']):g}% projected 2D: $q_w={result['q_w']:.3f}$, "
                     rf"$\rho_p={result['projected_position_radius_m']:.3f}$ m"
                     if index == 0
                     else None
@@ -227,7 +228,7 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
                 facecolor="#60a5fa",
                 edgecolor="none",
                 alpha=0.10,
-                label=rf"90% direct cross-track: $q_p={result['q_p']:.3f}$ m" if index == 0 else None,
+                label=rf"{100 * (1 - result['delta_p']):g}% direct cross-track: $q_p={result['q_p']:.3f}$ m" if index == 0 else None,
             )
         )
 
@@ -237,12 +238,12 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
         ":",
         color="#111827",
         label=(
-            rf"90% 4D state: $q_w={result['q_w']:.3f}$, "
+            rf"{100 * (1 - result['delta_w']):g}% 4D state: $q_w={result['q_w']:.3f}$, "
             rf"$\rho_{{4D}}={result['state_radius_4d']:.3f}$ (not a position circle)"
         ),
     )
 
-    axis.plot([s["x"][0] for s in rrt_samples], [s["x"][1] for s in rrt_samples], color="#2563eb", label=r"RRT expert reference $x_d$")
+    axis.plot([s["x"][0] for s in rrt_samples], [s["x"][1] for s in rrt_samples], color="#2563eb", label=expert_label + r" expert reference $x_d$")
     axis.plot(
         [s["x"][0] for s in llm_samples],
         [s["x"][1] for s in llm_samples],
@@ -254,7 +255,7 @@ def draw_scene(output_png, workspace, obstacles, rrt_samples, llm_samples, close
     axis.scatter([rrt_samples[0]["x"][0]], [rrt_samples[0]["x"][1]], color="#111827", s=60, marker="s", label="initial position")
     axis.scatter([rrt_samples[-1]["x"][0]], [rrt_samples[-1]["x"][1]], color="#7c3aed", s=100, marker="*", label="goal position")
     annotation = (
-        f"$s_p$={result['s_p']:.3f} m ≤ $q_p$={result['q_p']:.3f} m\n"
+        f"$s_p$={result['s_p']:.3f} m {'≤' if result['score_accepted'] else '>'} $q_p$={result['q_p']:.3f} m\n"
         f"projected 2D radius={result['projected_position_radius_m']:.3f} m\n"
         f"4D state radius={result['state_radius_4d']:.3f} (mixed state units)\n"
         f"equal-time position error={result['s_position_time']:.3f} m"
@@ -421,6 +422,7 @@ def main():
     parser.add_argument("--workspace", default=json.dumps(DEFAULT_WORKSPACE))
     parser.add_argument("--obstacles", default="[]")
     parser.add_argument("--calibration-csv", type=Path, default=DEFAULT_CALIBRATION_CSV)
+    parser.add_argument("--expert", choices=("rrt", "semantic_theta"), default="rrt", help="Expert column prefix for offline calibration verification and plot labels.")
     parser.add_argument("--sample-id", type=int, default=0)
     parser.add_argument("--calibration-samples", type=int, default=None)
     parser.add_argument("--delta-p", type=float, default=0.10)
@@ -443,6 +445,8 @@ def main():
     parser.add_argument("--pose-trail-limit", type=int, default=300)
     parser.add_argument("--show-rrt", action="store_true", help="In live mode, compute RRT only for final-plan visualization.")
     args = parser.parse_args()
+    if args.live and args.expert != "rrt":
+        parser.error("--expert semantic_theta is supported for offline verification only.")
 
     rows = load_rows(args.calibration_csv)
     if not rows:
@@ -546,12 +550,12 @@ def main():
         raise ValueError(f"--sample-id must be between 0 and {len(rows) - 1}.")
     row = rows[args.sample_id]
 
-    if row.get("rrt_trajectory") and row.get("llm_trajectory"):
-        rrt_trajectory = trajectory_from_row(row, "rrt")
+    if row.get(f"{args.expert}_trajectory") and row.get("llm_trajectory"):
+        rrt_trajectory = trajectory_from_row(row, args.expert)
         llm_trajectory = trajectory_from_row(row, "llm")
     else:
         rrt_trajectory, llm_trajectory = generate_shared_pair(
-            waypoints_from_row(row, "rrt"),
+            waypoints_from_row(row, args.expert),
             waypoints_from_row(row, "llm"),
             parse_json_field(row["workspace"]),
             parse_json_field(row["obstacles"]),
@@ -565,6 +569,7 @@ def main():
     s_position_time = float(row["s_position_time"]) if row.get("s_position_time") else calculated_scores["s_position_time"]
     tube = position_tube_profile(closed_loop, q_p)
     result = {
+        "expert": args.expert,
         "score_type": "closed_loop_cross_track_position",
         "sample_id": args.sample_id,
         "calibration_samples": len(calibration_rows),

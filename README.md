@@ -1,279 +1,189 @@
-# Starling LLM Vision Planning Workspace
+# Finding an expert: Semantic Theta* and RRT
 
-ROS 2 Humble workspace for a Python-only PX4 Offboard UAV planning pipeline on the ModalAI Starling platform.
+Branch: `finding_expert`. This workspace isolates the existing Semantic Theta*
+expert, with RRT as the comparison baseline, instruction-data generation, LoRA
+fine-tuning, and the shared QP/calibration/plot pipeline. The Python algorithms
+and CLI entry points are reused unchanged. Hardware launch/control/perception,
+flight logs, papers, and unrelated historical datasets are removed from this
+branch. The ROS package and required message dependency remain buildable because
+the RRT generator imports the existing ROS prompt/refinement/verifier modules.
 
-The active packages are:
+Read these three guides in order:
 
-- `px4_msgs`: PX4 ROS message definitions.
-- `voxl_msgs`: semantic detector message definitions from VOXL.
-- `starling_testing`: three minimal Python flight smoke tests.
-- `llm_vision_planner`: perception, prompt generation, LLM planning, refinement, verification, visualization, and Python Offboard trajectory following.
+1. **This README:** clone/build, generate either expert dataset, and serve the
+   corresponding trained adapter.
+2. **[NCSA_COMMANDS.md](NCSA_COMMANDS.md):** upload, train with PEFT or Unsloth,
+   monitor, package, and download either adapter on DeltaAI.
+3. **[Calibration README](src/llm_vision_planner/fine_tuning/README.md):** generate
+   fresh expert/LLM pairs, QP trajectories, position scores, and verification
+   plots for either expert or a supplied dataset.
 
-## Environment
+## 1. Clone, build, and source locally
 
-Tested with Ubuntu 22.04, ROS 2 Humble, PX4/VOXL topics, and Python 3.
-
-Install workspace tools:
+Use Ubuntu 22.04 with ROS 2 Humble installed. Run dataset/calibration commands
+with system Python, and GPU training/serving in their separate environments.
 
 ```bash
 sudo apt update
-sudo apt install -y \
-  git \
-  python3-colcon-common-extensions \
-  python3-rosdep \
-  python3-vcstool \
-  python3-pip
-```
-
-Initialize `rosdep` once if needed:
-
-```bash
-sudo rosdep init
-rosdep update
-```
-
-Clone and prepare dependencies:
-
-```bash
-git clone https://github.com/prachitgupta/starling_testing_ws.git
-cd starling_testing_ws
+sudo apt install -y git build-essential cmake python3-colcon-common-extensions \
+  python3-rosdep python3-vcstool python3-pip python3-venv python3-numpy python3-scipy \
+  python3-matplotlib python3-pytest curl
+mkdir -p ~/Desktop
+git clone --depth 1 --single-branch --branch finding_expert \
+  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws
 source /opt/ros/humble/setup.bash
 bash scripts/setup_workspace.sh
+if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
+  sudo rosdep init
+fi
+rosdep update
 rosdep install --from-paths src --ignore-src -r -y
+/usr/bin/python3 -m pip install 'numpy<2' openai instructor pydantic
+colcon build --symlink-install --packages-select px4_msgs llm_vision_planner
+source install/setup.bash
 ```
 
-The LLM planner uses the OpenAI Python SDK and Instructor. Install them in the Python environment used by ROS:
+Clone into an empty directory. If `main` already occupies this path, choose a
+separate directory and substitute it throughout the local commands. Source this
+clone's install in every new dataset-generation shell. DeltaAI training uses the
+Slurm scripts in the NCSA guide and does not require a ROS installation.
 
-```bash
-python3 -m pip install openai instructor pydantic
-```
+## 2. Generate the expert instruction dataset
 
-Set the API key only as an environment variable:
+Both commands work without a model server. The CSVs retain the existing
+`messages` schema consumed by both training scripts. These commands overwrite
+their output CSVs. The existing expert datasets are retained for immediate use.
 
-```bash
-export OPENAI_API_KEY=...
-```
-
-## Build
+### RRT
 
 ```bash
 cd ~/Desktop/starling_testing_ws
 source /opt/ros/humble/setup.bash
-colcon build --packages-select px4_msgs voxl_msgs starling_testing llm_vision_planner
 source install/setup.bash
+cd src/llm_vision_planner
+/usr/bin/python3 fine_tuning/scripts/conformal_rrt_dataset.py \
+  --rrt-training --samples 20000 --random-goal --seed 7 \
+  --output fine_tuning/datasets/rrt_expert_dataset.csv
 ```
 
-## Starling Smoke Tests
-
-All positions are local NED: `x` north, `y` east, and negative `z` is altitude above the local origin.
-
-```bash
-ros2 run starling_testing 01_takeoff_land.py --ros-args \
-  -p takeoff_alt_m:=0.45 -p hold_s:=5.0
-```
-
-```bash
-ros2 run starling_testing 02_offboard_waypoint.py --ros-args \
-  -p x:=0.5 -p y:=0.0 -p z:=-0.45
-```
-
-```bash
-ros2 run starling_testing 03_bezier_offboard_waypoint.py --ros-args \
-  -p x:=0.5 -p y:=0.0 -p z:=-0.45 -p duration_s:=4.0
-```
-
-Expected output: the node logs state transitions, publishes PX4 Offboard setpoints, reaches the target within per-axis epsilon, and sends a land command.
-
-## LLM Planning Pipeline
-
-Terminal 1: run takeoff and hold:
+### Semantic Theta*
 
 ```bash
 cd ~/Desktop/starling_testing_ws
+source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 run llm_vision_planner mission_takeoff.py --ros-args \
-  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
+cd src/llm_vision_planner
+/usr/bin/python3 fine_tuning/scripts/conformal_semantic_theta_dataset.py \
+  --semantic-theta-training --samples 20000 --random-goal --seed 17 \
+  --output fine_tuning/datasets/semantic_theta_expert_dataset.csv
 ```
 
-Wait until the vehicle is holding pose and publishing `HOLDING_FOR_PLAN`.
+Semantic Theta* performs deterministic any-angle search with per-label hard
+margins and soft traversal costs. Its dataset stores the policy and expert cost.
+`conforml_semantic_theta_dataset.py` remains the existing compatibility spelling.
+For a small check use `--samples 20` and a separate `--output` CSV. Keep training
+seeds separate from the fresh calibration seed in the calibration README.
 
-Terminal 2: start the planner stack:
+## 3. Fine-tune, download, and serve the selected adapter
+
+Follow [NCSA_COMMANDS.md](NCSA_COMMANDS.md) for the matching expert. Both
+`train_peft.py` and `train.py` remain available, with the four existing expert
+Slurm entry points. The jobs use the original `bhkj-dtai-gh` allocation and
+`/projects/bhkj/$USER/starling_testing_ws` path; change the account/path in the
+existing scripts if your allocation differs.
+
+No weights are checked in. Each `fine_tuning/outputs/llama31_8b_*_lora` directory
+contains a clearly marked `PLACEHOLDER.txt`. Download/extract the real adapter
+there before serving; placeholders cannot be used for inference.
+
+On your GPU server, activate its vLLM environment. If needed, create one with
+`python3 -m venv ~/vllm_env`, activate it, install `vllm`, and run `hf auth login`
+using an account with gated Llama access. Choose one configuration below.
+
+### Serve RRT
 
 ```bash
 cd ~/Desktop/starling_testing_ws
-source install/setup.bash
-ros2 launch llm_vision_planner full_plot.launch.py \
-  params_file:=src/llm_vision_planner/config/llm_vision_planner.yaml \
-  mode:=semantic
+ADAPTER="$PWD/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora"
+test -s "$ADAPTER/adapter_config.json" && test -s "$ADAPTER/adapter_model.safetensors"
+CUDA_VISIBLE_DEVICES=0 vllm serve meta-llama/Meta-Llama-3.1-8B-Instruct \
+  --enable-lora --max-lora-rank 128 \
+  --lora-modules rrt_planner="$ADAPTER" --served-model-name rrt_planner \
+  --dtype float16 --gpu-memory-utilization 0.80 --max-model-len 4096 --port 8000
 ```
 
-To use the remote vLLM/Llama planner configured in `src/llm_vision_planner/config/llm_vision_planner.yaml` and enable the RRT overlay:
+### Serve Semantic Theta*
 
 ```bash
 cd ~/Desktop/starling_testing_ws
-source install/setup.bash
-ros2 launch llm_vision_planner full_plot.launch.py \
-  params_file:=src/llm_vision_planner/config/llm_vision_planner.yaml \
-  mode:=semantic \
-  llm_provider:=llama \
-  show_rrt:=true
+ADAPTER="$PWD/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_semantic_theta_lora"
+test -s "$ADAPTER/adapter_config.json" && test -s "$ADAPTER/adapter_model.safetensors"
+CUDA_VISIBLE_DEVICES=0 vllm serve meta-llama/Meta-Llama-3.1-8B-Instruct \
+  --enable-lora --max-lora-rank 128 \
+  --lora-modules semantic_theta_planner="$ADAPTER" --served-model-name semantic_theta_planner \
+  --dtype float16 --gpu-memory-utilization 0.80 --max-model-len 4096 --port 8000
 ```
 
-Terminal 3: after a verified plan is received, start the Python Offboard follower:
+The adapter checks must pass before running vLLM. Substitute the GPU clone's
+actual path if different. Run one server command at a time on port 8000.
+On the machine generating calibration pairs, check its reachable URL:
+
+```bash
+export VLLM_BASE_URL=http://172.22.224.93:8000/v1
+curl --fail --silent --show-error "$VLLM_BASE_URL/models"
+```
+
+Replace the lab address with your GPU server. The selected model alias must
+appear in `/models`, and must match `--llama-model-name` in the calibration
+commands. Continue with the [calibration README](src/llm_vision_planner/fine_tuning/README.md).
+
+## 4. Verify the offline pipeline
 
 ```bash
 cd ~/Desktop/starling_testing_ws
+source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 run llm_vision_planner trajectory_follower.py --ros-args \
-  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
+MPLBACKEND=Agg colcon test --packages-select llm_vision_planner
+colcon test-result --verbose
 ```
 
-Mission behavior:
+The existing test exercises both expert schemas through QP generation, scoring,
+and PNG/JSON verification, including an off-path sample that must fail. It does
+not contact vLLM, submit training, or require hardware. Semantic calibration
+CSVs contain headers only until generated; a plot test with synthetic pairs
+does not turn them into measured calibration data.
 
-1. `mission_takeoff.py` waits for PX4 NED odometry, primes Offboard setpoints, arms, climbs to `takeoff_z`, and holds the reached pose.
-2. `mission_takeoff.py` publishes `/llm_vision/mission_state` as `HOLDING_FOR_PLAN`.
-3. `prompt_generator.py` latches the hover pose and current obstacle snapshot.
-4. `llm_planner.py` generates sparse waypoints.
-5. `refinment.py` interpolates and nudges the path.
-6. `verifier.py` publishes `passed`, metrics, failed constraints, thresholds, and a feedback table.
-7. Failed verification results are appended into the next prompt using the same latched hover context.
-8. The first `passed=true` trajectory is latched by `trajectory_follower.py`.
-9. `trajectory_follower.py` takes Offboard ownership from `mission_takeoff.py` and tracks the verified path with Bezier position/velocity setpoints.
+## Working on different branches
 
-Monitor:
+`main` retains the full original workspace. Hardware reproduction and actual
+Vicon vision-error collection are documented on
+[`reporoduce_hardeware`](https://github.com/prachitgupta/starling_testing_ws/tree/reporoduce_hardeware).
+Semantic Theta selection here applies to offline calibration/verification;
+there is no Semantic Theta hardware launch in this branch.
+
+Prefer separate clones so build/install products cannot mix:
 
 ```bash
-ros2 topic echo /llm_vision/mission_state
-ros2 topic echo /llm_vision/prompt
-ros2 topic echo /llm_vision/plan_verified
+git clone --depth 1 --single-branch --branch finding_expert \
+  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/expert_ws
+git clone --depth 1 --single-branch --branch reporoduce_hardeware \
+  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/hardware_ws
+git -C ~/Desktop/expert_ws branch --show-current
+git -C ~/Desktop/expert_ws pull --ff-only
 ```
 
-## Software-Only Reproduction
+Replace `~/Desktop/starling_testing_ws` with the appropriate clone path in local
+commands, build there, and source only that clone in a fresh shell. Keep the
+documented project path for NCSA jobs unless you also edit their `cd` commands.
+Copy completed adapter/calibration artifacts between clones when needed; using
+a branch does not require merging its file removals into `main`.
 
-Without hardware, run the planning nodes and publish fake mission/perception inputs:
+## Software validation of this branch
 
-```bash
-source install/setup.bash
-ros2 run llm_vision_planner prompt_generator.py --ros-args --params-file src/llm_vision_planner/config/llm_vision_planner.yaml &
-ros2 run llm_vision_planner llm_planner.py --ros-args --params-file src/llm_vision_planner/config/llm_vision_planner.yaml &
-ros2 run llm_vision_planner refinment.py --ros-args --params-file src/llm_vision_planner/config/llm_vision_planner.yaml &
-ros2 run llm_vision_planner verifier.py --ros-args --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
-```
-
-Fake hover state:
-
-```bash
-ros2 topic pub /llm_vision/mission_state std_msgs/msg/String \
-  "{data: '{\"state\":\"HOLDING_FOR_PLAN\",\"position\":{\"x\":0.0,\"y\":0.0,\"z\":-0.45}}'}" -r 2
-```
-
-Fake obstacle snapshot:
-
-```bash
-ros2 topic pub /llm_vision/semantic_obstacles std_msgs/msg/String \
-  "{data: '{\"obstacles\":[{\"label\":\"chair\",\"min_corner\":[1.2,-0.3,-0.8],\"max_corner\":[1.7,0.3,0.0],\"size\":[0.5,0.6,0.8],\"distance_m\":1.3}],\"timestamp\":0.0}'}" -r 2
-```
-
-Expected output: `/llm_vision/prompt` is generated only after `HOLDING_FOR_PLAN`; `/llm_vision/plan_verified` contains metrics and either `passed=true` or a feedback table for retry.
-
-## RRT Expert Fine-Tuning
-
-The fine-tuning utilities live in `src/llm_vision_planner/fine_tuning`. They generate synthetic environment vectors, reuse the current `prompt_generator.py` natural-language prompt, label each sample with an RRT expert path, and fine-tune Llama-3.1-8B-Instruct with Unsloth LoRA.
-
-Generate a dataset:
-
-```bash
-cd ~/Desktop/starling_testing_ws/src
-python3 llm_vision_planner/fine_tuning/scripts/conformal_rrt_dataset.py \
-  --rrt-training \
-  --samples 1000 \
-  --random-goal \
-  --seed 7
-```
-
-RRT training-data generator args:
-
-- `--samples`: number of successful RRT-labeled rows to write.
-- `--seed`: random seed for repeatable environments and RRT paths.
-- `--output`: output CSV path; defaults to `llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv`.
-- `--random-goal`: sample random goals; without it, all rows use the package default goal.
-
-Quick smoke test:
-
-```bash
-python3 llm_vision_planner/fine_tuning/scripts/conformal_rrt_dataset.py --rrt-training --samples 20 --seed 7
-```
-
-Install GPU training dependencies in a separate Python environment:
-
-```bash
-python3 -m venv ~/unsloth_env
-source ~/unsloth_env/bin/activate
-pip install --upgrade pip
-pip install unsloth huggingface_hub
-```
-
-Authenticate Hugging Face for gated Llama access:
-
-```bash
-hf auth login
-```
-
-On DeltaAI, keep the token in project storage:
-
-```bash
-export HF_HOME=/projects/bhkj/$USER/hf_cache
-hf auth login
-```
-
-For a one-shell token instead:
-
-```bash
-export HF_TOKEN=hf_your_token_here
-```
-
-Check access:
-
-```bash
-python3 - <<'PY'
-from huggingface_hub import HfApi
-print(HfApi().model_info("meta-llama/Meta-Llama-3.1-8B-Instruct").modelId)
-PY
-```
-
-Check CUDA:
-
-```bash
-python3 - <<'PY'
-import torch
-print(torch.cuda.is_available())
-print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "no cuda")
-PY
-```
-
-Run a small training plumbing test:
-
-```bash
-python3 llm_vision_planner/fine_tuning/scripts/train.py \
-  --dataset llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv \
-  --epochs 0.05 \
-  --batch-size 1 \
-  --grad-accum 2
-```
-
-Run normal LoRA training:
-
-```bash
-python3 llm_vision_planner/fine_tuning/scripts/train.py \
-  --dataset llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv \
-  --epochs 1 \
-  --batch-size 2 \
-  --grad-accum 4
-```
-
-The default adapter output is `llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora`.
-
-## Known Failure Modes
-
-- Takeoff to an arbitrary height indefinitely and randomly in identical experimental conditions, possibly due to bad EKF fused estimates interference and poor QVIO height estimation: https://discuss.px4.io/t/unexpected-and-sudden-ascend-in-offboard-mode/35103
-- Transition to land from Offboard tracking causes jitters and the drone diagonally moves to takeoff location while landing: https://forum.modalai.com/topic/2533/failsafe-landing-bug-in-px4-1-14
+Verified with a fresh pinned PX4 message import and clean Humble build. The
+existing test passes both expert schemas through QP generation, position
+scoring, and PNG/JSON verification. Twenty-row training-data smoke runs pass
+for each expert. Plotting retained RRT row 998 gives `s_p=0.202469 m` and
+`q_p=0.235845 m`. Slurm shell syntax and the RRT job's final argument list were
+checked; GPU training, live vLLM calibration, and hardware flight were not run.

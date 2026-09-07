@@ -3,7 +3,7 @@
 <package format="3">
   <name>llm_vision_planner</name>
   <version>0.0.1</version>
-  <description>LLM vision planning package for obstacle perception and trajectory planning.</description>
+  <description>RRT and Semantic Theta expert datasets, training, and offline calibration.</description>
   <maintainer email="prachitgupta100@gmail.com">prachit</maintainer>
   <license>TODO</license>
 
@@ -13,15 +13,10 @@
   <depend>launch</depend>
   <depend>launch_ros</depend>
   <depend>std_msgs</depend>
-  <depend>sensor_msgs</depend>
-  <depend>nav_msgs</depend>
-  <depend>geometry_msgs</depend>
   <depend>px4_msgs</depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-matplotlib</exec_depend>
-  <exec_depend>python3-sklearn</exec_depend>
-  <exec_depend>voxl_msgs</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

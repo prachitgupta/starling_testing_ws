@@ -9,3 +9,7 @@ src/voxl-mpa-to-ros2/
 src/papers/*.aux
 src/papers/*.log
 src/papers/*.out
+
+logs/
+src/llm_vision_planner/fine_tuning/outputs/*/*
+!src/llm_vision_planner/fine_tuning/outputs/*/PLACEHOLDER.txt

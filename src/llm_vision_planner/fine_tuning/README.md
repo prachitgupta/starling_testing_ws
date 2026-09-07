@@ -1,4 +1,4 @@
-# Shared-Clock Minimum-Control QP Position Pipeline
+# Expert calibration data and verification plots
 
 This directory retains the certified waypoint pipeline for the planar damped model
 
@@ -60,10 +60,12 @@ monitoring, adapter packaging, and local download.
 
 ## Build
 
+Complete the [workspace setup](../../../README.md#1-clone-build-and-source-locally) first.
+
 ```bash
 cd ~/Desktop/starling_testing_ws
 source /opt/ros/humble/setup.bash
-colcon build --packages-select llm_vision_planner
+colcon build --symlink-install --packages-select px4_msgs llm_vision_planner
 source install/setup.bash
 ```
 
@@ -74,6 +76,7 @@ Run the following workflows from the package directory with system Python:
 ```bash
 cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
 source /opt/ros/humble/setup.bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
 export VLLM_BASE_URL=http://172.22.224.93:8000/v1
 curl --fail --silent --show-error "$VLLM_BASE_URL/models"
 ```
@@ -81,7 +84,7 @@ curl --fail --silent --show-error "$VLLM_BASE_URL/models"
 Set `VLLM_BASE_URL` to your running server. It must expose `rrt_planner` for the
 RRT workflow or `semantic_theta_planner` for the Semantic Theta workflow, with
 the corresponding trained adapter loaded. See the serving command in
-[`HARDWARE_TESTING_README.md`](../HARDWARE_TESTING_README.md#launching-llama-on-the-gpu) and the
+[workspace README](../../../README.md#3-fine-tune-download-and-serve-the-selected-adapter) and the
 adapter training/download commands in
 [`NCSA_COMMANDS.md`](../../../NCSA_COMMANDS.md#rrt-and-semantic-theta-lora-workflows).
 Prediction generation needs `rclpy`, `openai`, `instructor`, and `pydantic` in
@@ -155,8 +158,8 @@ before plotting. They contain no calibration observations until generated.
   --trajectory-dt 0.1 \
   --max-velocity-mps 0.5 \
   --max-acceleration-mps2 0.5 \
-  --output-png fine_tuning/plots/contraction/rrt_qp_with_limits.png \
-  --report-json fine_tuning/results/contraction/rrt_qp_with_limits.json
+  --output-png fine_tuning/plots/contraction/qp_with_limits.png \
+  --report-json fine_tuning/results/contraction/qp_with_limits.json
 ```
 
 ## Semantic Theta*: calibration dataset, scores, and dConformal plot
@@ -251,53 +254,53 @@ that accepted-pair population.
 
 The verifier commands above are offline: they do not contact the LLM, start PX4,
 or subscribe to odometry. Semantic Theta expert selection currently applies to
-offline verification. Existing live launch behavior is described below.
+offline verification. Hardware launch and Vicon vision-error recording are isolated on
+[`reporoduce_hardeware`](https://github.com/prachitgupta/starling_testing_ws/tree/reporoduce_hardeware).
 
 For longer runs, start `tmux new-session -s qp-calibration` before the prerequisites
 and chosen workflow, detach with `Ctrl-b d`, and return with
 `tmux attach-session -t qp-calibration`. For 5,000 calibration rows, generate at
 least 5,000 source pairs, set both downstream `--samples` and the verifier's
 `--calibration-samples` to 5000, and use matching input/output paths throughout.
-The existing RRT 5,000-row commands are also retained in
-[`REPRODUCE_XU_DATASETS.md`](REPRODUCE_XU_DATASETS.md).
 
-## PX4 SITL and unified launch
 
-Start PX4 SITL and the Micro XRCE-DDS agent, publish a simulator obstacle
-snapshot on `/llm_vision/sim_obstacles` as documented in
-`../HARDWARE_TESTING_README.md`, then launch:
+## Plot a given dataset and row
 
-```bash
-cd ~/Desktop/starling_testing_ws
-source install/setup.bash
-ros2 launch llm_vision_planner full_plot.launch.py environment:=sim
-```
+Use the existing `dconformal_contraction_verify.py`; no new plotting script is
+needed. `--sample-id` is the **zero-based CSV row index**, not a search for a
+value in the CSV's `sample_id` column. Set `--calibration-samples` to the number
+of leading rows used to compute the quantile; it must not exceed the available
+row count. The selected row may be outside that prefix for a held-out check.
 
-Select the live PX4 contraction plot instead of the standard planner plot with:
+For example, plot row 998 of the retained RRT score dataset:
 
 ```bash
-ros2 launch llm_vision_planner full_plot.launch.py environment:=sim visualizer:=contraction
+cd ~/Desktop/starling_testing_ws/src/llm_vision_planner
+EXPERT=rrt
+SCORED_CSV="$PWD/fine_tuning/datasets/calibration_min_control_qp_position_score_with_limits_2000.csv"
+CALIBRATION_SAMPLES=2000
+SAMPLE_INDEX=998
+MPLBACKEND=Agg /usr/bin/python3 fine_tuning/scripts/dconformal_contraction_verify.py \
+  --expert "$EXPERT" --calibration-csv "$SCORED_CSV" \
+  --calibration-samples "$CALIBRATION_SAMPLES" --sample-id "$SAMPLE_INDEX" \
+  --delta-p 0.10 --delta-w 0.10 --dt 0.05 --trajectory-dt 0.1 \
+  --max-velocity-mps 0.5 --max-acceleration-mps2 0.5 \
+  --output-png fine_tuning/plots/contraction/qp_with_limits.png \
+  --report-json fine_tuning/results/contraction/qp_with_limits.json
 ```
 
-The contraction view latches the passed verified plan, reconstructs the same QP
-reference used by the executor, and draws the direct position tube from `s_p`
-plus the projected 2D tube derived from `s_w`. Its moving vehicle and trail come
-directly from `/fmu/out/vehicle_odometry`; no simulated state is propagated.
-Configure the calibration CSV, sample count, `delta_p`, and `delta_w` in the
-`verify_contraction` section of `config/llm_vision_planner.yaml`.
+For your dataset, change `SCORED_CSV`, `EXPERT`, the row index, and output paths;
+keep the trajectory/score parameters consistent with its generation settings.
+For Semantic Theta, set `EXPERT=semantic_theta` and use its separately generated
+position-score CSV. A usable input includes `start`, `goal`, `workspace`,
+`obstacles`, matching `rrt_*` or `semantic_theta_*` waypoint/trajectory columns,
+`llm_*` fields, `s_p`, and `s_w`. If you only have verified prediction pairs,
+run stages 2 and 3 first. Instruction-training CSVs and hardware vision-error
+CSVs are different schemas and cannot be passed directly to this plotter.
 
-`control_law_executer.py` is the sole offboard owner. It primes PX4, arms, takes off, holds until the prompt/vLLM/refinement/verifier chain returns a passed plan, generates the shared-clock minimum-control QP reference, tracks it, holds the goal, and requests PX4 auto-land. The launch does not use `mission_takeoff.py` or either trajectory follower.
-
-Monitor the pipeline with:
-
-```bash
-ros2 topic echo /llm_vision/mission_state
-ros2 topic echo /llm_vision/plan_verified
-ros2 topic echo /llm_vision/offboard_owner
-ros2 topic echo /fmu/in/trajectory_setpoint
-ros2 topic echo /fmu/out/vehicle_land_detected
-```
-
-Use PX4 SITL for the first end-to-end run. The position radius certifies the
-sampled closed-loop calibrated planar model, not the full nonlinear PX4 vehicle
-or unmodelled flight disturbances.
+Outputs are a PNG and a JSON report (`expert`, `s_p`, `q_p`, `score_accepted`,
+and radii). `score_accepted: false` is a completed diagnostic, not a script
+failure. The retained RRT PNG/JSON are examples. Semantic output directories
+exist, but its plots require generated observations; header-only CSVs are
+placeholders. A plot of a calibration row does not independently verify
+coverage on unseen environments.

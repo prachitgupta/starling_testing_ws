@@ -244,6 +244,7 @@ def generate_training_dataset(args, semantic_policy):
 
 
 def refine_and_verify(refiner, verifier, waypoints, row, semantic_policy, clearance_m):
+    refiner.fixed_z = float(row["workspace"]["z"])
     refined = refiner.interpolate_waypoints(waypoints, row["workspace"], row["obstacles"])
     payload = {
         "waypoints": refined,

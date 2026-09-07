@@ -20,6 +20,28 @@ from semantic_theta import DEFAULT_SEMANTIC_POLICY, DEFAULT_WORKSPACE, plan_sema
 
 
 class ExpertCalibrationPipelineTest(unittest.TestCase):
+    def test_prediction_refinement_preserves_scene_altitude(self):
+        from conformal_rrt_dataset import make_refiner, make_verifier, refine_and_verify
+        from conformal_semantic_theta_dataset import refine_and_verify as refine_semantic
+
+        for refine, extra in (
+            (refine_and_verify, ()),
+            (refine_semantic, (DEFAULT_SEMANTIC_POLICY, 0.40)),
+        ):
+            refiner, verifier = make_refiner(), make_verifier()
+            for altitude in (-0.25, -0.5):
+                with self.subTest(expert=refine.__module__, altitude=altitude):
+                    start = {"x": 0.0, "y": 0.0, "z": altitude}
+                    goal = {"x": 1.0, "y": 0.0, "z": altitude}
+                    row = {"start": start, "goal": goal, "obstacles": [],
+                           "workspace": {**DEFAULT_WORKSPACE, "z": altitude}}
+                    refined, metrics = refine(refiner, verifier, [start, goal], row, *extra)
+                    self.assertTrue(metrics["start_match"])
+                    self.assertTrue(metrics["goal_match"])
+                    self.assertTrue(all(point["z"] == altitude for point in refined))
+                    with self.assertRaisesRegex(ValueError, "goal_match"):
+                        refine(refiner, verifier, [start, {**goal, "x": 0.7}], row, *extra)
+
     def test_expert_selection_preserves_qp_clock_scores_and_plot_outputs(self):
         start = {"x": 0.0, "y": 0.0, "z": -0.25}
         goal = {"x": 1.0, "y": 0.0, "z": -0.25}

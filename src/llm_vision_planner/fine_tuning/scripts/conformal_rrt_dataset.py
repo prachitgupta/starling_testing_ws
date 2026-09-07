@@ -254,6 +254,7 @@ def make_verifier():
 
 
 def refine_and_verify(refiner, verifier, waypoints, row):
+    refiner.fixed_z = float(row["workspace"]["z"])
     refined = refiner.interpolate_waypoints(waypoints, row["workspace"], row["obstacles"])
     payload = {
         "waypoints": refined,

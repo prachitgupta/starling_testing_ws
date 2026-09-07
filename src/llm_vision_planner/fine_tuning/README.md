@@ -164,6 +164,36 @@ before plotting. They contain no calibration observations until generated.
 
 ## Semantic Theta*: calibration dataset, scores, and dConformal plot
 
+### Example: generate 2,000 calibration rows in the expert branch
+
+Use a fresh terminal in the prepared `finding_expert` worktree below. If you
+cloned into another directory, substitute its path; complete the
+[workspace build](../../../README.md#1-clone-build-and-source-locally) first.
+On the GPU server, load the **trained Semantic Theta adapter** using
+[Serve Semantic Theta*](../../../README.md#serve-semantic-theta).
+The checked-in adapter directory is only a placeholder.
+
+```bash
+cd ~/Desktop/starling_finding_expert
+git branch --show-current
+git pull --ff-only
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+cd src/llm_vision_planner
+
+# Replace this address with your GPU server; keep the /v1 suffix.
+export VLLM_BASE_URL=http://172.22.224.93:8000/v1
+curl --fail --silent --show-error "$VLLM_BASE_URL/models"
+```
+
+Confirm the branch is `finding_expert` and `/models` lists
+`semantic_theta_planner`. Then run stages 1–4 below in this same terminal,
+waiting for each command to finish successfully. This example creates 2,001
+verified expert/LLM pairs, computes QP trajectories and scores for the first
+2,000 pairs, and plots row 998. These commands overwrite the named outputs.
+This is expert/LLM path-error calibration using sampled scenes; no vehicle or
+Vicon connection is required. Only stage 1 needs the running model server.
+
 The expert uses deterministic any-angle search with label-specific hard margins
 and soft traversal costs. Stage 1 verifies both paths against its hard margins
 and preserves `semantic_policy` and the `semantic_theta_*` waypoint fields.
@@ -234,6 +264,41 @@ and semantic cost scale consistent with the trained model when overriding them.
   --output-png fine_tuning/plots/contraction/semantic_theta_qp_with_limits.png \
   --report-json fine_tuning/results/contraction/semantic_theta_qp_with_limits.json
 ```
+
+### 5. Check the generated files
+
+Run from the same package directory after stages 1–4:
+
+```bash
+/usr/bin/python3 - <<'PY'
+import csv
+import json
+from pathlib import Path
+
+datasets = Path("fine_tuning/datasets")
+for name, expected in [
+    ("conformal_semantic_theta_calibration_dataset_2001.csv", 2001),
+    ("calibration_semantic_theta_qp_shared_clock_with_limits_2000.csv", 2000),
+    ("calibration_semantic_theta_qp_position_score_with_limits_2000.csv", 2000),
+]:
+    with (datasets / name).open(newline="") as stream:
+        count = sum(1 for _ in csv.DictReader(stream))
+    print(f"{name}: {count} rows")
+    assert count == expected, f"Expected {expected} rows; complete the matching stage."
+
+report = json.loads(Path("fine_tuning/results/contraction/semantic_theta_qp_with_limits.json").read_text())
+assert report["expert"] == "semantic_theta"
+print({key: report[key] for key in ("sample_id", "s_p", "q_p", "score_accepted")})
+plot = Path("fine_tuning/plots/contraction/semantic_theta_qp_with_limits.png")
+assert plot.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+print(f"Open the plot: {plot.resolve()}")
+PY
+```
+
+The final position-score CSV is the calibration dataset for the offline
+verifier. `score_accepted` reports whether the selected row's `s_p <= q_p`;
+either Boolean value is a valid completed diagnostic. Change `--sample-id` in
+stage 4 to plot a different zero-based row index without querying vLLM again.
 
 ## Read the scores and plots
 

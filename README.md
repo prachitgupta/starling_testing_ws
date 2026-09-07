@@ -18,6 +18,10 @@ Read these three guides in order:
    fresh expert/LLM pairs, QP trajectories, position scores, and verification
    plots for either expert or a supplied dataset.
 
+For a complete Semantic Theta example, follow
+[generate 2,000 calibration rows](src/llm_vision_planner/fine_tuning/README.md#example-generate-2000-calibration-rows-in-the-expert-branch),
+including the four generation/plot commands and output checks.
+
 ## 1. Clone, build, and source locally
 
 Use Ubuntu 22.04 with ROS 2 Humble installed. Run dataset/calibration commands

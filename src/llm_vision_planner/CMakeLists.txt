@@ -4,7 +4,6 @@ project(llm_vision_planner)
 find_package(ament_cmake REQUIRED)
 
 install(PROGRAMS
-  scripts/perception.py
   scripts/perception_detection.py
   scripts/debug_perception.py
   scripts/ros_wifi_dds.sh
@@ -17,9 +16,6 @@ install(PROGRAMS
   scripts/verifier.py
   scripts/visualize.py
   scripts/verify_contraction.py
-  scripts/mission_takeoff.py
-  scripts/trajectory_follower.py
-  scripts/trajectory_follower_continuous.py
   scripts/control_law_executer.py
   fine_tuning/scripts/vision_error_dataset_generattor.py
   fine_tuning/scripts/postprocess_vision_error_dataset.py
@@ -35,6 +31,8 @@ install(FILES
 install(DIRECTORY
   launch
   config
+  params
+  calibration
   web
   fine_tuning
   DESTINATION share/${PROJECT_NAME}
@@ -51,10 +49,6 @@ if(BUILD_TESTING)
   add_test(
     NAME conformal_obstacle_safety
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_conformal_obstacle_safety.py
-  )
-  add_test(
-    NAME expert_calibration_pipeline
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_expert_calibration_pipeline.py
   )
 endif()
 

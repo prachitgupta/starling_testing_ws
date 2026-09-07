@@ -1,16 +1,1 @@
 trial_id,session_id,repeat_count,object_count,capture_ids
-chair-session-001-pose-000001,chair-session-001,19,1,chair-session-001-capture-000001;chair-session-001-capture-000002;chair-session-001-capture-000003;chair-session-001-capture-000004;chair-session-001-capture-000005;chair-session-001-capture-000006;chair-session-001-capture-000007;chair-session-001-capture-000042;chair-session-001-capture-000043;chair-session-001-capture-000044;chair-session-001-capture-000045;chair-session-001-capture-000046;chair-session-001-capture-000047;chair-session-001-capture-000048;chair-session-001-capture-000049;chair-session-001-capture-000050;chair-session-001-capture-000051;chair-session-001-capture-000052;chair-session-001-capture-000053
-chair-session-001-pose-000002,chair-session-001,2,1,chair-session-001-capture-000009;chair-session-001-capture-000010
-chair-session-001-pose-000003,chair-session-001,2,1,chair-session-001-capture-000011;chair-session-001-capture-000012
-chair-session-001-pose-000004,chair-session-001,2,1,chair-session-001-capture-000014;chair-session-001-capture-000015
-chair-session-001-pose-000005,chair-session-001,2,1,chair-session-001-capture-000017;chair-session-001-capture-000018
-chair-session-001-pose-000006,chair-session-001,2,1,chair-session-001-capture-000020;chair-session-001-capture-000021
-chair-session-001-pose-000007,chair-session-001,2,1,chair-session-001-capture-000023;chair-session-001-capture-000024
-chair-session-001-pose-000008,chair-session-001,3,1,chair-session-001-capture-000026;chair-session-001-capture-000027;chair-session-001-capture-000028
-chair-session-001-pose-000009,chair-session-001,4,1,chair-session-001-capture-000030;chair-session-001-capture-000031;chair-session-001-capture-000032;chair-session-001-capture-000033
-chair-session-001-pose-000010,chair-session-001,3,1,chair-session-001-capture-000034;chair-session-001-capture-000035;chair-session-001-capture-000036
-chair-session-001-pose-000011,chair-session-001,1,1,chair-session-001-capture-000038
-chair-session-001-pose-000012,chair-session-001,2,1,chair-session-001-capture-000040;chair-session-001-capture-000041
-chair-session-001-pose-000013,chair-session-001,1,1,chair-session-001-capture-000054
-chair-session-001-pose-000014,chair-session-001,1,1,chair-session-001-capture-000055
-chair-session-001-pose-000015,chair-session-001,3,1,chair-session-001-capture-000056;chair-session-001-capture-000057;chair-session-001-capture-000058

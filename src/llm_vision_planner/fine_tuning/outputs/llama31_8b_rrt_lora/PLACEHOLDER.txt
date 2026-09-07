@@ -1,0 +1,3 @@
+Placeholder directory; no trained weights are bundled.
+Train/download the corresponding adapter using finding_expert/NCSA_COMMANDS.md.
+The real adapter_config.json and adapter_model.safetensors must exist before serving.

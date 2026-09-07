@@ -1,144 +1,1083 @@
-# Starling LLM Vision Planning Workspace
+# Starling 2 hardware reproduction with the RRT expert
 
-ROS 2 Humble workspace for a Python-only PX4 Offboard UAV planning pipeline on the ModalAI Starling platform.
+Branch: `reporoduce_hardeware`. This is the existing hardware testing procedure,
+promoted to the workspace's main README. It retains the ROS package, both launch
+files, configuration, Vicon parameters, perception/interactive UI, the unified
+executor, RRT overlay, and the RRT position-score calibration used by the live plot.
+Training jobs, Semantic Theta experiments, papers, videos, and legacy flight
+executors are isolated out of this branch.
 
-The active packages are:
+The flown path is produced by the RRT-trained `rrt_planner` Llama adapter, then
+refined and verified. RRT supplies the expert training targets/reference; it does
+not replace the LLM as the online planner. `show_rrt` controls the standard
+visualizer's RRT overlay; the contraction visualizer shows the calibrated tube.
 
-- `px4_msgs`: PX4 ROS message definitions.
-- `voxl_msgs`: semantic detector message definitions from VOXL.
-- `starling_testing`: three minimal Python flight smoke tests.
-- `llm_vision_planner`: perception, prompt generation, LLM planning, refinement, verification, visualization, and Python Offboard trajectory following.
+## 0. Clone, install, build, and source
 
-## Environment
-
-Tested with Ubuntu 22.04, ROS 2 Humble, PX4/VOXL topics, and Python 3.
-
-Install workspace tools:
+Ground station: Ubuntu 22.04 with ROS 2 Humble already installed. VOXL uses its
+existing Foxy image, PX4 firmware, MPA bridge, and TFLite detector. The pinned
+message dependencies are imported by the setup script. A GPU server with gated
+Llama access and a trained RRT adapter is also required for mission planning.
+Hardware vision-error recording uses OpenAI and Vicon, and does not need vLLM.
 
 ```bash
 sudo apt update
-sudo apt install -y \
-  git \
-  python3-colcon-common-extensions \
-  python3-rosdep \
-  python3-vcstool \
-  python3-pip
-```
+sudo apt install -y git build-essential cmake python3-colcon-common-extensions \
+  python3-rosdep python3-vcstool python3-pip python3-venv python3-numpy python3-scipy \
+  python3-matplotlib python3-sklearn python3-pytest curl netcat-openbsd
 
-Initialize `rosdep` once if needed:
-
-```bash
-sudo rosdep init
-rosdep update
-```
-
-Clone and prepare dependencies:
-
-```bash
-git clone https://github.com/prachitgupta/starling_testing_ws.git
-cd starling_testing_ws
+mkdir -p ~/Desktop
+git clone --depth 1 --single-branch --branch reporoduce_hardeware \
+  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws
 source /opt/ros/humble/setup.bash
 bash scripts/setup_workspace.sh
+if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
+  sudo rosdep init
+fi
+rosdep update
 rosdep install --from-paths src --ignore-src -r -y
+/usr/bin/python3 -m pip install 'numpy<2' openai instructor pydantic
+colcon build --symlink-install --packages-select px4_msgs voxl_msgs llm_vision_planner
+source install/setup.bash
+ros2 launch llm_vision_planner full_plot.launch.py --show-args
+ros2 launch llm_vision_planner vision_error_calibration.launch.py --show-args
 ```
 
-The LLM planner uses the OpenAI Python SDK and Instructor. Install them in the Python environment used by ROS:
+Use an empty destination for cloning. If that folder already contains `main`,
+use the separate-clone instructions at the end and replace the workspace path
+in this guide. Source `/opt/ros/humble/setup.bash` and this clone's
+`install/setup.bash` in every ground-station ROS terminal. Continuous topic
+monitors and service/launch commands each need their own terminal; stop a
+monitor with `Ctrl+C` before running the next monitor command.
+
+Follow Sections 1–10 for hardware setup, then Section 11 to collect actual
+Vicon vision-error data. Section 12 is an optional real-flight test with supplied
+obstacles. Section 13 finishes with the real TFLite/ToF mission command. The
+calibration and mission launches each own flight control; run one at a time.
+
+The checked-in raw/processed vision CSVs contain **headers only** so a new run
+does not mix in another session's observations. The example frame JSON is also
+a placeholder. Section 11 replaces these with measured data; the separate dummy
+CSV is for the supplied-obstacle examples only. The retained 2,000-row RRT
+position-score CSV contains offline expert/LLM calibration, distinct from
+vision-error data. Its position tube applies to the calibrated planar tracking
+model; it does not account for all PX4 dynamics or flight disturbances.
+
+This procedure uses:
+
+- Starling 2 / VOXL at `10.117.229.1`
+- Vicon Tracker computer at `10.117.229.124`
+- MAVROS on the ground-station laptop
+- Vicon pose through MAVROS into the PX4 EKF2
+- VOXL MPA-to-ROS 2 and PX4 microDDS for perception and `/fmu/*` topics
+
+Do the first setup and takeoff checks with propellers removed or the vehicle
+restrained. Install propellers only after the estimator checks pass.
+
+## 1. Power and network
+
+Power on the Starling 2, Vicon system, Vicon Tracker computer, and ground
+station. Put the Starling, Vicon computer, and ground station on the same
+network.
+
+On the ground station:
 
 ```bash
-python3 -m pip install openai instructor pydantic
+export Starling2=10.117.229.1
+export VICON_COMPUTER_IP=10.117.229.124
+
+ping -c 3 "$Starling2"
+ping -c 3 "$VICON_COMPUTER_IP"
+nc -vz "$VICON_COMPUTER_IP" 801
 ```
 
-Set the API key only as an environment variable:
+TCP port `801` must be reachable for the Vicon DataStream SDK. Allow Vicon
+Tracker/DataStream through the Windows firewall if this check fails.
 
-```bash
-export OPENAI_API_KEY=...
-```
+### Option A: bind ROS 2 DDS to the flight Wi-Fi and domain 42
 
-## Build
+#### Run once on the ground station
 
 ```bash
 cd ~/Desktop/starling_testing_ws
 source /opt/ros/humble/setup.bash
-colcon build --packages-select px4_msgs voxl_msgs starling_testing llm_vision_planner
+colcon build --packages-select llm_vision_planner
+source install/setup.bash
+
+ssh root@"$Starling2" \
+  'mkdir -p /data/llm_vision_planner/scripts /data/llm_vision_planner/config'
+scp src/llm_vision_planner/scripts/ros_wifi_dds.sh \
+  root@"$Starling2":/data/llm_vision_planner/scripts/
+scp src/llm_vision_planner/config/fastdds_wifi_only.xml.in \
+  root@"$Starling2":/data/llm_vision_planner/config/
+```
+
+#### Run once on the VOXL
+
+```bash
+VOXL_WIFI_IPV4="$(ip -4 -o address show dev wlan0 scope global | \
+  awk 'NR == 1 {split($4, address, "/"); print address[1]}')"
+sed "s/@ROS_WIFI_IPV4@/${VOXL_WIFI_IPV4}/g" \
+  /data/llm_vision_planner/config/fastdds_wifi_only.xml.in \
+  >/data/llm_vision_planner/config/fastdds_wifi_only.xml
+chmod 600 /data/llm_vision_planner/config/fastdds_wifi_only.xml
+
+install -d /etc/systemd/system/voxl-microdds-agent.service.d
+printf '%s\n' \
+  '[Service]' \
+  'Environment=ROS_DOMAIN_ID=42' \
+  'Environment=FASTRTPS_DEFAULT_PROFILES_FILE=/data/llm_vision_planner/config/fastdds_wifi_only.xml' \
+  'Environment=FASTDDS_DEFAULT_PROFILES_FILE=/data/llm_vision_planner/config/fastdds_wifi_only.xml' \
+  >/etc/systemd/system/voxl-microdds-agent.service.d/10-flight-dds.conf
+
+systemctl daemon-reload
+systemctl restart voxl-microdds-agent
+systemctl show voxl-microdds-agent --property=LoadState,ActiveState,Environment
+```
+
+#### Run in every ground-station ROS 2 terminal
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+```
+
+#### Run in every VOXL ROS 2 terminal
+
+```bash
+source /opt/ros/foxy/setup.bash
+source /opt/ros/foxy/mpa_to_ros2/install/setup.bash
+source /data/llm_vision_planner/scripts/ros_wifi_dds.sh enable wlan0 42
+systemctl restart voxl-microdds-agent
+ros2 daemon start
+```
+
+#### Verify on the ground station
+
+```bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" status
+printenv RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
+  FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+ip route get "$Starling2"
+ip route get "$VICON_COMPUTER_IP"
+ip route get 172.22.224.93
+```
+
+#### Verify in a VOXL ROS 2 terminal
+
+```bash
+source /data/llm_vision_planner/scripts/ros_wifi_dds.sh status
+printenv RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
+  FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+ip -4 -br address show wlan0
+```
+
+All later commands assume Option A. If you choose Option B, omit every later
+`ros_wifi_dds.sh enable` command and keep `XRCE_DDS_DOM_ID=0` after loading the
+parameter file (which contains domain 42).
+
+### Option B: use default ROS 2 DDS
+
+Do not run any `ros_wifi_dds.sh enable` command when using this option.
+
+#### Disable Option A on the ground station
+
+Run in every ground-station terminal where Option A is active:
+
+```bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" disable
+unset RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
+  FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+ros2 daemon stop
+ros2 daemon start
+```
+
+#### Disable Option A on the VOXL
+
+```bash
+source /data/llm_vision_planner/scripts/ros_wifi_dds.sh disable
+unset RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
+  FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+rm -f /etc/systemd/system/voxl-microdds-agent.service.d/10-flight-dds.conf
+rm -f /data/llm_vision_planner/config/fastdds_wifi_only.xml
+systemctl daemon-reload
+systemctl restart voxl-microdds-agent
+ros2 daemon stop
+ros2 daemon start
+```
+
+In **QGroundControl > Analyze Tools > MAVLink Console**:
+
+```bash
+param set XRCE_DDS_DOM_ID 0
+param save
+reboot
+```
+
+#### Start after power-on with default DDS
+
+Run in every new ground-station ROS 2 terminal:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+unset RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
+  FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+ros2 daemon stop
+ros2 daemon start
+```
+
+Run in every new VOXL ROS 2 terminal:
+
+```bash
+source /opt/ros/foxy/setup.bash
+source /opt/ros/foxy/mpa_to_ros2/install/setup.bash
+unset RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
+  FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+ros2 daemon stop
+ros2 daemon start
+systemctl is-active voxl-microdds-agent
+```
+
+## 2. Configure QGroundControl UDP
+
+Older `voxl-mavlink-server` versions send ground-station traffic back to UDP
+port `14550`. MAVROS must therefore own laptop port `14550`.
+
+In QGroundControl:
+
+1. Disable the automatic UDP link/listener using port `14550`.
+2. Open **Application Settings > Comm Links**.
+3. Add a UDP link with listening port `14551`.
+4. Save it, but start MAVROS before connecting this QGroundControl link.
+
+Check that port `14550` is free before MAVROS starts:
+
+```bash
+ss -lunp | grep 14550
+```
+
+If QGroundControl still owns the port, close it, start MAVROS, reopen
+QGroundControl, and connect the `14551` link.
+
+## 3. Install MAVROS and GeographicLib data
+
+Run once on the ground station:
+
+```bash
+sudo apt update
+sudo apt install ros-humble-mavros ros-humble-mavros-extras geographiclib-tools
+sudo /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh
+```
+
+Do not run the installer as `sudo ros2 ...`; root does not inherit the ROS
+environment. Verify the required geoid:
+
+```bash
+ls -lh /usr/share/GeographicLib/geoids/egm96-5.pgm
+```
+
+## 3.1 Launching the RRT-trained Llama adapter on the GPU
+
+Run these commands on the GPU server in the same shell. Use its existing vLLM
+environment, or create a separate one with `python3 -m venv ~/vllm_env`, activate
+it, and install `vllm`. Authenticate with `hf auth login` using an account that
+has access to the base model.
+
+No adapter weights are bundled: `fine_tuning/outputs/llama31_8b_rrt_lora/PLACEHOLDER.txt`
+marks the expected directory. Train/download the adapter using
+[finding_expert's NCSA guide](https://github.com/prachitgupta/starling_testing_ws/blob/finding_expert/NCSA_COMMANDS.md),
+then extract its archive under `src/llm_vision_planner/fine_tuning/outputs` on the
+GPU server before continuing.
+
+1. Check GPU processes:
+
+```bash
+for i in $(seq 0 $(($(nvidia-smi -L | wc -l)-1))); do
+    echo "===== GPU $i ====="
+    nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader -i $i | while read pid mem; do
+        pid=$(echo $pid | tr -d ',')
+        mem=$(echo $mem | tr -d ' MiB,')
+        user=$(ps -p $pid -o user= 2>/dev/null || echo "unknown")
+        cmd=$(ps -p $pid -o comm= 2>/dev/null || echo "unknown")
+        echo "$user | PID: $pid | Memory: $mem MiB | Process: $cmd"
+    done
+done
+```
+
+2. Configure the adapter:
+
+```bash
+cd ~/Desktop/starling_testing_ws
+ADAPTER="$PWD/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora"
+test -s "$ADAPTER/adapter_config.json" && test -s "$ADAPTER/adapter_model.safetensors"
+```
+
+3. Launch the LLM:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 vllm serve meta-llama/Meta-Llama-3.1-8B-Instruct \
+  --enable-lora \
+  --max-lora-rank 128 \
+  --lora-modules rrt_planner="$ADAPTER" \
+  --served-model-name rrt_planner \
+  --dtype float16 \
+  --gpu-memory-utilization 0.80 \
+  --max-model-len 4096 \
+  --port 8000
+```
+
+The checks above must pass; the placeholder cannot serve predictions. If the
+GPU clone is elsewhere, use its actual absolute adapter path.
+
+On the ground station, check the server (replace the lab address for your host):
+
+```bash
+export VLLM_BASE_URL=http://172.22.224.93:8000/v1
+curl --fail --silent --show-error "$VLLM_BASE_URL/models"
+```
+
+The response must list `rrt_planner`. In
+`src/llm_vision_planner/config/llm_vision_planner.yaml`, set
+`llm_planner.ros__parameters.vllm_base_url` to that URL; exporting the variable
+alone does not override the ROS parameter. Keep `rrt_planner` in the
+`llm_planner`, `prompt_generator`, and `interactive_mission_gateway` model fields.
+For calibration and interactive missions, also export a valid `OPENAI_API_KEY`
+in the launch terminal. The camera mounts/intrinsics and network addresses below
+describe the original vehicle and must match your hardware.
+
+## 4. Start MAVROS
+
+On the ground station:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+
+export Starling2=10.117.229.1
+ros2 launch mavros px4.launch \
+  fcu_url:="udp://0.0.0.0:14550@${Starling2}:14550" \
+  gcs_url:="udp://0.0.0.0:14556@127.0.0.1:14551"
+```
+
+In another terminal:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+ros2 topic echo /mavros/state
+```
+
+Continue only when:
+
+```text
+connected: true
+```
+
+QGroundControl should now connect through its UDP `14551` link.
+
+For Option A, run in **QGroundControl > Analyze Tools > MAVLink Console**:
+
+```bash
+param set XRCE_DDS_DOM_ID 42
+param save
+reboot
+```
+
+For Option B, run in the MAVLink Console:
+
+```bash
+param set XRCE_DDS_DOM_ID 0
+param save
+reboot
+```
+
+After PX4 reconnects, verify:
+
+```bash
+param show XRCE_DDS_DOM_ID
+```
+
+## 5. Start the Vicon bridge
+
+In Tracker:
+
+1. Set the Starling subject and segment names to `Starling2`.
+2. Enable the DataStream server.
+3. Select an actual 50 Hz or 100 Hz system/DataStream rate.
+4. Keep the rigid body visible and unoccluded.
+
+The bridge was verified on Ubuntu 22.04 with ROS 2 Humble using
+`dasc-lab/ros2-vicon-bridge` package version `0.0.1`, Vicon DataStream SDK
+`1.12`, and commit `893aba0eb8b7d316d90865ac46394616bfb0bb36`. Install and
+build that revision once on the ground station:
+
+```bash
+sudo apt update
+sudo apt install -y git build-essential cmake python3-colcon-common-extensions \
+  libboost-thread-dev libboost-date-time-dev libboost-chrono-dev \
+  ros-humble-ament-cmake ros-humble-rclcpp ros-humble-geometry-msgs \
+  ros-humble-tf2 ros-humble-tf2-ros ros-humble-diagnostic-updater
+
+mkdir -p ~/colcon_ws/src
+git clone https://github.com/dasc-lab/ros2-vicon-bridge.git \
+  ~/colcon_ws/src/ros2-vicon-bridge
+git -C ~/colcon_ws/src/ros2-vicon-bridge checkout \
+  893aba0eb8b7d316d90865ac46394616bfb0bb36
+
+cd ~/colcon_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-select vicon_bridge
+```
+
+If the repository already exists, skip `git clone`, confirm that local changes
+are intentional, check out the verified commit, and rebuild. Verify the
+installation and dependencies:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/colcon_ws/install/setup.bash
+
+git -C ~/colcon_ws/src/ros2-vicon-bridge rev-parse HEAD
+ros2 pkg prefix vicon_bridge
+ros2 pkg xml vicon_bridge | grep -m1 '<version>'
+ros2 pkg executables vicon_bridge
+ldd ~/colcon_ws/install/vicon_bridge/lib/vicon_bridge/vicon_bridge | \
+  grep 'not found'
+```
+
+The commands must report the pinned commit, prefix
+`~/colcon_ws/install/vicon_bridge`, version `0.0.1`, and both `vicon_bridge`
+executables. The final `ldd` command must print nothing; any output names a
+missing runtime dependency that must be installed before continuing.
+
+Source it in every Vicon bridge terminal:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/colcon_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+```
+
+For a Vicon rate of 50 Hz:
+
+```bash
+export VICON_COMPUTER_IP=10.117.229.124
+ros2 run vicon_bridge vicon_bridge --ros-args \
+  -p host_name:="${VICON_COMPUTER_IP}:801" \
+  -p stream_mode:="ServerPush" \
+  -p update_rate_hz:=125.0 \
+  -p expected_rate_hz:=50.0 \
+  -p publish_specific_segment:=true \
+  -p target_subject_name:="Starling2" \
+  -p target_segment_name:="Starling2" \
+  -p world_frame_id:="vicon_world" \
+  -p tf_namespace:="vicon" \
+  -r /vicon/Starling2/Starling2/pose:=/mavros/vision_pose/pose
+```
+
+For a Vicon rate of 100 Hz:
+
+```bash
+export VICON_COMPUTER_IP=10.117.229.124
+ros2 run vicon_bridge vicon_bridge --ros-args \
+  -p host_name:="${VICON_COMPUTER_IP}:801" \
+  -p stream_mode:="ServerPush" \
+  -p update_rate_hz:=250.0 \
+  -p expected_rate_hz:=100.0 \
+  -p publish_specific_segment:=true \
+  -p target_subject_name:="Starling2" \
+  -p target_segment_name:="Starling2" \
+  -p world_frame_id:="vicon_world" \
+  -p tf_namespace:="vicon" \
+  -r /vicon/Starling2/Starling2/pose:=/mavros/vision_pose/pose
+```
+
+Run one bridge command only. Do not run `topic_tools throttle`. Because the
+PoseStamped topic is remapped, it appears directly as:
+
+```text
+/mavros/vision_pose/pose
+```
+
+The unremapped TransformStamped topic remains:
+
+```text
+/vicon/Starling2/Starling2
+```
+
+Verify the stream:
+
+```bash
+ros2 topic echo /mavros/vision_pose/pose --once
+ros2 topic hz /mavros/vision_pose/pose --window 500
+```
+
+The maximum interval must remain below `0.2 s`; below `0.05 s` is preferred.
+Do not hide bridge drop warnings by changing only `expected_rate_hz`.
+
+## 6. Start VOXL MPA-to-ROS 2 and verify microDDS
+
+Open a separate ground-station terminal:
+
+```bash
+export Starling2=10.117.229.1
+ssh root@"$Starling2"
+```
+
+On the VOXL:
+
+```bash
+source /opt/ros/foxy/setup.bash
+source /opt/ros/foxy/mpa_to_ros2/install/setup.bash
+source /data/llm_vision_planner/scripts/ros_wifi_dds.sh enable wlan0 42
+systemctl restart voxl-microdds-agent
+ros2 daemon start
+ros2 pkg executables voxl_mpa_to_ros2
+```
+
+Run the executable listed by the installed image. The common command is:
+
+```bash
+ros2 run voxl_mpa_to_ros2 voxl_mpa_to_ros2_node
+```
+
+If that executable is not listed, use:
+
+```bash
+ros2 run voxl_mpa_to_ros2 voxl_mpa_to_ros2
+```
+
+Set the TFLite input pipe to `hires_small_color`:
+
+```bash
+vi /etc/modalai/voxl-tflite-server.conf
+```
+
+```json
+"input_pipe": "hires_small_color",
+```
+
+```bash
+systemctl restart voxl-tflite-server
+```
+
+On the ground station, verify both MPA and PX4 DDS topics:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+
+ros2 topic info -v /tflite_data
+ros2 topic info -v /tflite
+ros2 topic info -v /tof_pc
+ros2 topic info -v /fmu/out/vehicle_odometry
+ros2 topic hz /fmu/out/vehicle_odometry
+```
+
+If `/tflite_data` and `/tof_pc` exist but `/fmu/*` topics do not, configure
+microDDS on the VOXL:
+
+```bash
+voxl-configure-microdds
+```
+
+Select disable, run `voxl-configure-microdds` again, and select enable. Reboot
+the vehicle after reconfiguration:
+
+```bash
+reboot
+```
+
+After the VOXL restarts, reconnect, restart MPA-to-ROS 2, and repeat the topic
+checks.
+
+## 7. Load the PX4 Vicon parameters
+
+In QGroundControl open:
+
+```text
+Vehicle Setup > Parameters > Tools > Load from file
+```
+
+Load:
+
+```text
+~/Desktop/starling_testing_ws/src/llm_vision_planner/params/vicon_voxl.params
+```
+
+Load this file after any QVIO parameter profile; loading the QVIO profile
+afterward will overwrite the required Vicon settings.
+
+Reboot PX4. If the QGroundControl reboot action fails, disarm, remove vehicle
+power, wait 10 seconds, and power it on again. Keep Vicon and MAVROS streaming
+during PX4 initialization.
+
+Verify these parameters in QGroundControl:
+
+```text
+SYS_HAS_GPS      = 0
+SYS_HAS_MAG      = 0
+COM_ARM_WO_GPS   = 1
+EKF2_AID_MASK    = 0
+EKF2_EV_CTRL     = 11    # horizontal position, vertical position, Vicon yaw
+EKF2_HGT_REF     = 3     # vision height reference
+EKF2_GPS_CTRL    = 0     # indoor GNSS disabled
+EKF2_OF_CTRL     = 0
+EKF2_RNG_CTRL    = 0
+EKF2_MAG_TYPE    = 5     # magnetometer disabled; Vicon supplies yaw
+EKF2_EV_QMIN     = 0
+EKF2_EV_NOISE_MD = 1
+EKF2_EVP_NOISE   = 0.10 m
+EKF2_EVA_NOISE   = 0.05 rad
+EKF2_EV_DELAY    = 0 ms initially
+XRCE_DDS_DOM_ID  = 42
+```
+
+On PX4 v1.14, `EKF2_MAG_TYPE=5` disables magnetometer fusion. With the yaw bit
+enabled in `EKF2_EV_CTRL`, Vicon initializes and supplies the continuing yaw
+reference. `EKF2_MAG_TYPE=6` is not defined in PX4 v1.14.
+
+## 8. Verify frame alignment and EKF2 fusion
+
+Place the vehicle flat on the ground with its nose aligned to the selected
+Vicon world direction. Move it by hand with propellers removed and verify:
+
+```text
+MAVROS ENU +X  -> PX4 NED +Y
+MAVROS ENU +Y  -> PX4 NED +X
+MAVROS ENU +Z  -> PX4 NED -Z
+```
+
+On the ground station:
+
+```bash
+ros2 topic echo /mavros/vision_pose/pose --once
+```
+
+On the VOXL:
+
+```bash
+px4-listener vehicle_visual_odometry 5
+px4-listener estimator_status_flags 1
+px4-listener estimator_aid_src_ev_pos 1
+px4-listener estimator_aid_src_ev_hgt 1
+px4-listener estimator_aid_src_ev_yaw 1
+px4-listener vehicle_odometry 5
+```
+
+Required estimator flags:
+
+```text
+cs_yaw_align: True
+cs_ev_pos:    True
+cs_ev_hgt:    True
+cs_ev_yaw:    True
+cs_fake_pos:  False
+```
+
+If `vehicle_visual_odometry` is correct but these flags remain false, check in
+this order:
+
+1. Vision gaps are below `0.2 s`.
+2. `EKF2_MAG_TYPE=5` is set and the Vicon quaternion allows yaw alignment.
+3. `EKF2_EV_CTRL=11` and `EKF2_HGT_REF=3`.
+4. `innovation_rejected` and `test_ratio` in the three aid-source topics.
+5. Vicon yaw is aligned and its quaternion is valid.
+6. `EKF2_EV_DELAY` is tuned from a PX4 log only after network jitter is fixed.
+
+The Vicon object origin can be above the floor. For example, Vicon ENU
+`z=+0.084 m` correctly becomes PX4 NED `z=-0.084 m`; it need not equal exactly
+zero.
+
+## 9. Isolated QGroundControl takeoff test
+
+Do this before running the planner:
+
+1. Install propellers and move all personnel outside the safety area.
+2. Confirm the RC kill switch and mode switch work.
+3. Confirm the Vicon pose is continuous.
+4. Confirm all required EKF flags above remain true.
+5. Confirm QGroundControl reports a valid local position and no blocking
+   preflight failures.
+6. In the QGroundControl Fly view, command a low `1.0 m` takeoff.
+7. Hold briefly, land from QGroundControl, and disarm.
+
+Do not continue if Offboard/Position mode falls back, Vicon fusion stops, or
+local position jumps. Land and repeat the estimator diagnostics.
+
+The planner mission performs its own arming and takeoff. Land and disarm after
+this isolated QGroundControl test before launching `full_plot.launch.py`.
+
+## 10. Build the planner workspace
+
+On the ground station:
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select px4_msgs voxl_msgs llm_vision_planner
 source install/setup.bash
 ```
 
-## Starling Smoke Tests
-
-All positions are local NED: `x` north, `y` east, and negative `z` is altitude above the local origin.
+On the VOXL, disable the default Figure 8 producer before this mission. In:
 
 ```bash
-ros2 run starling_testing 01_takeoff_land.py --ros-args \
-  -p takeoff_alt_m:=0.45 -p hold_s:=5.0
+vi /etc/modalai/voxl-vision-hub.conf
 ```
+
+set:
+
+```json
+"offboard_mode": "off",
+```
+
+Verify:
 
 ```bash
-ros2 run starling_testing 02_offboard_waypoint.py --ros-args \
-  -p x:=0.5 -p y:=0.0 -p z:=-0.45
+grep -n '"offboard_mode"' /etc/modalai/voxl-vision-hub.conf
 ```
+
+Do not run any other Offboard publisher. During planner missions,
+`control_law_executer.py` from `full_plot.launch.py` must be the only publisher
+controlling PX4. The calibration procedure below launches that same executable
+from its dedicated launch file instead.
+
+## 11. Generate the Vicon vision-error calibration dataset
+
+Important:
+
+- This is an autonomous low-altitude flight. Install propellers only in the
+  cleared flight area, keep the QGroundControl kill/land controls available,
+  and keep people outside the vehicle safety volume.
+- Run only `vision_error_calibration.launch.py`. It starts perception, the
+  recorder, the calibration gateway, and `control_law_executer.py`; do not also
+  run `full_plot.launch.py` or another Offboard publisher.
+- The control executor reads `takeoff_z` from
+  `config/llm_vision_planner.yaml` (`-0.5` m NED by default). It uses the same
+  setpoint priming, Offboard/arm commands, takeoff checks, and position hold as
+  a normal mission.
+- Recording is blocked until the executor reports `HOLDING_FOR_PLAN`. The
+  aircraft then keeps commanding its initial X/Y and configured hover Z while
+  the launch records every 3 seconds.
+- The executor primes its normal Offboard setpoint stream on the ground but
+  cannot send Offboard/arm commands until the recorder has accepted 20
+  consistent Vicon/PX4 alignment pairs and published `FRAME_READY`.
+- Record `chair1`, `person`, and `stopsign` in separate sessions using one of
+  the commands below. Move only the tracked object between captures; captures
+  made while it is moving are skipped.
+- Repeated captures at the same object/camera pose are written to the raw CSV and
+  collapsed during post-processing.
+- For 500 effective samples, collect at least 500 clearly different stable
+  object/camera poses. Collect extra raw captures because repeats will be removed.
+
+### 11.1 Define the three ground-truth objects in Vicon Tracker
+
+Create these Tracker objects with the exact names shown:
+
+| Detector label | Tracker object | Vicon ground-truth topic |
+| --- | --- | --- |
+| `chair` | `chair1` | `/vicon/chair1/chair1` |
+| `person` | `person` | `/vicon/person/person` |
+| `stop sign` | `stopsign` | `/vicon/stopsign/stopsign` |
+
+For each object:
+
+1. Attach at least four asymmetric rigid markers to the object or its rigid
+   carrier. Use a mannequin or other approved stationary target for the
+   `person` class whenever possible.
+2. Select the markers in Tracker and create the named object.
+3. Set its origin to the center of the physical ground footprint.
+4. Align object X with footprint width, Y with footprint depth, and Z upward.
+5. Measure the full X width and Y depth in metres. Include the base/stand in the
+   `stopsign` footprint.
+6. Save it and verify that its topic remains continuous and unoccluded.
+
+Tracker reference: <https://vicon-help.atlassian.net/wiki/spaces/Tracker44/pages/376309034/Create+objects>
+
+### 11.2 Start the Vicon bridge
+
+Stop the single-subject bridge from Section 5 before starting this all-subject
+bridge. Keep the vehicle landed and disarmed during the change, then recheck
+MAVROS/PX4 fusion before the recording launch.
 
 ```bash
-ros2 run starling_testing 03_bezier_offboard_waypoint.py --ros-args \
-  -p x:=0.5 -p y:=0.0 -p z:=-0.45 -p duration_s:=4.0
+export VICON_COMPUTER_IP=10.117.229.124
+ros2 run vicon_bridge vicon_bridge --ros-args \
+  -p host_name:="${VICON_COMPUTER_IP}:801" \
+  -p stream_mode:="ServerPush" \
+  -p update_rate_hz:=125.0 \
+  -p expected_rate_hz:=50.0 \
+  -p publish_specific_segment:=false \
+  -p world_frame_id:="vicon_world" \
+  -p tf_namespace:="vicon" \
+  -r /vicon/Starling2/Starling2/pose:=/mavros/vision_pose/pose
 ```
 
-Expected output: the node logs state transitions, publishes PX4 Offboard setpoints, reaches the target within per-axis epsilon, and sends a land command.
+Run only one bridge. Verify the vehicle, PX4, and all three object streams:
 
-## LLM Planning Pipeline
+```bash
+ros2 topic echo /vicon/Starling2/Starling2 --once
+ros2 topic echo /vicon/chair1/chair1 --once
+ros2 topic echo /vicon/person/person --once
+ros2 topic echo /vicon/stopsign/stopsign --once
+ros2 topic echo /fmu/out/vehicle_odometry --once
+ros2 topic hz /vicon/chair1/chair1 --window 500
+ros2 topic hz /vicon/person/person --window 500
+ros2 topic hz /vicon/stopsign/stopsign --window 500
+```
 
-Terminal 1: run takeoff and hold:
+- Use the default `flu` when the Starling Tracker axes are X forward, Y left,
+  Z up.
+- Add `vicon_vehicle_frame_convention:=frd` only for X forward, Y right, Z down.
+
+### 11.3 Build once and prepare the flight
+
+1. Confirm Vicon fusion and `/fmu/out/vehicle_odometry` are healthy using the
+   checks in Sections 7-9.
+2. Confirm the configured hover altitude. `-0.5` means 0.5 m above the local
+   NED origin:
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source /opt/ros/humble/setup.bash
+grep -A30 '^control_law_executer:' \
+  src/llm_vision_planner/config/llm_vision_planner.yaml | grep takeoff_z
+colcon build --symlink-install --packages-select llm_vision_planner
+source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+```
+
+3. Export the key in this launch shell (`read -rsp "OpenAI API key: " OPENAI_API_KEY;
+   export OPENAI_API_KEY`), place one tracked object at its first stable pose,
+   and aim the camera at it.
+4. Keep the aircraft at its takeoff point. On launch it records that X/Y,
+   primes Offboard setpoints, arms, climbs to `takeoff_z`, settles, and holds.
+
+### 11.4 Start one recording launch
+
+Use exactly one command for the object currently in view. Each prompt reads the
+measured dimensions without putting unsafe guessed dimensions in the dataset.
+All sessions may append to the same raw CSV.
+
+For `chair1`:
+
+```bash
+read -rp "Chair X width in metres: " CHAIR_WIDTH_M
+read -rp "Chair Y depth in metres: " CHAIR_DEPTH_M
+
+ros2 launch llm_vision_planner vision_error_calibration.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  trial_id:=chair-session-001 \
+  object_id:=obj-1 \
+  object_label:=chair \
+  object_vicon_topic:=/vicon/chair1/chair1 \
+  object_width_m:="$CHAIR_WIDTH_M" \
+  object_depth_m:="$CHAIR_DEPTH_M" \
+  output_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv"
+```
+
+For `person`:
+
+```bash
+read -rp "Person target X width in metres: " PERSON_WIDTH_M
+read -rp "Person target Y depth in metres: " PERSON_DEPTH_M
+
+ros2 launch llm_vision_planner vision_error_calibration.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  trial_id:=person-session-001 \
+  object_id:=obj-1 \
+  object_label:=person \
+  object_vicon_topic:=/vicon/person/person \
+  object_width_m:="$PERSON_WIDTH_M" \
+  object_depth_m:="$PERSON_DEPTH_M" \
+  output_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv"
+```
+
+For `stopsign` (the detector label contains a space):
+
+```bash
+read -rp "Stop-sign target X width in metres: " STOPSIGN_WIDTH_M
+read -rp "Stop-sign target Y depth in metres: " STOPSIGN_DEPTH_M
+
+ros2 launch llm_vision_planner vision_error_calibration.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  trial_id:=stopsign-session-001 \
+  object_id:=obj-1 \
+  object_label:="stop sign" \
+  object_vicon_topic:=/vicon/stopsign/stopsign \
+  object_width_m:="$STOPSIGN_WIDTH_M" \
+  object_depth_m:="$STOPSIGN_DEPTH_M" \
+  output_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv"
+```
+
+In another terminal, monitor takeoff, ownership, and recording:
+
+```bash
+ros2 topic echo /llm_vision/mission_state
+ros2 topic echo /llm_vision/offboard_owner
+ros2 topic echo /llm_vision/vision_calibration_status
+tail -n 5 \
+  ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv
+```
+
+Wait for `HOLDING_FOR_PLAN`; no calibration snapshot is published before that
+state. After each `RECORDED`, move the tracked object to a clearly different
+position or yaw and hold it still for the next capture. Do not move the aircraft
+by hand while it owns Offboard position hold.
+
+When the session is complete, land before stopping the launch:
+
+```bash
+ros2 topic pub --once /llm_vision/executor_command std_msgs/msg/String \
+  "{data: '{\"command\":\"LAND\",\"reason\":\"vision calibration complete\"}'}"
+ros2 topic echo /llm_vision/mission_state
+```
+
+Wait until the mission state is `COMPLETE` and QGroundControl shows the vehicle
+landed and disarmed. Then press `Ctrl+C` in the launch terminal. Use a new unique
+`trial_id` for the next object/session and repeat the same one-launch workflow.
+
+Automatic outputs:
+
+- Raw CSV: `fine_tuning/datasets/calibration_vision_error_raw.csv`
+- Derived frame check: `calibration_vision_error_raw.<trial_id>.frame.json`
+- Missed detection or GPT depth abstention: retained as a calibration miss
+- `SKIPPED_MOVING_OBJECT`: wait until the tracked object is stationary
+- `FRAME_ALIGNMENT_UNSTABLE`: keep the Starling still and check both pose streams
+
+### 11.5 Collapse repeated poses
+
+```bash
+RAW_CSV=~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv
+CALIBRATION_CSV=~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv
+
+ros2 run llm_vision_planner postprocess_vision_error_dataset.py \
+  --input "$RAW_CSV" \
+  --output "$CALIBRATION_CSV" \
+  --overwrite
+```
+
+The command prints the raw-capture count, independent-pose count, and number of
+collapsed repeats. It also creates
+`calibration_vision_error.groups.csv`, which lists each pose group and its raw
+capture IDs. By default, captures within 5 cm and 5 degrees at the same camera
+pose are treated as repeats.
+
+Check the processed trial count:
+
+```bash
+tail -n +2 "$CALIBRATION_CSV" | cut -d, -f1 | sort -u | wc -l
+tail -n 5 "$CALIBRATION_CSV"
+```
+
+Collect more poses and rerun post-processing if the first command prints fewer
+than `500`. The raw CSV cannot be used directly for a mission.
+
+### 11.6 Use the completed dataset
+
+For conformal obstacle enlargement, add:
+
+```bash
+obs_safety_bracket:=conformal \
+vision_error_calibration_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv"
+```
+
+For the existing fixed guard band, add:
+
+```bash
+obs_safety_bracket:=hardcoded
+```
+
+Notes:
+
+- The dummy CSV is simulation-only and is rejected for real conformal missions.
+- Automatic Vicon-world to NED alignment is the default; no quaternion input is
+  required.
+- Use `vicon_objects_json` only for advanced multi-object calibration.
+- Set `auto_vicon_world_to_ned:=false` only for the legacy manual-transform path.
+
+## 12. Hardware flight with a simulated obstacle message
+
+This test flies the real vehicle but supplies obstacle JSON instead of starting
+TFLite/ToF perception. `environment:=sim` changes only the obstacle source; PX4
+odometry and control remain real.
+
+Use an empty obstacle snapshot:
+
+```bash
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
+  "{data: '{\"obstacles\":[],\"timestamp\":0.0}'}"
+```
+
+For a calibrated obstacle environment, copy a command from the
+`ros2_pub_command` column of:
+
+```text
+~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/env_ros_commands.csv
+```
+
+Run the selected publisher in its own terminal. Then launch the complete
+planner, verifier, visualizer, and control executor:
 
 ```bash
 cd ~/Desktop/starling_testing_ws
 source install/setup.bash
-ros2 run llm_vision_planner mission_takeoff.py --ros-args \
-  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
-```
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
 
-Wait until the vehicle is holding pose and publishing `HOLDING_FOR_PLAN`.
-
-Terminal 2: start the planner stack:
-
-```bash
-cd ~/Desktop/starling_testing_ws
-source install/setup.bash
 ros2 launch llm_vision_planner full_plot.launch.py \
-  params_file:=src/llm_vision_planner/config/llm_vision_planner.yaml \
-  mode:=semantic
-```
-
-To use the remote vLLM/Llama planner configured in `src/llm_vision_planner/config/llm_vision_planner.yaml` and enable the RRT overlay:
-
-```bash
-cd ~/Desktop/starling_testing_ws
-source install/setup.bash
-ros2 launch llm_vision_planner full_plot.launch.py \
-  params_file:=src/llm_vision_planner/config/llm_vision_planner.yaml \
-  mode:=semantic \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  goal_x:=0.0 \
+  goal_y:=1.5 \
+  environment:=sim \
   llm_provider:=llama \
+  visualizer:=contraction \
+  obs_safety_bracket:=conformal \
   show_rrt:=true
 ```
 
-Terminal 3: after a verified plan is received, start the Python Offboard follower:
+For the live conformal contraction plot:
 
 ```bash
-cd ~/Desktop/starling_testing_ws
-source install/setup.bash
-ros2 run llm_vision_planner trajectory_follower.py --ros-args \
-  --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
+ros2 launch llm_vision_planner full_plot.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  goal_x:=0.0 \
+  goal_y:=1.5 \
+  environment:=sim \
+  llm_provider:=llama \
+  visualizer:=contraction \
+  obs_safety_bracket:=conformal \
+  show_rrt:=false
 ```
 
-Mission behavior:
-
-1. `mission_takeoff.py` waits for PX4 NED odometry, primes Offboard setpoints, arms, climbs to `takeoff_z`, and holds the reached pose.
-2. `mission_takeoff.py` publishes `/llm_vision/mission_state` as `HOLDING_FOR_PLAN`.
-3. `prompt_generator.py` latches the hover pose and current obstacle snapshot.
-4. `llm_planner.py` generates sparse waypoints.
-5. `refinment.py` interpolates and nudges the path.
-6. `verifier.py` publishes `passed`, metrics, failed constraints, thresholds, and a feedback table.
-7. Failed verification results are appended into the next prompt using the same latched hover context.
-8. The first `passed=true` trajectory is latched by `trajectory_follower.py`.
-9. `trajectory_follower.py` takes Offboard ownership from `mission_takeoff.py` and tracks the verified path with Bezier position/velocity setpoints.
+Add `land_after_complete:=false` to hold the final goal in Offboard for human
+intervention; the default `true` lands automatically after success.
+`goal_x` and `goal_y` default to `0.0` and `1.5`; set both launch arguments to
+override the fixed prompt, plotted goal, verified trajectory, and executor goal.
 
 Monitor:
 
@@ -146,134 +1085,342 @@ Monitor:
 ros2 topic echo /llm_vision/mission_state
 ros2 topic echo /llm_vision/prompt
 ros2 topic echo /llm_vision/plan_verified
+ros2 topic echo /llm_vision/offboard_owner
 ```
 
-## Software-Only Reproduction
+### Interactive mode
 
-Without hardware, run the planning nodes and publish fake mission/perception inputs:
+Interactive mode uses OpenAI to parse an operator request and opens
+`http://127.0.0.1:8080` for approval before planning. `OPENAI_API_KEY` must be
+exported in the launch shell; fixed mode remains the default. Live box jitter
+is accepted within configured position and size limits, while planning uses a
+larger conservative obstacle envelope. The planner start is refreshed from the
+current hover position at approval and checked again before plan release.
 
 ```bash
+cd ~/Desktop/starling_testing_ws
 source install/setup.bash
-ros2 run llm_vision_planner prompt_generator.py --ros-args --params-file src/llm_vision_planner/config/llm_vision_planner.yaml &
-ros2 run llm_vision_planner llm_planner.py --ros-args --params-file src/llm_vision_planner/config/llm_vision_planner.yaml &
-ros2 run llm_vision_planner refinment.py --ros-args --params-file src/llm_vision_planner/config/llm_vision_planner.yaml &
-ros2 run llm_vision_planner verifier.py --ros-args --params-file src/llm_vision_planner/config/llm_vision_planner.yaml
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+
+ros2 launch llm_vision_planner full_plot.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  goal_x:=0.0 \
+  goal_y:=1.5 \
+  environment:=sim \
+  interaction_mode:=interactive \
+  intent_provider:=openai \
+  use_dataset_scene:=true \
+  sim_sample_id:=4 \
+  llm_provider:=llama \
+  visualizer:=contraction \
+  obs_safety_bracket:=conformal
 ```
 
-Fake hover state:
+To open the operator UI from a phone on the same network, add
+`web_ui_host:=0.0.0.0` and browse to `http://<computer-lan-ip>:8080`. On plain
+LAN HTTP, **Record command** opens the phone's native audio recorder because
+browsers reserve live microphone streams for secure origins. Localhost or an
+HTTPS deployment retains the in-page push-to-talk recorder.
+
+#### Dummy example: manually publish obstacles
+
+This test does not launch `perception_detection.py`. Start PX4 simulation, then
+launch interactive mode without the recorded dataset publisher:
 
 ```bash
-ros2 topic pub /llm_vision/mission_state std_msgs/msg/String \
-  "{data: '{\"state\":\"HOLDING_FOR_PLAN\",\"position\":{\"x\":0.0,\"y\":0.0,\"z\":-0.45}}'}" -r 2
+cd ~/Desktop/starling_testing_ws
+source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+
+ros2 launch llm_vision_planner full_plot.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  goal_x:=0.0 \
+  goal_y:=1.5 \
+  environment:=sim \
+  interaction_mode:=interactive \
+  intent_provider:=openai \
+  use_dataset_scene:=false \
+  llm_provider:=llama \
+  visualizer:=contraction \
+  obs_safety_bracket:=conformal
 ```
 
-Fake obstacle snapshot:
+In another terminal, continuously publish a fresh dummy COCO-object scene:
 
 ```bash
-ros2 topic pub /llm_vision/semantic_obstacles std_msgs/msg/String \
-  "{data: '{\"obstacles\":[{\"label\":\"chair\",\"min_corner\":[1.2,-0.3,-0.8],\"max_corner\":[1.7,0.3,0.0],\"size\":[0.5,0.6,0.8],\"distance_m\":1.3}],\"timestamp\":0.0}'}" -r 2
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+
+ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
+  "{data: '{\"healthy\":true,\"frame\":\"local_ned\",\"obstacles\":[{\"id\":1,\"label\":\"chair\",\"shape\":\"box\",\"min_corner\":[2.20,2.00,-0.75],\"max_corner\":[2.70,2.50,0.25],\"confidence\":1.0},{\"id\":2,\"label\":\"bottle\",\"shape\":\"box\",\"min_corner\":[1.00,2.80,-0.75],\"max_corner\":[1.30,3.10,0.25],\"confidence\":1.0}],\"timestamp\":0.0}'}"
 ```
 
-Expected output: `/llm_vision/prompt` is generated only after `HOLDING_FOR_PLAN`; `/llm_vision/plan_verified` contains metrics and either `passed=true` or a feedback table for retry.
+#### Brief user guide
 
-## RRT Expert Fine-Tuning
-
-The fine-tuning utilities live in `src/llm_vision_planner/fine_tuning`. They generate synthetic environment vectors, reuse the current `prompt_generator.py` natural-language prompt, label each sample with an RRT expert path, and fine-tune Llama-3.1-8B-Instruct with Unsloth LoRA.
-
-Generate a dataset:
+1. Wait until `/llm_vision/mission_state` reports `HOLDING_FOR_PLAN`.
+2. Open `http://127.0.0.1:8080`, type a request or press **Push to talk**,
+   review the transcript, and press **Send**. The browser records the microphone
+   and the web node transcribes it with `gpt-4o-mini-transcribe`; this requires
+   microphone permission and `OPENAI_API_KEY`. On a phone over plain LAN HTTP,
+   **Record command** uses the phone's native recorder instead of a live browser
+   microphone stream. Typing remains available.
+3. Scene questions such as `What do you see?`, `List objects`, `Where is the
+   chair?`, `Explain the proposal`, and `Explain failure` return text without
+   creating a plan. Navigation can combine ranges, for example `Hover 0.8 to
+   1.2 m from the chair and as far as possible from the bottle`.
+4. Check every grounded object relation, the proposed goal, and clearance,
+   then approve or reject the proposal. A planner prompt is published only
+   after approval.
+5. The page shows detected objects, the proposed goal, and every refined path.
+   Once verification latches the trajectory and forms the safety tubes, use
+   **Final launch command** to approve control-law execution or terminate. A
+   tube intersection is shown as **LLM prediction safety not certified**;
+   approving at that point deliberately releases the plan despite the warning.
+   Termination keeps Offboard mode and commands an x/y-hold landing waypoint
+   through `control_law_executer.py`. Keep the obstacle publisher running and
+   monitor the final result with:
 
 ```bash
-cd ~/Desktop/starling_testing_ws/src
-python3 llm_vision_planner/fine_tuning/scripts/conformal_rrt_dataset.py \
-  --rrt-training \
-  --samples 1000 \
-  --random-goal \
-  --seed 7
+ros2 topic echo /llm_vision/plan_verified
 ```
 
-RRT training-data generator args:
+## 13. TFLite and ToF perception
 
-- `--samples`: number of successful RRT-labeled rows to write.
-- `--seed`: random seed for repeatable environments and RRT paths.
-- `--output`: output CSV path; defaults to `llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv`.
-- `--random-goal`: sample random goals; without it, all rows use the package default goal.
+TFLite detects object type from `hires_small_color`. ToF supplies distance
+from `/tof_pc`. The output topic is
+`/llm_vision/semantic_obstacles`, which is consumed by
+`prompt_generator.py`.
 
-Quick smoke test:
+### Frames and key parameters
+
+Use camera optical frames for RGB/ToF projection and local NED for the final
+obstacle coordinates. Image bounding boxes are matched to ToF points, converted
+to body FRD with the camera mounts, then converted to NED with synchronized PX4
+odometry. NED is x North, y East, z Down.
+
+| Parameter | Reproduction value | Adjust only when |
+| --- | --- | --- |
+| `detection_camera` | `hires_small_color` | The TFLite input pipe changes |
+| `hires_width`, `hires_height` | `1024`, `768` | The input resolution or crop changes |
+| `hires_fx`, `hires_fy`, `hires_cx`, `hires_cy` | `501.5316`, `502.8287`, `508.1806`, `380.6556` | A new calibration is accepted for the exact stream and resolution |
+| `point_cloud_frame` | `tof_optical` | Use `local_ned` only for an already transformed cloud |
+| `detection_cam_body_*` | `[0.068, 0.012, -0.015]` m; RPY `[0, 90, 90]` deg | The RGB mount changes or is remeasured |
+| `depth_cam_body_*` | `[0.066, 0.009, -0.012]` m; RPY `[0, 90, 180]` deg | The ToF mount changes or is remeasured |
+| `detection_timeout_s`, `detector_timeout_s` | `10.0`, `10.0` | Allows bursty detector delivery during a static snapshot; lower them for motion |
+| `point_cloud_timeout_s`, `pose_timeout_s` | `6.0`, `5.0` | Allows bursty ToF and pose delivery during a static snapshot; lower them for motion |
+| `max_sync_slop_s` | `10.0` | Static-hover validation observed retained-pose gaps up to 5.318 s; lower it for motion |
+| `pose_history_size` | `2000` | Covers about 16 s at the observed 123 Hz pose rate, exceeding the sync window |
+| `min_confidence` | `0.70` | Raise it for false detections; lower it for missed detections |
+| `min_tof_depth_m`, `max_tof_depth_m` | `0.20`, `6.0` | The usable ToF range changes |
+| `bbox_inner_margin_fraction` | `0.30` | Increase it to reject box-edge background; decrease it when too few ToF points remain |
+| `obstacle_hold_s` | `10.0` | Covers observed static-scene detector dropouts; lower it for moving obstacles |
+| `held_depth_health_grace_s` | `10.0` | Reuses recent measured geometry only for synchronization failures; set to `0.0` for moving scenes |
+
+### Calibrate the hires camera
+
+Use the grey stream paired with the TFLite color stream:
+`hires_small_grey`. Do not use a tracking-camera pipe.
+
+The successful board had 5x6 internal corners and 30 mm squares. Keep it flat,
+well lit, and sharp.
+
+Run on VOXL:
 
 ```bash
-python3 llm_vision_planner/fine_tuning/scripts/conformal_rrt_dataset.py --rrt-training --samples 20 --seed 7
+voxl-inspect-services
+voxl-list-pipes | grep -E '^hires_small_(color|grey)$'
+
+voxl-set-cpu-mode perf
+systemctl stop voxl-tflite-server voxl-qvio-server voxl-tag-detector voxl-dfs-server voxl-streamer 2>/dev/null || true
+systemctl restart voxl-camera-server voxl-portal
 ```
 
-Install GPU training dependencies in a separate Python environment:
+Reduce exposure under bright lighting:
 
 ```bash
-python3 -m venv ~/unsloth_env
-source ~/unsloth_env/bin/activate
-pip install --upgrade pip
-pip install unsloth huggingface_hub
+voxl-send-command hires_small_grey set_exp_gain 3.0 400
 ```
 
-Authenticate Hugging Face for gated Llama access:
+Open the calibration overlay in VOXL Portal, then run:
 
 ```bash
-hf auth login
+voxl-calibrate-camera hires_small_grey -s 5x6 -l 0.030
 ```
 
-On DeltaAI, keep the token in project storage:
+The accepted calibration had a 0.703523 px reprojection error and was saved to:
+
+```text
+/data/modalai/opencv_hires_small_grey_intrinsics.yml
+```
+
+Check and back it up:
 
 ```bash
-export HF_HOME=/projects/bhkj/$USER/hf_cache
-hf auth login
+sed -n '1,100p' /data/modalai/opencv_hires_small_grey_intrinsics.yml
+cp -p /data/modalai/opencv_hires_small_grey_intrinsics.yml \
+  /data/modalai/opencv_hires_small_grey_intrinsics.yml.accepted
 ```
 
-For a one-shell token instead:
+Restore automatic exposure and perception services:
 
 ```bash
-export HF_TOKEN=hf_your_token_here
+voxl-send-command hires_small_grey start_ae
+systemctl restart voxl-camera-server
+systemctl start voxl-qvio-server voxl-tflite-server
+voxl-inspect-services | grep -E 'camera|qvio|tflite|mpa-to-ros2'
 ```
 
-Check access:
+### Build
+
+Run on the ground station:
 
 ```bash
-python3 - <<'PY'
-from huggingface_hub import HfApi
-print(HfApi().model_info("meta-llama/Meta-Llama-3.1-8B-Instruct").modelId)
-PY
+cd ~/Desktop/starling_testing_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select llm_vision_planner
+source install/setup.bash
 ```
 
-Check CUDA:
+### Run perception only
+
+Terminal 1:
 
 ```bash
-python3 - <<'PY'
-import torch
-print(torch.cuda.is_available())
-print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "no cuda")
-PY
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+ros2 run llm_vision_planner perception_detection.py --ros-args \
+  --params-file ~/Desktop/starling_testing_ws/src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
 
-Run a small training plumbing test:
+Terminal 2:
 
 ```bash
-python3 llm_vision_planner/fine_tuning/scripts/train.py \
-  --dataset llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv \
-  --epochs 0.05 \
-  --batch-size 1 \
-  --grad-accum 2
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+ros2 topic echo --full-length /llm_vision/semantic_obstacles
 ```
 
-Run normal LoRA training:
+### Open the live perception plot
 
 ```bash
-python3 llm_vision_planner/fine_tuning/scripts/train.py \
-  --dataset llm_vision_planner/fine_tuning/datasets/rrt_expert_dataset.csv \
-  --epochs 1 \
-  --batch-size 2 \
-  --grad-accum 4
+source ~/Desktop/starling_testing_ws/install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+ros2 run llm_vision_planner debug_perception.py
 ```
 
-The default adapter output is `llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora`.
+This only subscribes and plots. It does not save an image or send flight
+commands.
 
-## Known Failure Modes
+Save a plot only when needed:
 
-- Takeoff to an arbitrary height indefinitely and randomly in identical experimental conditions, possibly due to bad EKF fused estimates interference and poor QVIO height estimation: https://discuss.px4.io/t/unexpected-and-sudden-ascend-in-offboard-mode/35103
-- Transition to land from Offboard tracking causes jitters and the drone diagonally moves to takeoff location while landing: https://forum.modalai.com/topic/2533/failsafe-landing-bug-in-px4-1-14
+```bash
+ros2 run llm_vision_planner debug_perception.py --ros-args \
+  -p output_png:=/tmp/debug_perception.png
+```
+
+### Launch the real mission
+
+This command starts real flight control. Run it only when the vehicle is ready
+to fly.
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+read -rsp "OpenAI API key: " OPENAI_API_KEY
+export OPENAI_API_KEY
+
+ros2 launch llm_vision_planner full_plot.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  environment:=real \
+  interaction_mode:=interactive \
+  intent_provider:=openai \
+  llm_provider:=llama \
+  visualizer:=contraction \
+  web_ui_host:=0.0.0.0 \
+  obs_safety_bracket:=hardcoded \
+  show_rrt:=true
+```
+
+Use the RC kill switch or change PX4/QGroundControl mode to abort.
+
+### Launch the real mission (interactive mode)
+
+The same interactive workflow, with `land_after_complete:=false` to hold the
+final goal until the operator requests landing. `OPENAI_API_KEY` must be
+exported in the launch shell.
+
+```bash
+cd ~/Desktop/starling_testing_ws
+source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+read -rsp "OpenAI API key: " OPENAI_API_KEY
+export OPENAI_API_KEY
+
+ros2 launch llm_vision_planner full_plot.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  environment:=real \
+  interaction_mode:=interactive \
+  intent_provider:=openai \
+  llm_provider:=llama \
+  visualizer:=contraction \
+  web_ui_host:=0.0.0.0 \
+  obs_safety_bracket:=hardcoded \
+  show_rrt:=true \
+  land_after_complete:=false
+```
+
+From another device on the same network, open
+`http://<ground-station-lan-ip>:8080` once `/llm_vision/mission_state` reports
+`HOLDING_FOR_PLAN`. The `0.0.0.0` value is the server bind address, not the
+address to type into the browser. See step 12's Interactive mode section for
+the approval walkthrough. Use the RC kill switch or change PX4/QGroundControl
+mode to abort.
+
+## Working with the branches
+
+Keep each branch in a separate clone so its `build/`, `install/`, and `log/`
+directories cannot mix with another branch. A new shell should source only the
+workspace being used. To inspect or update either workflow:
+
+```bash
+git clone --depth 1 --single-branch --branch reporoduce_hardeware \
+  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/hardware_ws
+git clone --depth 1 --single-branch --branch finding_expert \
+  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/expert_ws
+git -C ~/Desktop/hardware_ws branch --show-current
+git -C ~/Desktop/hardware_ws pull --ff-only
+git -C ~/Desktop/expert_ws pull --ff-only
+```
+
+For these alternate paths, substitute `~/Desktop/hardware_ws` or
+`~/Desktop/expert_ws` for `~/Desktop/starling_testing_ws` in the corresponding
+README, then install dependencies, build, and source inside that clone.
+`main` retains the complete original workspace. Do not merge an isolated branch
+into `main` just to use it. To move an adapter or completed calibration between
+branches, copy only that artifact to the matching path in the other clone.
+
+## Software validation of this branch
+
+Verified with fresh pinned dependency imports and a clean Humble build. Both
+launch descriptions resolve, every installed Python module imports, the retained
+CTest checks pass, and the existing simulated PX4 executor harness passes.
+Vision post-processing was also checked with the original raw fixture. Actual
+Vicon/VOXL flight, live model inference, and GPU training were not run for this
+branch reorganization.

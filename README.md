@@ -28,8 +28,8 @@ sudo apt install -y git build-essential cmake python3-colcon-common-extensions \
 
 mkdir -p ~/Desktop
 git clone --depth 1 --single-branch --branch reporoduce_hardeware \
-  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/starling_testing_ws
-cd ~/Desktop/starling_testing_ws
+  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/starling_testing_ws_reproduce_hardware
+cd ~/Desktop/starling_testing_ws_reproduce_hardware
 source /opt/ros/humble/setup.bash
 bash scripts/setup_workspace.sh
 if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
@@ -100,7 +100,7 @@ Tracker/DataStream through the Windows firewall if this check fails.
 #### Run once on the ground station
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws_reproduce_hardware
 source /opt/ros/humble/setup.bash
 colcon build --packages-select llm_vision_planner
 source install/setup.bash
@@ -140,7 +140,7 @@ systemctl show voxl-microdds-agent --property=LoadState,ActiveState,Environment
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_testing_ws_reproduce_hardware/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -224,7 +224,7 @@ Run in every new ground-station ROS 2 terminal:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_testing_ws_reproduce_hardware/install/setup.bash
 unset RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
   FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
 ros2 daemon stop
@@ -312,7 +312,7 @@ done
 2. Configure the adapter:
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws_reproduce_hardware
 ADAPTER="$PWD/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora"
 test -s "$ADAPTER/adapter_config.json" && test -s "$ADAPTER/adapter_model.safetensors"
 ```
@@ -356,7 +356,7 @@ On the ground station:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_testing_ws_reproduce_hardware/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -371,7 +371,7 @@ In another terminal:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_testing_ws_reproduce_hardware/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -465,7 +465,7 @@ Source it in every Vicon bridge terminal:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_testing_ws_reproduce_hardware/install/setup.bash
 source ~/colcon_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
@@ -579,7 +579,7 @@ On the ground station, verify both MPA and PX4 DDS topics:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_testing_ws_reproduce_hardware/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -619,7 +619,7 @@ Vehicle Setup > Parameters > Tools > Load from file
 Load:
 
 ```text
-~/Desktop/starling_testing_ws/src/llm_vision_planner/params/vicon_voxl.params
+~/Desktop/starling_testing_ws_reproduce_hardware/src/llm_vision_planner/params/vicon_voxl.params
 ```
 
 Load this file after any QVIO parameter profile; loading the QVIO profile
@@ -730,7 +730,7 @@ this isolated QGroundControl test before launching `full_plot.launch.py`.
 On the ground station:
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws_reproduce_hardware
 source /opt/ros/humble/setup.bash
 colcon build --packages-select px4_msgs voxl_msgs llm_vision_planner
 source install/setup.bash
@@ -855,7 +855,7 @@ ros2 topic hz /vicon/stopsign/stopsign --window 500
    NED origin:
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws_reproduce_hardware
 source /opt/ros/humble/setup.bash
 grep -A30 '^control_law_executer:' \
   src/llm_vision_planner/config/llm_vision_planner.yaml | grep takeoff_z
@@ -936,7 +936,7 @@ ros2 topic echo /llm_vision/mission_state
 ros2 topic echo /llm_vision/offboard_owner
 ros2 topic echo /llm_vision/vision_calibration_status
 tail -n 5 \
-  ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv
+  ~/Desktop/starling_testing_ws_reproduce_hardware/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv
 ```
 
 Wait for `HOLDING_FOR_PLAN`; no calibration snapshot is published before that
@@ -967,8 +967,8 @@ Automatic outputs:
 ### 11.5 Collapse repeated poses
 
 ```bash
-RAW_CSV=~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv
-CALIBRATION_CSV=~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv
+RAW_CSV=~/Desktop/starling_testing_ws_reproduce_hardware/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv
+CALIBRATION_CSV=~/Desktop/starling_testing_ws_reproduce_hardware/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv
 
 ros2 run llm_vision_planner postprocess_vision_error_dataset.py \
   --input "$RAW_CSV" \
@@ -1024,7 +1024,7 @@ odometry and control remain real.
 Use an empty obstacle snapshot:
 
 ```bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_testing_ws_reproduce_hardware/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -1036,14 +1036,14 @@ For a calibrated obstacle environment, copy a command from the
 `ros2_pub_command` column of:
 
 ```text
-~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/env_ros_commands.csv
+~/Desktop/starling_testing_ws_reproduce_hardware/src/llm_vision_planner/fine_tuning/datasets/env_ros_commands.csv
 ```
 
 Run the selected publisher in its own terminal. Then launch the complete
 planner, verifier, visualizer, and control executor:
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws_reproduce_hardware
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
@@ -1098,7 +1098,7 @@ larger conservative obstacle envelope. The planner start is refreshed from the
 current hover position at approval and checked again before plan release.
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws_reproduce_hardware
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
@@ -1130,7 +1130,7 @@ This test does not launch `perception_detection.py`. Start PX4 simulation, then
 launch interactive mode without the recorded dataset publisher:
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws_reproduce_hardware
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
@@ -1152,7 +1152,7 @@ ros2 launch llm_vision_planner full_plot.launch.py \
 In another terminal, continuously publish a fresh dummy COCO-object scene:
 
 ```bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_testing_ws_reproduce_hardware/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -1281,7 +1281,7 @@ voxl-inspect-services | grep -E 'camera|qvio|tflite|mpa-to-ros2'
 Run on the ground station:
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws_reproduce_hardware
 source /opt/ros/humble/setup.bash
 colcon build --packages-select llm_vision_planner
 source install/setup.bash
@@ -1292,18 +1292,18 @@ source install/setup.bash
 Terminal 1:
 
 ```bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_testing_ws_reproduce_hardware/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
 ros2 run llm_vision_planner perception_detection.py --ros-args \
-  --params-file ~/Desktop/starling_testing_ws/src/llm_vision_planner/config/llm_vision_planner.yaml
+  --params-file ~/Desktop/starling_testing_ws_reproduce_hardware/src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
 
 Terminal 2:
 
 ```bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_testing_ws_reproduce_hardware/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -1313,7 +1313,7 @@ ros2 topic echo --full-length /llm_vision/semantic_obstacles
 ### Open the live perception plot
 
 ```bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_testing_ws_reproduce_hardware/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -1336,7 +1336,7 @@ This command starts real flight control. Run it only when the vehicle is ready
 to fly.
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws_reproduce_hardware
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
@@ -1365,7 +1365,7 @@ final goal until the operator requests landing. `OPENAI_API_KEY` must be
 exported in the launch shell.
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws_reproduce_hardware
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
@@ -1410,7 +1410,7 @@ git -C ~/Desktop/expert_ws pull --ff-only
 ```
 
 For these alternate paths, substitute `~/Desktop/hardware_ws` or
-`~/Desktop/expert_ws` for `~/Desktop/starling_testing_ws` in the corresponding
+`~/Desktop/expert_ws` for `~/Desktop/starling_testing_ws_reproduce_hardware` in the corresponding
 README, then install dependencies, build, and source inside that clone.
 `main` retains the complete original workspace. Do not merge an isolated branch
 into `main` just to use it. To move an adapter or completed calibration between

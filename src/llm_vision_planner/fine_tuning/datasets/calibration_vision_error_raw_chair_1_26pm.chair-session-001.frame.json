@@ -1,0 +1,40 @@
+{
+  "trial_id": "chair-session-001",
+  "source": "synchronized_starling_vicon_and_px4_odometry",
+  "vicon_vehicle_frame_convention": "flu",
+  "translation_m": [
+    5.204370787251812e-05,
+    -0.002854877133920586,
+    0.06887134913882165
+  ],
+  "quaternion_xyzw": [
+    0.7067705106632189,
+    0.7073234821728343,
+    0.012000621168709102,
+    -0.004992185424662037
+  ],
+  "rotation_matrix": [
+    [
+      -0.0009010466830794428,
+      0.9999505760509322,
+      0.009901190346920635
+    ],
+    [
+      0.9997109387465917,
+      0.0006628606968357986,
+      0.024033301190404366
+    ],
+    [
+      0.02402555025981834,
+      0.009919983422749079,
+      -0.9996621263525026
+    ]
+  ],
+  "quality": {
+    "sample_count": 20,
+    "max_translation_deviation_m": 0.1340229031552526,
+    "max_rotation_deviation_deg": 3.161330339593368,
+    "source": "synchronized_pose_pairs"
+  },
+  "timestamp": 1789065063.0752127
+}

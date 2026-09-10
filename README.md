@@ -66,8 +66,8 @@ model; it does not account for all PX4 dynamics or flight disturbances.
 
 This procedure uses:
 
-- Starling 2 / VOXL at `10.117.229.1`
-- Vicon Tracker computer at `10.117.229.124`
+- Starling 2 / VOXL at `192.168.0.28`
+- Vicon Tracker computer at `192.168.0.152`
 - MAVROS on the ground-station laptop
 - Vicon pose through MAVROS into the PX4 EKF2
 - VOXL MPA-to-ROS 2 and PX4 microDDS for perception and `/fmu/*` topics
@@ -84,8 +84,8 @@ network.
 On the ground station:
 
 ```bash
-export Starling2=10.117.229.1
-export VICON_COMPUTER_IP=10.117.229.124
+export Starling2=192.168.0.28
+export VICON_COMPUTER_IP=192.168.0.152
 
 ping -c 3 "$Starling2"
 ping -c 3 "$VICON_COMPUTER_IP"
@@ -361,7 +361,7 @@ source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dd
   enable auto 42
 ros2 daemon start
 
-export Starling2=10.117.229.1
+export Starling2=192.168.0.28
 ros2 launch mavros px4.launch \
   fcu_url:="udp://0.0.0.0:14550@${Starling2}:14550" \
   gcs_url:="udp://0.0.0.0:14556@127.0.0.1:14551"
@@ -475,7 +475,7 @@ ros2 daemon start
 For a Vicon rate of 50 Hz:
 
 ```bash
-export VICON_COMPUTER_IP=10.117.229.124
+export VICON_COMPUTER_IP=192.168.0.152
 ros2 run vicon_bridge vicon_bridge --ros-args \
   -p host_name:="${VICON_COMPUTER_IP}:801" \
   -p stream_mode:="ServerPush" \
@@ -492,7 +492,7 @@ ros2 run vicon_bridge vicon_bridge --ros-args \
 For a Vicon rate of 100 Hz:
 
 ```bash
-export VICON_COMPUTER_IP=10.117.229.124
+export VICON_COMPUTER_IP=192.168.0.152
 ros2 run vicon_bridge vicon_bridge --ros-args \
   -p host_name:="${VICON_COMPUTER_IP}:801" \
   -p stream_mode:="ServerPush" \
@@ -534,7 +534,7 @@ Do not hide bridge drop warnings by changing only `expected_rate_hz`.
 Open a separate ground-station terminal:
 
 ```bash
-export Starling2=10.117.229.1
+export Starling2=192.168.0.28
 ssh root@"$Starling2"
 ```
 
@@ -818,7 +818,7 @@ bridge. Keep the vehicle landed and disarmed during the change, then recheck
 MAVROS/PX4 fusion before the recording launch.
 
 ```bash
-export VICON_COMPUTER_IP=10.117.229.124
+export VICON_COMPUTER_IP=192.168.0.152
 ros2 run vicon_bridge vicon_bridge --ros-args \
   -p host_name:="${VICON_COMPUTER_IP}:801" \
   -p stream_mode:="ServerPush" \

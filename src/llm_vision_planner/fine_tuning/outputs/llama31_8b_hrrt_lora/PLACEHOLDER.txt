@@ -1,0 +1,1 @@
+Place the trained HRRT preference-conditioned LoRA adapter in this directory.

@@ -586,13 +586,19 @@ class HRRTStarPlanner:
         path = self._reconstruct(node_index)
         if euclidean(path[-1], self.goal) > 1e-9:
             path.append(self.goal)
-        classification = classify_path(
-            path,
-            self.obstacles,
-            self.thresholds,
-            self.signature_modulus,
-            self.clearance_sample_spacing_m,
-        )
+        try:
+            classification = classify_path(
+                path,
+                self.obstacles,
+                self.thresholds,
+                self.signature_modulus,
+                self.clearance_sample_spacing_m,
+            )
+        except ValueError:
+            # The goal edge can push a path outside the bounded modified-sign
+            # range even when the parent node itself is valid.  That edge is
+            # not a valid augmented-state transition for this planner.
+            return
         previous = self.best_goal_paths.get(classification.key)
         if previous is None or classification.length_m + 1e-9 < previous[0]:
             self.best_goal_paths[classification.key] = (classification.length_m, path, classification)

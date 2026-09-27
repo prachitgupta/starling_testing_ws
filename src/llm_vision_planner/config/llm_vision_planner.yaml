@@ -86,7 +86,7 @@ prompt_generator:
     environment: real
     llm_provider: llama
     chatgpt_model_name: gpt-5.4-nano
-    llama_model_name: rrt_planner
+    llama_model_name: hrrt_planner
     single_shot: True
     initial_plan_id: 1
     workspace_x_min: -3.0
@@ -122,8 +122,17 @@ interactive_mission_gateway:
     intent_provider: openai
     openai_intent_model: gpt-5.4-nano
     planner_llm_provider: llama
-    planner_model_name: rrt_planner
+    planner_model_name: hrrt_planner
     visualizer: contraction
+    interaction_mode: MISSION_EXECUTION
+    mode_topic: /llm_vision/interaction_mode
+    route_candidates_topic: /llm_vision/hrrt_route_candidates
+    hrrt_seed: 17
+    hrrt_max_iterations: 300
+    hrrt_max_candidates: 8
+    hrrt_max_total_nodes: 3000
+    hrrt_max_nodes_per_key: 120
+    route_nominal_speed_mps: 0.5
     operator_command_topic: /llm_vision/operator_command
     approval_topic: /llm_vision/mission_approval
     launch_approval_topic: /llm_vision/launch_approval
@@ -171,6 +180,7 @@ interactive_mission_gateway:
 
 interactive_web_ui:
   ros__parameters:
+    environment: real
     host: 127.0.0.1
     port: 8080
     operator_command_topic: /llm_vision/operator_command
@@ -179,6 +189,13 @@ interactive_web_ui:
     operator_response_topic: /llm_vision/operator_response
     mission_proposal_topic: /llm_vision/mission_proposal
     launch_proposal_topic: /llm_vision/launch_proposal
+    mode_topic: /llm_vision/interaction_mode
+    route_candidates_topic: /llm_vision/hrrt_route_candidates
+    semantic_obstacle_topic: /llm_vision/semantic_obstacles
+    sim_obstacle_topic: /llm_vision/sim_obstacles
+    raw_plan_topic: /llm_vision/plan_raw
+    refined_plan_topic: /llm_vision/plan_refined
+    verified_plan_topic: /llm_vision/plan_candidate_verified
     visualizer: contraction
     transcription_model: gpt-4o-mini-transcribe
     contraction_plot_path: src/llm_vision_planner/plots/contraction/live_contraction.png
@@ -241,7 +258,7 @@ llm_planner:
     model_name: gpt-5.4-nano
     llm_provider: llama
     chatgpt_model_name: gpt-5.4-nano
-    llama_model_name: rrt_planner
+    llama_model_name: hrrt_planner
     vllm_base_url: http://172.22.224.93:8000/v1
     vllm_api_key: EMPTY
     goal_tolerance_m: 0.05

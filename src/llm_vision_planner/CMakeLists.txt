@@ -22,6 +22,7 @@ install(PROGRAMS
   scripts/trajectory_follower_continuous.py
   scripts/control_law_executer.py
   fine_tuning/scripts/hrrt_star.py
+  fine_tuning/scripts/lqr.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -47,12 +48,12 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_interactive_web_ui.py
   )
   add_test(
-    NAME conformal_obstacle_safety
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_conformal_obstacle_safety.py
+    NAME interactive_mission_gateway
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_interactive_mission_gateway.py
   )
   add_test(
-    NAME expert_calibration_pipeline
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_expert_calibration_pipeline.py
+    NAME interactive_gateway_ros
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_interactive_gateway_ros.py
   )
 endif()
 

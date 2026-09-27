@@ -9,6 +9,7 @@ import math
 import os
 import queue
 import re
+import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +23,12 @@ from px4_msgs.msg import VehicleOdometry
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import String
+
+try:
+    from hrrt_star import plan_hrrt_star
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
+    from hrrt_star import plan_hrrt_star
 
 
 INSTRUCTIONS = (
@@ -115,6 +122,96 @@ class MissionIntent(BaseModel):
     query_object_ids: list[str] = Field(default_factory=list, max_length=8)
     depth_estimates: list[ObjectDepthEstimate] = Field(default_factory=list, max_length=32)
     clarifying_question: str
+
+
+class RouteSelection(BaseModel):
+    """Schema-constrained choice from a finite HRRT-star route family."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["SELECTED", "NEEDS_CLARIFICATION", "NO_FEASIBLE_ROUTE"]
+    selected_route_id: Optional[str] = None
+    reason: str
+    clarifying_question: str
+
+
+ROUTE_SELECTION_SYSTEM_PROMPT = """You select one route from a finite verified route catalog.
+Apply the operator's natural-language preferences to the supplied human-readable route cards.
+Never invent a route ID. Select only a supplied route_id.
+Treat explicit limits such as maximum duration as hard constraints.
+If the request contains competing objectives and does not state their priority, return
+NEEDS_CLARIFICATION with one concise question. If no route meets a hard constraint, return
+NO_FEASIBLE_ROUTE and explain why. Do not generate coordinates or a new route.
+"""
+
+
+class OpenAIRouteSelector:
+    def __init__(self, model_name):
+        if not os.getenv("OPENAI_API_KEY"):
+            raise RuntimeError("OPENAI_API_KEY is not set")
+        self.model_name = model_name
+        self.client = OpenAI()
+
+    def select(self, operator_text, route_cards, conversation):
+        response = self.client.responses.parse(
+            model=self.model_name,
+            input=[
+                {"role": "system", "content": ROUTE_SELECTION_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "route_preference": operator_text,
+                            "route_cards": route_cards,
+                            "conversation": conversation[-6:],
+                        },
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+            text_format=RouteSelection,
+        )
+        if response.output_parsed is None:
+            raise RuntimeError("OpenAI returned no parsed RouteSelection")
+        return response.output_parsed
+
+
+class MockRouteSelector:
+    """Deterministic selector for simulation and integration tests."""
+
+    def select(self, operator_text, route_cards, conversation):
+        del conversation
+        lowered = operator_text.lower()
+        explicit = next(
+            (card for card in route_cards if str(card["route_id"]).lower() in lowered),
+            None,
+        )
+        if explicit is not None:
+            return RouteSelection(
+                status="SELECTED",
+                selected_route_id=explicit["route_id"],
+                reason="The operator explicitly named this route.",
+                clarifying_question="",
+            )
+        if not route_cards:
+            return RouteSelection(
+                status="NO_FEASIBLE_ROUTE",
+                selected_route_id=None,
+                reason="No candidate route is available.",
+                clarifying_question="",
+            )
+        route = min(route_cards, key=lambda card: float(card["path_length_m"]))
+        if any(term in lowered for term in ("far", "away", "clearance", "wide")):
+            route = max(
+                route_cards,
+                key=lambda card: min(card.get("clearance_by_object_m", {}).values(), default=0.0),
+            )
+        return RouteSelection(
+            status="SELECTED",
+            selected_route_id=route["route_id"],
+            reason="Deterministic mock preference match.",
+            clarifying_question="",
+        )
 
 
 class OpenAIIntentParser:
@@ -270,6 +367,27 @@ class MockIntentParser:
 
 def canonical_json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def route_cards(routes, nominal_speed_mps=0.5):
+    """Human-readable summaries; topology metadata stays internal to the planner."""
+    speed = max(float(nominal_speed_mps), 1e-6)
+    cards = []
+    for route in routes:
+        clearances = {
+            str(object_id): round(float(distance), 3)
+            for object_id, distance in route.get("minimum_clearance_m", {}).items()
+        }
+        cards.append(
+            {
+                "route_id": str(route["route_id"]),
+                "path_length_m": round(float(route["path_length_m"]), 3),
+                "estimated_duration_s": round(float(route["path_length_m"]) / speed, 2),
+                "clearance_by_object_m": clearances,
+                "minimum_clearance_m": min(clearances.values(), default=None),
+            }
+        )
+    return cards
 
 
 def containment_score(predicted, ground_truth):
@@ -920,8 +1038,17 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("intent_provider", "openai")
         self.declare_parameter("openai_intent_model", "gpt-5.4-nano")
         self.declare_parameter("planner_llm_provider", "llama")
-        self.declare_parameter("planner_model_name", "rrt_planner")
+        self.declare_parameter("planner_model_name", "hrrt_planner")
         self.declare_parameter("visualizer", "contraction")
+        self.declare_parameter("interaction_mode", "MISSION_EXECUTION")
+        self.declare_parameter("mode_topic", "/llm_vision/interaction_mode")
+        self.declare_parameter("route_candidates_topic", "/llm_vision/hrrt_route_candidates")
+        self.declare_parameter("hrrt_seed", 17)
+        self.declare_parameter("hrrt_max_iterations", 300)
+        self.declare_parameter("hrrt_max_candidates", 8)
+        self.declare_parameter("hrrt_max_total_nodes", 3000)
+        self.declare_parameter("hrrt_max_nodes_per_key", 120)
+        self.declare_parameter("route_nominal_speed_mps", 0.5)
         self.declare_parameter("operator_command_topic", "/llm_vision/operator_command")
         self.declare_parameter("approval_topic", "/llm_vision/mission_approval")
         self.declare_parameter("launch_approval_topic", "/llm_vision/launch_approval")
@@ -1035,6 +1162,15 @@ class InteractiveMissionGateway(Node):
         self.active_plan_id = None
         self.pending_verified_plan = None
         self.latest_safety_tube_ready = None
+        self.interaction_mode = str(
+            self.get_parameter("interaction_mode").value
+        ).strip().upper()
+        if self.interaction_mode not in (
+            "ADAPTIVE_CONFORMAL_PREDICTION",
+            "MISSION_EXECUTION",
+        ):
+            raise ValueError("interaction_mode must be ADAPTIVE_CONFORMAL_PREDICTION or MISSION_EXECUTION")
+        self.latest_route_family = None
         self.last_failure = None
         self.calibration_only = bool(self.get_parameter("calibration_only").value)
         self.auto_calibration_capture = bool(
@@ -1053,6 +1189,10 @@ class InteractiveMissionGateway(Node):
         self.intent_results = queue.Queue()
         self.intent_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="intent_parser")
         self.intent_parser = intent_parser or self.create_intent_parser()
+        self.route_request_token = None
+        self.route_results = queue.Queue()
+        self.route_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="route_planner")
+        self.route_selector = self.create_route_selector()
 
         obstacle_topic = (
             str(self.get_parameter("sim_obstacle_topic").value)
@@ -1076,6 +1216,12 @@ class InteractiveMissionGateway(Node):
             String,
             str(self.get_parameter("operator_command_topic").value),
             self.command_callback,
+            10,
+        )
+        self.create_subscription(
+            String,
+            str(self.get_parameter("mode_topic").value),
+            self.mode_callback,
             10,
         )
         self.create_subscription(
@@ -1119,6 +1265,11 @@ class InteractiveMissionGateway(Node):
             str(self.get_parameter("mission_proposal_topic").value),
             LATCHED_QOS,
         )
+        self.route_candidates_pub = self.create_publisher(
+            String,
+            str(self.get_parameter("route_candidates_topic").value),
+            LATCHED_QOS,
+        )
         self.launch_proposal_pub = self.create_publisher(
             String,
             str(self.get_parameter("launch_proposal_topic").value),
@@ -1145,12 +1296,13 @@ class InteractiveMissionGateway(Node):
             LATCHED_QOS,
         )
         self.create_timer(0.05, self.drain_intent_results)
+        self.create_timer(0.05, self.drain_route_results)
         if self.calibration_only and self.auto_calibration_capture:
             self.create_timer(0.20, self.maybe_start_calibration_capture)
         self.get_logger().info(
             f"interactive gateway ready: intent_provider={self.get_parameter('intent_provider').value}, "
             f"obstacles={obstacle_topic}, obs_safety_bracket={self.obs_safety_bracket}, "
-            f"scene_guard_band={self.scene_guard_band_m:.3f} m"
+            f"scene_guard_band={self.scene_guard_band_m:.3f} m, mode={self.interaction_mode}"
         )
         if self.obs_safety_bracket == "conformal" and self.vision_error_certificate["placeholder"]:
             self.get_logger().warning(
@@ -1164,6 +1316,12 @@ class InteractiveMissionGateway(Node):
         if provider != "openai":
             raise ValueError(f"unsupported intent_provider: {provider}")
         return OpenAIIntentParser(str(self.get_parameter("openai_intent_model").value))
+
+    def create_route_selector(self):
+        provider = str(self.get_parameter("intent_provider").value).strip().lower()
+        if provider == "mock":
+            return MockRouteSelector()
+        return OpenAIRouteSelector(str(self.get_parameter("openai_intent_model").value))
 
     def obstacle_safety_metadata(self):
         certificate = self.vision_error_certificate
@@ -1266,6 +1424,9 @@ class InteractiveMissionGateway(Node):
         if operator_text.strip().lower() == "cancel":
             self.cancel_active_mission("Mission cancelled by operator.")
             return
+        if self.state == "AWAITING_TRAJECTORY_SELECTION":
+            self.start_route_selection_request(operator_text)
+            return
         if self.intent_request_token is not None:
             self.publish_response("BUSY", "Another command is still being interpreted.")
             return
@@ -1276,6 +1437,34 @@ class InteractiveMissionGateway(Node):
 
         self.start_intent_request(operator_text, copy.deepcopy(self.latest_scene))
         self.publish_response("PARSING_INTENT", "Interpreting the command against the current object snapshot.")
+
+    def mode_callback(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.publish_response("MODE_REJECTED", "Interaction mode must be structured JSON.")
+            return
+        requested = str(payload.get("mode", "")).strip().upper()
+        if requested not in ("ADAPTIVE_CONFORMAL_PREDICTION", "MISSION_EXECUTION"):
+            self.publish_response("MODE_REJECTED", "Unsupported interaction mode.")
+            return
+        if self.state not in (
+            "WAITING_FOR_COMMAND",
+            "CANCELLED",
+            "PLANNING_FAILED",
+            "SAFETY_TUBE_FAILED",
+        ) or self.intent_request_token is not None or self.route_request_token is not None:
+            self.publish_response("MODE_REJECTED", "Finish or cancel the active mission before changing mode.")
+            return
+        self.interaction_mode = requested
+        self.latest_route_family = None
+        self.state = "WAITING_FOR_COMMAND"
+        self.publish_response(
+            "MODE_CHANGED",
+            "Adaptive conformal prediction mode selected. Goal approval will be followed by route preference selection."
+            if requested == "ADAPTIVE_CONFORMAL_PREDICTION"
+            else "Mission execution mode selected. Approved goals proceed directly to planning.",
+        )
 
     def start_intent_request(self, operator_text, scene):
         token = uuid.uuid4().hex
@@ -1373,6 +1562,135 @@ class InteractiveMissionGateway(Node):
                 continue
             self.handle_intent(intent, scene, operator_text)
 
+    def start_hrrt_request(self):
+        mission = self.active_mission
+        token = uuid.uuid4().hex
+        self.route_request_token = token
+        self.state = "GENERATING_TRAJECTORIES"
+        future = self.route_executor.submit(
+            plan_hrrt_star,
+            copy.deepcopy(mission["start"]),
+            copy.deepcopy(mission["goal"]),
+            copy.deepcopy(mission["nominal_obstacles"]),
+            copy.deepcopy(mission["workspace"]),
+            clearance_m=self.clearance_m,
+            seed=int(self.get_parameter("hrrt_seed").value),
+            max_iterations=int(self.get_parameter("hrrt_max_iterations").value),
+            max_candidates=int(self.get_parameter("hrrt_max_candidates").value),
+            max_total_nodes=int(self.get_parameter("hrrt_max_total_nodes").value),
+            max_nodes_per_key=int(self.get_parameter("hrrt_max_nodes_per_key").value),
+        )
+        future.add_done_callback(
+            lambda completed: self.route_results.put(("FAMILY", token, completed, ""))
+        )
+        self.publish_response(
+            "GENERATING_TRAJECTORIES",
+            "The goal is approved. HRRT-star is generating distinct route and clearance options.",
+            mission_id=mission["mission_id"],
+        )
+
+    def start_route_selection_request(self, operator_text):
+        if self.route_request_token is not None:
+            self.publish_response("BUSY", "A route request is already being processed.")
+            return
+        family = self.latest_route_family or {}
+        routes = family.get("routes", [])
+        if not routes:
+            self.publish_response("NO_FEASIBLE_ROUTE", "No HRRT-star route family is available.")
+            return
+        token = uuid.uuid4().hex
+        self.route_request_token = token
+        self.state = "SELECTING_TRAJECTORY"
+        cards = route_cards(
+            routes,
+            float(self.get_parameter("route_nominal_speed_mps").value),
+        )
+        future = self.route_executor.submit(
+            self.route_selector.select,
+            operator_text,
+            cards,
+            list(self.conversation),
+        )
+        future.add_done_callback(
+            lambda completed: self.route_results.put(
+                ("SELECTION", token, completed, operator_text)
+            )
+        )
+        self.publish_response(
+            "SELECTING_TRAJECTORY",
+            "Matching your preference against the displayed HRRT-star routes.",
+            mission_id=self.active_mission["mission_id"],
+        )
+
+    def drain_route_results(self):
+        while True:
+            try:
+                kind, token, future, operator_text = self.route_results.get_nowait()
+            except queue.Empty:
+                return
+            if token != self.route_request_token:
+                continue
+            self.route_request_token = None
+            try:
+                result = future.result()
+            except Exception as exc:
+                self.state = "AWAITING_APPROVAL" if kind == "FAMILY" else "AWAITING_TRAJECTORY_SELECTION"
+                self.publish_response(
+                    "ROUTE_ERROR",
+                    f"Route {'generation' if kind == 'FAMILY' else 'selection'} failed: {exc}",
+                )
+                continue
+            if kind == "FAMILY":
+                result.update(
+                    {
+                        "mission_id": self.active_mission["mission_id"],
+                        "snapshot_id": self.active_mission["snapshot_id"],
+                        "selected_route_id": None,
+                        "route_cards": route_cards(
+                            result.get("routes", []),
+                            float(self.get_parameter("route_nominal_speed_mps").value),
+                        ),
+                    }
+                )
+                self.latest_route_family = result
+                self.active_mission["hrrt_route_family"] = copy.deepcopy(result)
+                self.state = "AWAITING_TRAJECTORY_SELECTION"
+                self.route_candidates_pub.publish(String(data=json.dumps(result)))
+                self.publish_response(
+                    "AWAITING_TRAJECTORY_SELECTION",
+                    f"Review {len(result.get('routes', []))} route options, then describe which route you prefer.",
+                    mission_id=self.active_mission["mission_id"],
+                    route_count=len(result.get("routes", [])),
+                )
+                continue
+            self.handle_route_selection(result, operator_text)
+
+    def handle_route_selection(self, selection, operator_text):
+        if selection.status != "SELECTED":
+            self.state = "AWAITING_TRAJECTORY_SELECTION"
+            question = selection.clarifying_question or selection.reason
+            self.publish_response(selection.status, question)
+            return
+        routes = (self.latest_route_family or {}).get("routes", [])
+        selected = next(
+            (route for route in routes if route.get("route_id") == selection.selected_route_id),
+            None,
+        )
+        if selected is None:
+            self.state = "AWAITING_TRAJECTORY_SELECTION"
+            self.publish_response(
+                "ROUTE_ERROR",
+                "The selector returned a route that is not in the displayed family.",
+            )
+            return
+        self.conversation.append({"role": "operator", "content": operator_text})
+        self.active_mission["route_preference_text"] = operator_text
+        self.active_mission["selected_expert_route"] = copy.deepcopy(selected)
+        self.latest_route_family["selected_route_id"] = selected["route_id"]
+        self.latest_route_family["selection_reason"] = selection.reason
+        self.route_candidates_pub.publish(String(data=json.dumps(self.latest_route_family)))
+        self.publish_planning_attempt()
+
     def handle_intent(self, intent, scene, operator_text):
         if intent.status == "CANCELLED":
             self.cancel_active_mission("Mission cancelled by parsed operator intent.")
@@ -1401,6 +1719,9 @@ class InteractiveMissionGateway(Node):
             )
             return
         if self.state in (
+            "GENERATING_TRAJECTORIES",
+            "AWAITING_TRAJECTORY_SELECTION",
+            "SELECTING_TRAJECTORY",
             "WAITING_FOR_VERIFICATION",
             "FORMING_SAFETY_TUBES",
             "AWAITING_LAUNCH_APPROVAL",
@@ -1725,7 +2046,10 @@ class InteractiveMissionGateway(Node):
         )
         if mission["environment_frozen"]:
             self.proposal_pub.publish(String(data=json.dumps(self.proposal_payload(mission))))
-        self.publish_planning_attempt()
+        if self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION":
+            self.start_hrrt_request()
+        else:
+            self.publish_planning_attempt()
 
     def publish_planning_attempt(self, feedback=None):
         mission = self.active_mission
@@ -1760,7 +2084,15 @@ class InteractiveMissionGateway(Node):
             "timestamp": time.time(),
             "llm_provider": str(self.get_parameter("planner_llm_provider").value),
             "requested_model": str(self.get_parameter("planner_model_name").value),
+            "interaction_mode": self.interaction_mode,
         }
+        if mission.get("selected_expert_route"):
+            envelope.update(
+                {
+                    "route_preference_text": mission.get("route_preference_text", ""),
+                    "selected_expert_route": copy.deepcopy(mission["selected_expert_route"]),
+                }
+            )
         self.active_plan_id = plan_id
         self.state = "WAITING_FOR_VERIFICATION"
         self.prompt_pub.publish(String(data=json.dumps(envelope)))
@@ -1769,6 +2101,7 @@ class InteractiveMissionGateway(Node):
             f"Approved mission {mission['mission_id']}; planning attempt {mission['attempt']} is running.",
             mission_id=mission["mission_id"],
             plan_id=plan_id,
+            selected_route_id=(mission.get("selected_expert_route") or {}).get("route_id"),
         )
 
     def verification_callback(self, msg):
@@ -2122,10 +2455,13 @@ class InteractiveMissionGateway(Node):
             self.request_executor_land(reason)
             return
         self.intent_request_token = None
+        self.route_request_token = None
         self.active_mission = None
         self.active_plan_id = None
         self.pending_verified_plan = None
+        self.latest_route_family = None
         self.state = "WAITING_FOR_COMMAND"
+        self.route_candidates_pub.publish(String(data=json.dumps({"routes": [], "selected_route_id": None})))
         self.publish_response("CANCELLED", reason)
 
     def publish_response(self, status, message, **metadata):
@@ -2144,6 +2480,7 @@ class InteractiveMissionGateway(Node):
             "status": status,
             "message": message,
             "gateway_state": self.state,
+            "interaction_mode": self.interaction_mode,
             "timestamp": time.time(),
         }
         if self.environment_frozen():
@@ -2168,6 +2505,7 @@ class InteractiveMissionGateway(Node):
 
     def destroy_node(self):
         self.intent_executor.shutdown(wait=False, cancel_futures=True)
+        self.route_executor.shutdown(wait=False, cancel_futures=True)
         return super().destroy_node()
 
 

@@ -48,6 +48,14 @@ class WebUiBridge(Node):
         self.declare_parameter("operator_response_topic", "/llm_vision/operator_response")
         self.declare_parameter("mission_proposal_topic", "/llm_vision/mission_proposal")
         self.declare_parameter("launch_proposal_topic", "/llm_vision/launch_proposal")
+        self.declare_parameter("mode_topic", "/llm_vision/interaction_mode")
+        self.declare_parameter("route_candidates_topic", "/llm_vision/hrrt_route_candidates")
+        self.declare_parameter("environment", "real")
+        self.declare_parameter("semantic_obstacle_topic", "/llm_vision/semantic_obstacles")
+        self.declare_parameter("sim_obstacle_topic", "/llm_vision/sim_obstacles")
+        self.declare_parameter("raw_plan_topic", "/llm_vision/plan_raw")
+        self.declare_parameter("refined_plan_topic", "/llm_vision/plan_refined")
+        self.declare_parameter("verified_plan_topic", "/llm_vision/plan_candidate_verified")
         self.declare_parameter("visualizer", "contraction")
         self.declare_parameter("transcription_model", "gpt-4o-mini-transcribe")
         self.declare_parameter(
@@ -70,10 +78,45 @@ class WebUiBridge(Node):
             str(self.get_parameter("launch_approval_topic").value),
             10,
         )
+        self.mode_pub = self.create_publisher(
+            String,
+            str(self.get_parameter("mode_topic").value),
+            10,
+        )
         self.create_subscription(
             String,
             str(self.get_parameter("operator_response_topic").value),
             self.response_callback,
+            10,
+        )
+        obstacle_topic = (
+            str(self.get_parameter("sim_obstacle_topic").value)
+            if str(self.get_parameter("environment").value).strip().lower() == "sim"
+            else str(self.get_parameter("semantic_obstacle_topic").value)
+        )
+        self.create_subscription(String, obstacle_topic, self.scene_callback, 10)
+        self.create_subscription(
+            String,
+            str(self.get_parameter("route_candidates_topic").value),
+            self.route_candidates_callback,
+            10,
+        )
+        self.create_subscription(
+            String,
+            str(self.get_parameter("raw_plan_topic").value),
+            self.raw_plan_callback,
+            10,
+        )
+        self.create_subscription(
+            String,
+            str(self.get_parameter("refined_plan_topic").value),
+            self.refined_plan_callback,
+            10,
+        )
+        self.create_subscription(
+            String,
+            str(self.get_parameter("verified_plan_topic").value),
+            self.verified_plan_callback,
             10,
         )
         self.create_subscription(
@@ -92,6 +135,11 @@ class WebUiBridge(Node):
         self.latest_response = {}
         self.latest_proposal = {}
         self.latest_launch_proposal = {}
+        self.latest_scene = {}
+        self.latest_route_candidates = {}
+        self.latest_raw_plan = {}
+        self.latest_refined_plan = {}
+        self.latest_verified_plan = {}
         self.transcription_model = str(self.get_parameter("transcription_model").value)
         self.transcription_client = None
         self.contraction_plot_enabled = (
@@ -109,7 +157,7 @@ class WebUiBridge(Node):
         try:
             from ament_index_python.packages import get_package_share_directory
 
-            candidates.insert(0, Path(get_package_share_directory("llm_vision_planner")) / "web" / "interactive.html")
+            candidates.append(Path(get_package_share_directory("llm_vision_planner")) / "web" / "interactive.html")
         except Exception:
             pass
         for candidate in candidates:
@@ -141,18 +189,57 @@ class WebUiBridge(Node):
         with self.lock:
             self.latest_launch_proposal = payload
 
+    @staticmethod
+    def decode_payload(msg):
+        try:
+            return json.loads(msg.data)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    def scene_callback(self, msg):
+        with self.lock:
+            self.latest_scene = self.decode_payload(msg)
+
+    def route_candidates_callback(self, msg):
+        with self.lock:
+            self.latest_route_candidates = self.decode_payload(msg)
+
+    def raw_plan_callback(self, msg):
+        with self.lock:
+            self.latest_raw_plan = self.decode_payload(msg)
+
+    def refined_plan_callback(self, msg):
+        with self.lock:
+            self.latest_refined_plan = self.decode_payload(msg)
+
+    def verified_plan_callback(self, msg):
+        with self.lock:
+            self.latest_verified_plan = self.decode_payload(msg)
+
     def state_payload(self):
         with self.lock:
             return {
                 "response": self.latest_response,
                 "proposal": self.latest_proposal,
                 "launch_proposal": self.latest_launch_proposal,
+                "scene": self.latest_scene,
+                "route_candidates": self.latest_route_candidates,
+                "raw_plan": self.latest_raw_plan,
+                "refined_plan": self.latest_refined_plan,
+                "verified_plan": self.latest_verified_plan,
                 "timestamp": time.time(),
             }
 
     def publish_command(self, text):
         payload = {"type": "COMMAND", "text": str(text), "timestamp": time.time()}
         self.command_pub.publish(String(data=json.dumps(payload)))
+
+    def publish_mode(self, mode):
+        payload = {
+            "mode": str(mode).strip().upper(),
+            "timestamp": time.time(),
+        }
+        self.mode_pub.publish(String(data=json.dumps(payload)))
 
     def publish_decision(self, decision, mission_id, proposal_hash):
         payload = {
@@ -272,6 +359,14 @@ def handler_for(bridge):
                     payload.get("mission_id", ""),
                     payload.get("proposal_hash", ""),
                 )
+                self.send_json({"ok": True})
+                return
+            if self.path == "/api/mode":
+                mode = str(payload.get("mode", "")).strip().upper()
+                if mode not in ("ADAPTIVE_CONFORMAL_PREDICTION", "MISSION_EXECUTION"):
+                    self.send_json({"ok": False, "error": "unsupported interaction mode"}, status=400)
+                    return
+                bridge.publish_mode(mode)
                 self.send_json({"ok": True})
                 return
             if self.path == "/api/launch-decision":

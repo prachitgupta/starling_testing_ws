@@ -16,7 +16,7 @@ from std_msgs.msg import String
 PROMPT_TOPIC = "/llm_vision/prompt"
 PLAN_TOPIC = "/llm_vision/plan_raw"
 MODEL_NAME = "gpt-5-mini"
-LLAMA_MODEL_NAME = "rrt_planner"
+LLAMA_MODEL_NAME = "hrrt_planner"
 VLLM_BASE_URL = "http://172.22.224.93:8000/v1"
 GOAL_TOLERANCE_M = 0.05
 PROMPT_QOS = QoSProfile(

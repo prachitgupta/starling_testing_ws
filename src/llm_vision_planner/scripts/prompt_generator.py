@@ -61,7 +61,7 @@ class PromptGenerator(Node):
         self.declare_parameter("prompt_topic", DEFAULT_PROMPT_TOPIC)
         self.declare_parameter("llm_provider", "llama")
         self.declare_parameter("chatgpt_model_name", "gpt-5-mini")
-        self.declare_parameter("llama_model_name", "rrt_planner")
+        self.declare_parameter("llama_model_name", "hrrt_planner")
         self.declare_parameter("verified_plan_topic", DEFAULT_VERIFIED_PLAN_TOPIC)
         self.declare_parameter("mission_state_topic", DEFAULT_MISSION_STATE_TOPIC)
         self.declare_parameter("required_mission_state", "HOLDING_FOR_PLAN")

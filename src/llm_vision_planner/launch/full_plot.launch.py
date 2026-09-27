@@ -193,6 +193,7 @@ def generate_launch_description():
                 "port": ParameterValue(LaunchConfiguration("web_ui_port"), value_type=int),
                 "host": LaunchConfiguration("web_ui_host"),
                 "visualizer": LaunchConfiguration("visualizer"),
+                "environment": LaunchConfiguration("environment"),
             },
         ],
         condition=use_interactive_web_ui,

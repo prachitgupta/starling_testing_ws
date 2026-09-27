@@ -80,6 +80,7 @@ class GatewayHarness(Node):
         self.prompts = []
         self.final_plans = []
         self.launch_proposals = []
+        self.route_families = []
         self.executor_commands = []
         self.safety_ready_plan_id = None
         self.safety_ready_status = "WARNING"
@@ -109,6 +110,7 @@ class GatewayHarness(Node):
         }
         self.create_subscription(String, "/llm_vision/mission_proposal", self.proposal_callback, LATCHED_QOS)
         self.create_subscription(String, "/llm_vision/launch_proposal", self.launch_proposal_callback, LATCHED_QOS)
+        self.create_subscription(String, "/llm_vision/hrrt_route_candidates", self.route_family_callback, LATCHED_QOS)
         self.create_subscription(String, "/llm_vision/executor_command", self.executor_command_callback, 10)
         self.create_subscription(String, "/llm_vision/prompt", self.prompt_callback, LATCHED_QOS)
         self.create_subscription(String, "/llm_vision/plan_verified", self.final_callback, LATCHED_QOS)
@@ -147,6 +149,9 @@ class GatewayHarness(Node):
 
     def launch_proposal_callback(self, msg):
         self.launch_proposals.append(json.loads(msg.data))
+
+    def route_family_callback(self, msg):
+        self.route_families.append(json.loads(msg.data))
 
     def executor_command_callback(self, msg):
         self.executor_commands.append(json.loads(msg.data))
@@ -548,8 +553,77 @@ def run_launch_termination_test():
         rclpy.shutdown()
 
 
+def run_adaptive_route_selection_test():
+    rclpy.init(
+        args=[
+            "interactive_gateway_adaptive_route_test",
+            "--ros-args",
+            "-p",
+            "environment:=sim",
+            "-p",
+            "fresh_data_timeout_s:=5.0",
+            "-p",
+            "visualizer:=contraction",
+            "-p",
+            "obs_safety_bracket:=hardcoded",
+            "-p",
+            "intent_provider:=mock",
+            "-p",
+            "interaction_mode:=ADAPTIVE_CONFORMAL_PREDICTION",
+            "-p",
+            "hrrt_max_iterations:=150",
+            "-p",
+            "hrrt_max_candidates:=4",
+            "-p",
+            "debug:=false",
+        ]
+    )
+    gateway = InteractiveMissionGateway(intent_parser=FixedIntentParser())
+    harness = GatewayHarness()
+    executor = SingleThreadedExecutor()
+    executor.add_node(gateway)
+    executor.add_node(harness)
+    try:
+        spin_until(executor, harness, lambda: gateway.latest_scene is not None and gateway.latest_mission_state is not None)
+        harness.command_pub.publish(String(data=json.dumps({"text": "Hover near the chair"})))
+        spin_until(executor, harness, lambda: bool(harness.proposals))
+        proposal = harness.proposals[-1]
+        harness.approval_pub.publish(
+            String(
+                data=json.dumps(
+                    {
+                        "decision": "APPROVE",
+                        "mission_id": proposal["mission_id"],
+                        "proposal_hash": proposal["proposal_hash"],
+                    }
+                )
+            )
+        )
+        spin_until(
+            executor,
+            harness,
+            lambda: gateway.state == "AWAITING_TRAJECTORY_SELECTION" and bool(harness.route_families),
+            timeout=8.0,
+        )
+        assert harness.route_families[-1]["routes"]
+        route_id = harness.route_families[-1]["routes"][0]["route_id"]
+        harness.command_pub.publish(String(data=json.dumps({"text": f"Use {route_id}"})))
+        spin_until(executor, harness, lambda: bool(harness.prompts), timeout=5.0)
+        prompt = harness.prompts[-1]
+        assert prompt["interaction_mode"] == "ADAPTIVE_CONFORMAL_PREDICTION"
+        assert prompt["selected_expert_route"]["route_id"] == route_id
+    finally:
+        executor.remove_node(gateway)
+        executor.remove_node(harness)
+        gateway.destroy_node()
+        harness.destroy_node()
+        executor.shutdown()
+        rclpy.shutdown()
+
+
 if __name__ == "__main__":
     run_test()
     run_release_drift_rejection_test()
     run_launch_termination_test()
+    run_adaptive_route_selection_test()
     print("interactive gateway ROS test passed")

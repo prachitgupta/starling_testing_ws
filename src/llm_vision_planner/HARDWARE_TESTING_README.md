@@ -1,4 +1,56 @@
-# Starling 2 Hardware Mission
+# Starling 2 hardware reproduction with HRRT-star
+
+Branch: `starling_multiple_trajectory_idea`. This guide starts from the verified
+`reporoduce_hardeware` procedure and changes only the planner and operator workflow.
+It covers a dummy-obstacle simulation, the interactive gateway, both gateway modes,
+and the complete Starling 2 hardware mission.
+
+In adaptive conformal prediction mode, HRRT-star generates a finite route family
+and the operator describes the preferred route in natural language. In mission
+execution mode, the second route-selection stage is skipped. In both modes the
+local `hrrt_planner` Llama adapter produces the online plan, which is refined,
+verified, optimized, and displayed with the contraction tube.
+
+## 0. Clone, install, build, and source
+
+Ground station: Ubuntu 22.04 with ROS 2 Humble already installed. VOXL uses its
+existing Foxy image, PX4 firmware, MPA bridge, and TFLite detector. The pinned
+message dependencies are imported by the setup script. A GPU server with gated
+Llama access and a trained HRRT adapter is also required for mission planning.
+
+```bash
+sudo apt update
+sudo apt install -y git build-essential cmake python3-colcon-common-extensions \
+  python3-rosdep python3-vcstool python3-pip python3-venv python3-numpy python3-scipy \
+  python3-matplotlib python3-sklearn python3-pytest curl netcat-openbsd
+
+mkdir -p ~/Desktop
+git clone --depth 1 --single-branch --branch starling_multiple_trajectory_idea \
+  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_testing_ws
+source /opt/ros/humble/setup.bash
+bash scripts/setup_workspace.sh
+if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
+  sudo rosdep init
+fi
+rosdep update
+rosdep install --from-paths src --ignore-src -r -y
+/usr/bin/python3 -m pip install 'numpy<2' openai instructor pydantic
+colcon build --symlink-install --packages-select px4_msgs voxl_msgs llm_vision_planner
+source install/setup.bash
+ros2 launch llm_vision_planner full_plot.launch.py --show-args
+```
+
+Use an empty destination for cloning. If that folder already contains `main`,
+use the separate-clone instructions at the end and replace the workspace path
+in this guide. Source `/opt/ros/humble/setup.bash` and this clone's
+`install/setup.bash` in every ground-station ROS terminal. Continuous topic
+monitors and service/launch commands each need their own terminal; stop a
+monitor with `Ctrl+C` before running the next monitor command.
+
+Follow Sections 1–10 for hardware setup, Section 11 for simulated-obstacle
+gateway checks, and Section 12 for the real TFLite/ToF mission. The new
+calibration-data procedure is intentionally outside this guide.
 
 This procedure uses:
 
@@ -112,6 +164,10 @@ printenv RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
 ip -4 -br address show wlan0
 ```
 
+All later commands assume Option A. If you choose Option B, omit every later
+`ros_wifi_dds.sh enable` command and keep `XRCE_DDS_DOM_ID=0` after loading the
+parameter file (which contains domain 42).
+
 ### Option B: use default ROS 2 DDS
 
 Do not run any `ros_wifi_dds.sh enable` command when using this option.
@@ -213,9 +269,17 @@ environment. Verify the required geoid:
 ls -lh /usr/share/GeographicLib/geoids/egm96-5.pgm
 ```
 
-## Launching Llama on the GPU
+## 3.1 Launching the HRRT-trained Llama adapter on the GPU
 
-Run these commands on the GPU in the same shell.
+Run these commands on the GPU server in the same shell. Use its existing vLLM
+environment, or create a separate one with `python3 -m venv ~/vllm_env`, activate
+it, and install `vllm`. Authenticate with `hf auth login` using an account that
+has access to the base model.
+
+No adapter weights are bundled:
+`fine_tuning/outputs/llama31_8b_hrrt_lora/PLACEHOLDER.txt` marks the expected
+directory. Put the trained HRRT preference-conditioned adapter in that directory
+on the GPU server before continuing.
 
 1. Check GPU processes:
 
@@ -235,7 +299,9 @@ done
 2. Configure the adapter:
 
 ```bash
-ADAPTER=/home/prachit2/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_rrt_lora
+cd ~/Desktop/starling_testing_ws
+ADAPTER="$PWD/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_hrrt_lora"
+test -s "$ADAPTER/adapter_config.json" && test -s "$ADAPTER/adapter_model.safetensors"
 ```
 
 3. Launch the LLM:
@@ -244,13 +310,32 @@ ADAPTER=/home/prachit2/starling_testing_ws/src/llm_vision_planner/fine_tuning/ou
 CUDA_VISIBLE_DEVICES=0 vllm serve meta-llama/Meta-Llama-3.1-8B-Instruct \
   --enable-lora \
   --max-lora-rank 128 \
-  --lora-modules rrt_planner=$ADAPTER \
-  --served-model-name rrt_planner \
+  --lora-modules hrrt_planner="$ADAPTER" \
+  --served-model-name hrrt_planner \
   --dtype float16 \
   --gpu-memory-utilization 0.80 \
   --max-model-len 4096 \
   --port 8000
 ```
+
+The checks above must pass; the placeholder cannot serve predictions. If the
+GPU clone is elsewhere, use its actual absolute adapter path.
+
+On the ground station, check the server (replace the lab address for your host):
+
+```bash
+export VLLM_BASE_URL=http://172.22.224.93:8000/v1
+curl --fail --silent --show-error "$VLLM_BASE_URL/models"
+```
+
+The response must list `hrrt_planner`. In
+`src/llm_vision_planner/config/llm_vision_planner.yaml`, set
+`llm_planner.ros__parameters.vllm_base_url` to that URL; exporting the variable
+alone does not override the ROS parameter. Keep `hrrt_planner` in the
+`llm_planner`, `prompt_generator`, and `interactive_mission_gateway` model fields.
+For calibration and interactive missions, also export a valid `OPENAI_API_KEY`
+in the launch terminal. The camera mounts/intrinsics and network addresses below
+describe the original vehicle and must match your hardware.
 
 ## 4. Start MAVROS
 
@@ -263,6 +348,7 @@ source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dd
   enable auto 42
 ros2 daemon start
 
+export Starling2=10.117.229.1
 ros2 launch mavros px4.launch \
   fcu_url:="udp://0.0.0.0:14550@${Starling2}:14550" \
   gcs_url:="udp://0.0.0.0:14556@127.0.0.1:14551"
@@ -376,6 +462,7 @@ ros2 daemon start
 For a Vicon rate of 50 Hz:
 
 ```bash
+export VICON_COMPUTER_IP=10.117.229.124
 ros2 run vicon_bridge vicon_bridge --ros-args \
   -p host_name:="${VICON_COMPUTER_IP}:801" \
   -p stream_mode:="ServerPush" \
@@ -392,6 +479,7 @@ ros2 run vicon_bridge vicon_bridge --ros-args \
 For a Vicon rate of 100 Hz:
 
 ```bash
+export VICON_COMPUTER_IP=10.117.229.124
 ros2 run vicon_bridge vicon_bridge --ros-args \
   -p host_name:="${VICON_COMPUTER_IP}:801" \
   -p stream_mode:="ServerPush" \
@@ -433,6 +521,7 @@ Do not hide bridge drop warnings by changing only `expected_rate_hz`.
 Open a separate ground-station terminal:
 
 ```bash
+export Starling2=10.117.229.1
 ssh root@"$Starling2"
 ```
 
@@ -625,12 +714,18 @@ this isolated QGroundControl test before launching `full_plot.launch.py`.
 
 ## 10. Build the planner workspace
 
+Path refinement uses the plan's `workspace.z`; the YAML
+`path_refinement.fixed_z` remains the fallback when the workspace omits `z`.
+The current hardware settings stay at `-0.5 m` NED. If changing flight altitude,
+keep the prompt/gateway `fixed_z`, goal Z, refiner fallback, and executor
+`takeoff_z` consistent. The launch commands below need no new arguments.
+
 On the ground station:
 
 ```bash
 cd ~/Desktop/starling_testing_ws
 source /opt/ros/humble/setup.bash
-colcon build --packages-select px4_msgs voxl_msgs starling_testing llm_vision_planner
+colcon build --packages-select px4_msgs voxl_msgs llm_vision_planner
 source install/setup.bash
 ```
 
@@ -657,432 +752,72 @@ Do not run any other Offboard publisher. During planner missions,
 controlling PX4. The calibration procedure below launches that same executable
 from its dedicated launch file instead.
 
-## 11. Generate the Vicon vision-error calibration dataset
+## 11. Interactive gateway with simulated obstacles
 
-Important:
+Start PX4 simulation first. Use separate terminals for the launch, obstacle
+publisher, and monitors.
 
-- This is an autonomous low-altitude flight. Install propellers only in the
-  cleared flight area, keep the QGroundControl kill/land controls available,
-  and keep people outside the vehicle safety volume.
-- Run only `vision_error_calibration.launch.py`. It starts perception, the
-  recorder, the calibration gateway, and `control_law_executer.py`; do not also
-  run `full_plot.launch.py`, `mission_takeoff.py`, or another Offboard publisher.
-- The control executor reads `takeoff_z` from
-  `config/llm_vision_planner.yaml` (`-0.5` m NED by default). It uses the same
-  setpoint priming, Offboard/arm commands, takeoff checks, and position hold as
-  a normal mission.
-- Recording is blocked until the executor reports `HOLDING_FOR_PLAN`. The
-  aircraft then keeps commanding its initial X/Y and configured hover Z while
-  the launch records every 3 seconds.
-- The executor primes its normal Offboard setpoint stream on the ground but
-  cannot send Offboard/arm commands until the recorder has accepted 20
-  consistent Vicon/PX4 alignment pairs and published `FRAME_READY`.
-- Record `chair1`, `person`, and `stopsign` in separate sessions using one of
-  the commands below. Move only the tracked object between captures; captures
-  made while it is moving are skipped.
-- Repeated captures at the same object/camera pose are written to the raw CSV and
-  collapsed during post-processing.
-- For 500 effective samples, collect at least 500 clearly different stable
-  object/camera poses. Collect extra raw captures because repeats will be removed.
-
-### 11.1 Define the three ground-truth objects in Vicon Tracker
-
-Create these Tracker objects with the exact names shown:
-
-| Detector label | Tracker object | Vicon ground-truth topic |
-| --- | --- | --- |
-| `chair` | `chair1` | `/vicon/chair1/chair1` |
-| `person` | `person` | `/vicon/person/person` |
-| `stop sign` | `stopsign` | `/vicon/stopsign/stopsign` |
-
-For each object:
-
-1. Attach at least four asymmetric rigid markers to the object or its rigid
-   carrier. Use a mannequin or other approved stationary target for the
-   `person` class whenever possible.
-2. Select the markers in Tracker and create the named object.
-3. Set its origin to the center of the physical ground footprint.
-4. Align object X with footprint width, Y with footprint depth, and Z upward.
-5. Measure the full X width and Y depth in metres. Include the base/stand in the
-   `stopsign` footprint.
-6. Save it and verify that its topic remains continuous and unoccluded.
-
-Tracker reference: <https://vicon-help.atlassian.net/wiki/spaces/Tracker44/pages/376309034/Create+objects>
-
-### 11.2 Start the Vicon bridge
-
-```bash
-ros2 run vicon_bridge vicon_bridge --ros-args \
-  -p host_name:="${VICON_COMPUTER_IP}:801" \
-  -p stream_mode:="ServerPush" \
-  -p update_rate_hz:=125.0 \
-  -p expected_rate_hz:=50.0 \
-  -p publish_specific_segment:=false \
-  -p world_frame_id:="vicon_world" \
-  -p tf_namespace:="vicon" \
-  -r /vicon/Starling2/Starling2/pose:=/mavros/vision_pose/pose
-```
-
-Run only one bridge. Verify the vehicle, PX4, and all three object streams:
-
-```bash
-ros2 topic echo /vicon/Starling2/Starling2 --once
-ros2 topic echo /vicon/chair1/chair1 --once
-ros2 topic echo /vicon/person/person --once
-ros2 topic echo /vicon/stopsign/stopsign --once
-ros2 topic echo /fmu/out/vehicle_odometry --once
-ros2 topic hz /vicon/chair1/chair1 --window 500
-ros2 topic hz /vicon/person/person --window 500
-ros2 topic hz /vicon/stopsign/stopsign --window 500
-```
-
-- Use the default `flu` when the Starling Tracker axes are X forward, Y left,
-  Z up.
-- Add `vicon_vehicle_frame_convention:=frd` only for X forward, Y right, Z down.
-
-### 11.3 Build once and prepare the flight
-
-1. Confirm Vicon fusion and `/fmu/out/vehicle_odometry` are healthy using the
-   checks in Sections 7-9.
-2. Confirm the configured hover altitude. `-0.5` means 0.5 m above the local
-   NED origin:
+### 11.1 Terminal 1: publish dummy obstacles
 
 ```bash
 cd ~/Desktop/starling_testing_ws
 source /opt/ros/humble/setup.bash
-grep -A15 '^control_law_executer:' \
-  src/llm_vision_planner/config/llm_vision_planner.yaml | grep takeoff_z
-colcon build --symlink-install --packages-select llm_vision_planner
 source install/setup.bash
-source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable auto 42
-ros2 daemon start
-```
 
-3. Export `OPENAI_API_KEY`, place one tracked object at its first stable pose,
-   and aim the camera at it.
-4. Keep the aircraft at its takeoff point. On launch it records that X/Y,
-   primes Offboard setpoints, arms, climbs to `takeoff_z`, settles, and holds.
-
-### 11.4 Start one recording launch
-
-Use exactly one command for the object currently in view. Each prompt reads the
-measured dimensions without putting unsafe guessed dimensions in the dataset.
-All sessions may append to the same raw CSV.
-
-For `chair1`:
-
-```bash
-read -rp "Chair X width in metres: " CHAIR_WIDTH_M
-read -rp "Chair Y depth in metres: " CHAIR_DEPTH_M
-
-ros2 launch llm_vision_planner vision_error_calibration.launch.py \
-  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
-  trial_id:=chair-session-001 \
-  object_id:=obj-1 \
-  object_label:=chair \
-  object_vicon_topic:=/vicon/chair1/chair1 \
-  object_width_m:="$CHAIR_WIDTH_M" \
-  object_depth_m:="$CHAIR_DEPTH_M" \
-  output_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv"
-```
-
-For `person`:
-
-```bash
-read -rp "Person target X width in metres: " PERSON_WIDTH_M
-read -rp "Person target Y depth in metres: " PERSON_DEPTH_M
-
-ros2 launch llm_vision_planner vision_error_calibration.launch.py \
-  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
-  trial_id:=person-session-001 \
-  object_id:=obj-1 \
-  object_label:=person \
-  object_vicon_topic:=/vicon/person/person \
-  object_width_m:="$PERSON_WIDTH_M" \
-  object_depth_m:="$PERSON_DEPTH_M" \
-  output_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv"
-```
-
-For `stopsign` (the detector label contains a space):
-
-```bash
-read -rp "Stop-sign target X width in metres: " STOPSIGN_WIDTH_M
-read -rp "Stop-sign target Y depth in metres: " STOPSIGN_DEPTH_M
-
-ros2 launch llm_vision_planner vision_error_calibration.launch.py \
-  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
-  trial_id:=stopsign-session-001 \
-  object_id:=obj-1 \
-  object_label:="stop sign" \
-  object_vicon_topic:=/vicon/stopsign/stopsign \
-  object_width_m:="$STOPSIGN_WIDTH_M" \
-  object_depth_m:="$STOPSIGN_DEPTH_M" \
-  output_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv"
-```
-
-In another terminal, monitor takeoff, ownership, and recording:
-
-```bash
-ros2 topic echo /llm_vision/mission_state
-ros2 topic echo /llm_vision/offboard_owner
-ros2 topic echo /llm_vision/vision_calibration_status
-tail -n 5 \
-  ~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv
-```
-
-Wait for `HOLDING_FOR_PLAN`; no calibration snapshot is published before that
-state. After each `RECORDED`, move the tracked object to a clearly different
-position or yaw and hold it still for the next capture. Do not move the aircraft
-by hand while it owns Offboard position hold.
-
-When the session is complete, land before stopping the launch:
-
-```bash
-ros2 topic pub --once /llm_vision/executor_command std_msgs/msg/String \
-  "{data: '{\"command\":\"LAND\",\"reason\":\"vision calibration complete\"}'}"
-ros2 topic echo /llm_vision/mission_state
-```
-
-Wait until the mission state is `COMPLETE` and QGroundControl shows the vehicle
-landed and disarmed. Then press `Ctrl+C` in the launch terminal. Use a new unique
-`trial_id` for the next object/session and repeat the same one-launch workflow.
-
-Automatic outputs:
-
-- Raw CSV: `fine_tuning/datasets/calibration_vision_error_raw.csv`
-- Derived frame check: `calibration_vision_error_raw.<trial_id>.frame.json`
-- Missed detection or GPT depth abstention: retained as a calibration miss
-- `SKIPPED_MOVING_OBJECT`: wait until the tracked object is stationary
-- `FRAME_ALIGNMENT_UNSTABLE`: keep the Starling still and check both pose streams
-
-### 11.5 Collapse repeated poses
-
-```bash
-RAW_CSV=~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error_raw.csv
-CALIBRATION_CSV=~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv
-
-ros2 run llm_vision_planner postprocess_vision_error_dataset.py \
-  --input "$RAW_CSV" \
-  --output "$CALIBRATION_CSV" \
-  --overwrite
-```
-
-The command prints the raw-capture count, independent-pose count, and number of
-collapsed repeats. It also creates
-`calibration_vision_error.groups.csv`, which lists each pose group and its raw
-capture IDs. By default, captures within 5 cm and 5 degrees at the same camera
-pose are treated as repeats.
-
-Check the processed trial count:
-
-```bash
-tail -n +2 "$CALIBRATION_CSV" | cut -d, -f1 | sort -u | wc -l
-tail -n 5 "$CALIBRATION_CSV"
-```
-
-Collect more poses and rerun post-processing if the first command prints fewer
-than `500`. The raw CSV cannot be used directly for a mission.
-
-### 11.6 Use the completed dataset
-
-For conformal obstacle enlargement, add:
-
-```bash
-obs_safety_bracket:=conformal \
-vision_error_calibration_csv:="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_vision_error.csv"
-```
-
-For the existing fixed guard band, add:
-
-```bash
-obs_safety_bracket:=hardcoded
-```
-
-Notes:
-
-- The dummy CSV is simulation-only and is rejected for real conformal missions.
-- Automatic Vicon-world to NED alignment is the default; no quaternion input is
-  required.
-- Use `vicon_objects_json` only for advanced multi-object calibration.
-- Set `auto_vicon_world_to_ned:=false` only for the legacy manual-transform path.
-
-## 12. Hardware flight with a simulated obstacle message
-
-This test flies the real vehicle but supplies obstacle JSON instead of starting
-TFLite/ToF perception. `environment:=sim` changes only the obstacle source; PX4
-odometry and control remain real.
-
-Use an empty obstacle snapshot:
-
-```bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
-source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable auto 42
-ros2 daemon start
 ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
-  "{data: '{\"obstacles\":[],\"timestamp\":0.0}'}"
+  "{data: '{\"healthy\":true,\"frame\":\"local_ned\",\"obstacles\":[{\"id\":1,\"label\":\"chair\",\"shape\":\"box\",\"min_corner\":[0.70,0.60,-0.75],\"max_corner\":[1.10,1.00,0.25],\"confidence\":1.0},{\"id\":2,\"label\":\"person\",\"shape\":\"box\",\"min_corner\":[-0.70,0.80,-0.75],\"max_corner\":[-0.30,1.20,0.25],\"confidence\":1.0}],\"timestamp\":0.0}'}"
 ```
 
-For a calibrated obstacle environment, copy a command from the
-`ros2_pub_command` column of:
-
-```text
-~/Desktop/starling_testing_ws/src/llm_vision_planner/fine_tuning/datasets/env_ros_commands.csv
-```
-
-Run the selected publisher in its own terminal. Then launch the complete
-planner, verifier, visualizer, and control executor:
+### 11.2 Terminal 2: launch the interactive gateway once
 
 ```bash
 cd ~/Desktop/starling_testing_ws
+source /opt/ros/humble/setup.bash
 source install/setup.bash
-source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable auto 42
-ros2 daemon start
+read -rsp "OpenAI API key: " OPENAI_API_KEY
+export OPENAI_API_KEY
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
-  goal_x:=0.0 \
-  goal_y:=1.5 \
-  environment:=sim \
-  llm_provider:=llama \
-  visualizer:=contraction \
-  obs_safety_bracket:=conformal \
-  show_rrt:=true
-```
-
-For the live conformal contraction plot:
-
-```bash
-ros2 launch llm_vision_planner full_plot.launch.py \
-  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
-  goal_x:=0.0 \
-  goal_y:=1.5 \
-  environment:=sim \
-  llm_provider:=llama \
-  visualizer:=contraction \
-  obs_safety_bracket:=conformal \
-  show_rrt:=false
-```
-
-Add `land_after_complete:=false` to hold the final goal in Offboard for human
-intervention; the default `true` lands automatically after success.
-`goal_x` and `goal_y` default to `0.0` and `1.5`; set both launch arguments to
-override the fixed prompt, plotted goal, verified trajectory, and executor goal.
-
-Monitor:
-
-```bash
-ros2 topic echo /llm_vision/mission_state
-ros2 topic echo /llm_vision/prompt
-ros2 topic echo /llm_vision/plan_verified
-ros2 topic echo /llm_vision/offboard_owner
-```
-
-### Interactive mode
-
-Interactive mode uses OpenAI to parse an operator request and opens
-`http://127.0.0.1:8080` for approval before planning. `OPENAI_API_KEY` must be
-exported in the launch shell; fixed mode remains the default. Live box jitter
-is accepted within configured position and size limits, while planning uses a
-larger conservative obstacle envelope. The planner start is refreshed from the
-current hover position at approval and checked again before plan release.
-
-```bash
-cd ~/Desktop/starling_testing_ws
-source install/setup.bash
-source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable auto 42
-ros2 daemon start
-
-ros2 launch llm_vision_planner full_plot.launch.py \
-  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
-  goal_x:=0.0 \
-  goal_y:=1.5 \
-  environment:=sim \
-  interaction_mode:=interactive \
-  intent_provider:=openai \
-  use_dataset_scene:=true \
-  sim_sample_id:=4 \
-  llm_provider:=llama \
-  visualizer:=contraction \
-  obs_safety_bracket:=conformal
-```
-
-To open the operator UI from a phone on the same network, add
-`web_ui_host:=0.0.0.0` and browse to `http://<computer-lan-ip>:8080`. On plain
-LAN HTTP, **Record command** opens the phone's native audio recorder because
-browsers reserve live microphone streams for secure origins. Localhost or an
-HTTPS deployment retains the in-page push-to-talk recorder.
-
-#### Dummy example: manually publish obstacles
-
-This test does not launch `perception_detection.py`. Start PX4 simulation, then
-launch interactive mode without the recorded dataset publisher:
-
-```bash
-cd ~/Desktop/starling_testing_ws
-source install/setup.bash
-source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable auto 42
-ros2 daemon start
-
-ros2 launch llm_vision_planner full_plot.launch.py \
-  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
-  goal_x:=0.0 \
-  goal_y:=1.5 \
   environment:=sim \
   interaction_mode:=interactive \
   intent_provider:=openai \
   use_dataset_scene:=false \
   llm_provider:=llama \
   visualizer:=contraction \
-  obs_safety_bracket:=conformal
+  obs_safety_bracket:=conformal \
+  web_ui_host:=127.0.0.1
 ```
 
-In another terminal, continuously publish a fresh dummy COCO-object scene:
+Open `http://127.0.0.1:8080`.
+
+1. Use the mode buttons in the left panel to select **Adaptive conformal** or
+   **Mission execution**.
+2. In Adaptive conformal mode, enter: `Fly beyond the chair while staying away
+   from the person.` Approve the goal, wait for the colored HRRT-star family,
+   then enter: `Choose a short route that stays far from the person.`
+3. In Mission execution mode, enter and approve the goal. The gateway skips the
+   second HRRT-star preference question.
+4. Review the verified plan and contraction tube, then approve or terminate.
+
+### 11.3 Terminal 3: monitor the pipeline
 
 ```bash
 source ~/Desktop/starling_testing_ws/install/setup.bash
-source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable auto 42
-ros2 daemon start
-
-ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
-  "{data: '{\"healthy\":true,\"frame\":\"local_ned\",\"obstacles\":[{\"id\":1,\"label\":\"chair\",\"shape\":\"box\",\"min_corner\":[2.20,2.00,-0.75],\"max_corner\":[2.70,2.50,0.25],\"confidence\":1.0},{\"id\":2,\"label\":\"bottle\",\"shape\":\"box\",\"min_corner\":[1.00,2.80,-0.75],\"max_corner\":[1.30,3.10,0.25],\"confidence\":1.0}],\"timestamp\":0.0}'}"
-```
-
-#### Brief user guide
-
-1. Wait until `/llm_vision/mission_state` reports `HOLDING_FOR_PLAN`.
-2. Open `http://127.0.0.1:8080`, type a request or press **Push to talk**,
-   review the transcript, and press **Send**. The browser records the microphone
-   and the web node transcribes it with `gpt-4o-mini-transcribe`; this requires
-   microphone permission and `OPENAI_API_KEY`. On a phone over plain LAN HTTP,
-   **Record command** uses the phone's native recorder instead of a live browser
-   microphone stream. Typing remains available.
-3. Scene questions such as `What do you see?`, `List objects`, `Where is the
-   chair?`, `Explain the proposal`, and `Explain failure` return text without
-   creating a plan. Navigation can combine ranges, for example `Hover 0.8 to
-   1.2 m from the chair and as far as possible from the bottle`.
-4. Check every grounded object relation, the proposed goal, and clearance,
-   then approve or reject the proposal. A planner prompt is published only
-   after approval.
-5. The page shows detected objects, the proposed goal, and every refined path.
-   Once verification latches the trajectory and forms the safety tubes, use
-   **Final launch command** to approve control-law execution or terminate. A
-   tube intersection is shown as **LLM prediction safety not certified**;
-   approving at that point deliberately releases the plan despite the warning.
-   Termination keeps Offboard mode and commands an x/y-hold landing waypoint
-   through `control_law_executer.py`. Keep the obstacle publisher running and
-   monitor the final result with:
-
-```bash
+ros2 topic echo /llm_vision/mission_state
+ros2 topic echo /llm_vision/hrrt_route_candidates
+ros2 topic echo /llm_vision/prompt
+ros2 topic echo /llm_vision/plan_raw
+ros2 topic echo /llm_vision/plan_refined
+ros2 topic echo /llm_vision/plan_candidate_verified
 ros2 topic echo /llm_vision/plan_verified
 ```
 
-## 13. TFLite and ToF perception
+For a fully offline interface check, replace `intent_provider:=openai` with
+`intent_provider:=mock`. The Llama server is still required when the selected
+mission reaches online planning.
+
+## 12. TFLite and ToF perception
 
 TFLite detects object type from `hires_small_color`. ToF supplies distance
 from `/tof_pc`. The output topic is
@@ -1222,7 +957,7 @@ ros2 run llm_vision_planner debug_perception.py --ros-args \
   -p output_png:=/tmp/debug_perception.png
 ```
 
-### Launch the real mission
+### Launch the real mission gateway
 
 This command starts real flight control. Run it only when the vehicle is ready
 to fly.
@@ -1233,7 +968,8 @@ source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
-export OPENAI_API_KEY="YOUR KEY"
+read -rsp "OpenAI API key: " OPENAI_API_KEY
+export OPENAI_API_KEY
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -1243,41 +979,35 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   llm_provider:=llama \
   visualizer:=contraction \
   web_ui_host:=0.0.0.0 \
-  obs_safety_bracket:=hardcoded \
-  show_rrt:=true
+  obs_safety_bracket:=hardcoded
 ```
 
 Use the RC kill switch or change PX4/QGroundControl mode to abort.
 
-### Launch the real mission (interactive mode)
-
-Same as above, but requests operator approval through the web UI before
-planning. `OPENAI_API_KEY` must be exported in the launch shell.
-
-```bash
-cd ~/Desktop/starling_testing_ws
-source install/setup.bash
-source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
-  enable auto 42
-ros2 daemon start
-export OPENAI_API_KEY="YOUR KEY"
-
-ros2 launch llm_vision_planner full_plot.launch.py \
-  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
-  environment:=real \
-  interaction_mode:=interactive \
-  intent_provider:=openai \
-  llm_provider:=llama \
-  visualizer:=contraction \
-  web_ui_host:=0.0.0.0 \
-  obs_safety_bracket:=hardcoded \
-  show_rrt:=true \
-  land_after_complete:=false
-```
-
 From another device on the same network, open
 `http://<ground-station-lan-ip>:8080` once `/llm_vision/mission_state` reports
 `HOLDING_FOR_PLAN`. The `0.0.0.0` value is the server bind address, not the
-address to type into the browser. See step 12's Interactive mode section for
-the approval walkthrough. Use the RC kill switch or change PX4/QGroundControl
-mode to abort.
+address to type into the browser. Select either mode from the left panel before
+submitting the first mission prompt. See Section 11 for the approval walkthrough.
+Add `land_after_complete:=false` to the launch command to hold the final goal
+instead of landing automatically.
+
+## Working with the branches
+
+Keep each branch in a separate clone so its `build/`, `install/`, and `log/`
+directories cannot mix with another branch. A new shell should source only the
+workspace being used. To inspect or update either workflow:
+
+```bash
+git clone --depth 1 --single-branch --branch starling_multiple_trajectory_idea \
+  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/hrrt_hardware_ws
+git -C ~/Desktop/hrrt_hardware_ws branch --show-current
+git -C ~/Desktop/hrrt_hardware_ws pull --ff-only
+```
+
+For this alternate path, substitute `~/Desktop/hrrt_hardware_ws` for
+`~/Desktop/starling_testing_ws` in this README, then install dependencies,
+build, and source inside that clone.
+`main` retains the complete original workspace. Do not merge an isolated branch
+into `main` just to use it. To move an adapter or completed calibration between
+branches, copy only that artifact to the matching path in the other clone.

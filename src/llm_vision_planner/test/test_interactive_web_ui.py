@@ -35,6 +35,14 @@ class InteractiveWebUiTest(unittest.TestCase):
         self.assertIn("response.environment_frozen", html)
         self.assertIn("Do not move the vehicle or obstacles", html)
 
+    def test_ui_has_persistent_visual_and_two_modes(self):
+        html = (ROOT / "web" / "interactive.html").read_text(encoding="utf-8")
+        self.assertIn('id="tactical-map"', html)
+        self.assertIn('id="mode-acp"', html)
+        self.assertIn('id="mode-execution"', html)
+        self.assertIn("AWAITING_TRAJECTORY_SELECTION", html)
+        self.assertIn("HRRT-star route family", html)
+
     def test_audio_file_metadata_accepts_browser_recording_types(self):
         self.assertEqual(audio_file_metadata("audio/webm;codecs=opus"), ("audio/webm", "webm"))
         self.assertEqual(audio_file_metadata("audio/ogg; codecs=opus"), ("audio/ogg", "ogg"))

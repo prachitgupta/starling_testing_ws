@@ -3,245 +3,63 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>UAV Mission Approval</title>
+  <title>Starling Mission Console</title>
   <style>
-    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; }
-    body { max-width: 850px; margin: 0 auto; padding: 28px 18px; }
-    section { background: #1f2937; border: 1px solid #374151; border-radius: 12px; padding: 18px; margin: 14px 0; }
-    h1 { margin-bottom: 6px; } h2 { font-size: 1rem; color: #93c5fd; }
-    form { display: flex; gap: 8px; }
-    input { flex: 1; padding: 11px; border-radius: 8px; border: 1px solid #4b5563; background: #111827; color: white; }
-    button { padding: 10px 16px; border: 0; border-radius: 8px; font-weight: 700; cursor: pointer; }
-    #send { background: #2563eb; color: white; } #speech { background: #4b5563; color: white; } #speech.listening { background: #dc2626; } #approve, #launch { background: #16a34a; color: white; } #reject, #terminate { background: #dc2626; color: white; }
-    button:disabled { opacity: .45; cursor: not-allowed; }
-    pre { white-space: pre-wrap; overflow-wrap: anywhere; color: #d1d5db; }
-    .status { font-size: 1.05rem; }
-    .warning { display: none; margin: 10px 0; padding: 12px; border: 1px solid #f59e0b; border-radius: 8px; background: #451a03; color: #fde68a; font-weight: 700; }
-    #speech-status { min-height: 1.3em; margin: 8px 0 0; color: #d1d5db; }
-    #contraction-plot { display: none; width: 100%; border-radius: 8px; background: white; }
+    :root { color-scheme:dark; font-family:Inter,system-ui,sans-serif; --bg:#050b14; --panel:rgba(10,23,38,.91); --line:rgba(96,221,255,.23); --cyan:#60ddff; --text:#e8f7ff; --muted:#8ea7b7; --green:#46e6a2; --amber:#ffbd59; --red:#ff6577; --violet:#b898ff; }
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;color:var(--text);background:radial-gradient(circle at 80% -10%,rgba(26,163,217,.18),transparent 35%),radial-gradient(circle at 10% 110%,rgba(76,70,229,.16),transparent 32%),var(--bg)}
+    body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.2;background-image:linear-gradient(rgba(96,221,255,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(96,221,255,.05) 1px,transparent 1px);background-size:34px 34px}
+    header{min-height:76px;display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--line);background:rgba(4,10,18,.84);backdrop-filter:blur(18px);position:sticky;top:0;z-index:20}
+    .brand,.health,.legend-item{display:flex;align-items:center;gap:9px}.brand-mark{width:34px;height:34px;border:1px solid var(--cyan);border-radius:50%;box-shadow:0 0 24px rgba(96,221,255,.25);position:relative}.brand-mark:after{content:"";position:absolute;inset:8px;border:2px solid var(--cyan);border-left-color:transparent;border-radius:50%}
+    h1{font-size:1.02rem;margin:0;letter-spacing:.14em;text-transform:uppercase}.eyebrow{color:var(--cyan);font-size:.66rem;text-transform:uppercase;letter-spacing:.16em;margin-bottom:4px}.health{color:var(--muted);font-size:.76rem}.pulse{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 14px var(--green)}
+    main{display:grid;grid-template-columns:minmax(300px,380px) minmax(0,1fr);gap:18px;padding:18px;max-width:1580px;margin:auto}.controls{min-width:0;display:flex;flex-direction:column;gap:14px}.panel{border:1px solid var(--line);border-radius:15px;background:linear-gradient(145deg,var(--panel),rgba(5,14,25,.94));box-shadow:0 15px 50px rgba(0,0,0,.22),inset 0 1px rgba(255,255,255,.025)}.body{padding:16px}.panel-title,.visual-header{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}h2{font-size:.74rem;color:var(--cyan);letter-spacing:.13em;text-transform:uppercase;margin:0}
+    button{font:inherit;cursor:pointer;border:1px solid transparent;transition:.18s}button:disabled{opacity:.35;cursor:not-allowed}.mode-switch,.action-row{display:grid;grid-template-columns:1fr 1fr;gap:7px}.mode,.ghost,.chip{color:var(--muted);background:rgba(17,35,53,.82);border-color:rgba(137,185,212,.18);border-radius:9px;padding:10px;font-size:.75rem;font-weight:700}.mode:hover,.ghost:hover,.chip:hover{color:var(--text);border-color:rgba(96,221,255,.5)}.mode.active{color:#041017;background:var(--cyan);border-color:var(--cyan);box-shadow:0 0 20px rgba(96,221,255,.22)}
+    .status-grid{display:grid;grid-template-columns:auto 1fr;gap:10px}.status-dot{width:10px;height:10px;margin-top:5px;border-radius:50%;background:var(--cyan);box-shadow:0 0 12px var(--cyan)}#status{font-weight:750;font-size:.92rem}#status-message,.hint{color:var(--muted);font-size:.75rem;line-height:1.46;margin:5px 0 0}.phase-track{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-top:14px}.phase{height:4px;background:rgba(143,167,184,.16);border-radius:4px}.phase.active{background:var(--cyan);box-shadow:0 0 12px rgba(96,221,255,.6)}
+    form{display:flex;gap:8px}#command{min-width:0;flex:1;padding:12px;border-radius:10px;border:1px solid rgba(99,210,255,.24);background:rgba(2,10,18,.82);color:var(--text);outline:none}#command:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(96,221,255,.08)}.icon{min-width:44px;border-radius:10px;color:var(--text);background:rgba(28,52,72,.85);border-color:rgba(99,210,255,.2)}.icon.listening{background:#bd2944}.primary{color:#021017;background:var(--cyan);border-radius:10px;padding:10px 14px;font-weight:850}.approve{background:var(--green)}.danger{background:transparent;color:var(--red);border:1px solid rgba(255,101,119,.46);border-radius:10px}.action-row{margin-top:12px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.chip{padding:7px 9px;font-weight:600}
+    .mission-summary{display:grid;grid-template-columns:1fr 1fr;gap:8px}.metric{padding:10px;border:1px solid rgba(99,210,255,.13);background:rgba(2,10,18,.36);border-radius:9px;min-width:0}.metric label{display:block;color:var(--muted);font-size:.62rem;text-transform:uppercase;letter-spacing:.1em}.metric strong{display:block;overflow:hidden;text-overflow:ellipsis;margin-top:5px;font-size:.82rem}details{margin-top:12px;border-top:1px solid rgba(99,210,255,.13);padding-top:10px}summary{color:var(--cyan);cursor:pointer;font-size:.74rem;font-weight:750}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;padding:10px;background:#030a12;border-radius:8px;color:#b9d2df;font-size:.67rem}.warning{display:none;padding:11px 13px;color:#ffe8b4;border:1px solid rgba(255,189,89,.48);background:rgba(88,49,9,.48);border-radius:10px;font-size:.77rem;font-weight:700}
+    .visual-column{min-width:0;position:sticky;top:94px;height:calc(100vh - 112px)}.visual-panel{height:100%;display:flex;flex-direction:column;overflow:hidden}.visual-header{padding:15px 17px;margin:0;border-bottom:1px solid var(--line)}#view-badge{color:var(--green);background:rgba(70,230,162,.09);border:1px solid rgba(70,230,162,.24);border-radius:999px;padding:6px 9px;font-size:.65rem;letter-spacing:.08em;text-transform:uppercase}.viewport{flex:1;min-height:0;position:relative;background:radial-gradient(circle,rgba(27,69,88,.25),rgba(2,8,15,.82))}#tactical-map,#contraction-plot{width:100%;height:100%;display:block;object-fit:contain}#contraction-plot{display:none;background:#f8fafc}#plot-status{position:absolute;left:15px;bottom:13px;max-width:75%;color:var(--muted);background:rgba(2,8,15,.82);border:1px solid rgba(99,210,255,.18);padding:7px 10px;border-radius:8px;font-size:.68rem}.visual-footer{min-height:47px;padding:10px 15px;display:flex;gap:15px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--line);color:var(--muted);font-size:.68rem}.swatch{width:16px;height:3px;background:var(--cyan);border-radius:2px}.swatch.obstacle{height:9px;background:var(--red);opacity:.7}.swatch.goal{background:var(--violet)}
+    @media(max-width:700px){header{position:static}main{grid-template-columns:1fr}.visual-column{position:static;height:min(70vh,650px);order:-1}}
   </style>
 </head>
 <body>
-  <h1>UAV Mission Approval</h1>
-  <p>Commands are interpreted against the latest detected-object snapshot. No plan is released before approval.</p>
-  <section>
-    <form id="command-form">
-      <input id="command" placeholder="Hover near the chair without touching it" autocomplete="off">
-      <button id="speech" type="button">Push to talk</button>
-      <input id="speech-file" type="file" accept="audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav" capture hidden>
-      <button id="send" type="submit">Send</button>
-    </form>
-    <p id="speech-status">Speech fills the command box; review the transcript before sending.</p>
-  </section>
-  <section>
-    <h2>Gateway status</h2>
-    <div id="status" class="status">Waiting for ROS status…</div>
-    <div id="environment-warning" class="warning"></div>
-  </section>
-  <section>
-    <h2>Grounded mission proposal</h2>
-    <pre id="proposal">No proposal yet.</pre>
-    <button id="approve" disabled>Approve</button>
-    <button id="reject" disabled>Reject</button>
-  </section>
-  <section>
-    <h2>Live mission safety view</h2>
-    <div id="plot-status">Waiting for the live scene…</div>
-    <img id="contraction-plot" alt="Live QP contraction and tracking plot">
-  </section>
-  <section>
-    <h2>Final launch command</h2>
-    <p>After verification, inspect the latched trajectory and conformal safety tubes before releasing control.</p>
-    <div id="safety-warning" class="warning"></div>
-    <pre id="launch-proposal">No verified trajectory awaiting launch.</pre>
-    <button id="launch" disabled>Approve &amp; Launch Mission</button>
-    <button id="terminate" disabled>Terminate &amp; Land</button>
-  </section>
+  <header><div class="brand"><div class="brand-mark"></div><div><div class="eyebrow">Human–UAV collaboration</div><h1>Starling Mission Console</h1></div></div><div class="health"><span class="pulse"></span><span id="connection-state">Gateway link active</span></div></header>
+  <main>
+    <div class="controls">
+      <section class="panel"><div class="body"><div class="panel-title"><h2>Operating mode</h2><span class="eyebrow" id="mode-label">Mission execution</span></div><div class="mode-switch"><button class="mode" id="mode-acp">Adaptive conformal</button><button class="mode active" id="mode-execution">Mission execution</button></div></div></section>
+      <section class="panel"><div class="body"><div class="panel-title"><h2>Mission state</h2><span class="eyebrow" id="phase-label">Snapshot</span></div><div class="status-grid"><span class="status-dot"></span><div><div id="status">Waiting for gateway</div><div id="status-message">The vehicle remains under operator control.</div></div></div><div class="phase-track"><span class="phase active"></span><span class="phase"></span><span class="phase"></span><span class="phase"></span></div><div id="environment-warning" class="warning" style="margin-top:12px"></div></div></section>
+      <section class="panel"><div class="body"><div class="panel-title"><h2 id="prompt-title">Tell Starling where to go</h2><span class="eyebrow">Natural language</span></div><form id="command-form"><input id="command" placeholder="Fly near the chair while staying away from the person" autocomplete="off"><button id="speech" class="icon" type="button">●</button><input id="speech-file" type="file" accept="audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav" capture hidden><button id="send" class="primary" type="submit">Send</button></form><div class="chips" id="prompt-chips"></div><p id="speech-status" class="hint">Speak or type naturally. Review the transcript before sending.</p></div></section>
+      <section class="panel"><div class="body"><div class="panel-title"><h2>Mission approval</h2><span class="eyebrow" id="approval-label">No proposal</span></div><div class="mission-summary"><div class="metric"><label>Target</label><strong id="mission-target">—</strong></div><div class="metric"><label>Goal</label><strong id="mission-goal">—</strong></div><div class="metric"><label>Routes</label><strong id="mission-routes">—</strong></div><div class="metric"><label>Selected route</label><strong id="mission-selected">—</strong></div></div><div class="action-row"><button id="approve" class="primary approve" disabled>Approve goal</button><button id="reject" class="danger" disabled>Reject</button></div><details><summary>Expand technical mission record</summary><pre id="proposal">No proposal yet.</pre></details></div></section>
+      <section class="panel"><div class="body"><div class="panel-title"><h2>Launch control</h2><span class="eyebrow">Human release required</span></div><div id="safety-warning" class="warning"></div><p class="hint">A verified trajectory is never released without final operator approval.</p><div class="action-row"><button id="launch" class="primary approve" disabled>Launch mission</button><button id="terminate" class="danger" disabled>Terminate &amp; land</button></div><details><summary>Expand verified plan record</summary><pre id="launch-proposal">No verified trajectory awaiting launch.</pre></details></div></section>
+    </div>
+    <aside class="visual-column"><section class="panel visual-panel"><div class="visual-header"><div><div class="eyebrow">Persistent spatial view</div><h2 id="view-title">Live obstacle snapshot</h2></div><span id="view-badge">Live</span></div><div class="viewport"><svg id="tactical-map" viewBox="0 0 900 650" aria-label="Mission environment and trajectories"></svg><img id="contraction-plot" alt="Frozen verified trajectory and conformal safety tubes"><div id="plot-status">Waiting for a reliable obstacle snapshot…</div></div><div class="visual-footer"><span class="legend-item"><i class="swatch obstacle"></i>Detected obstacle</span><span class="legend-item"><i class="swatch goal"></i>Goal</span><span class="legend-item"><i class="swatch"></i>Active trajectory</span></div></section></aside>
+  </main>
   <script>
-    let proposal = {};
-    let launchProposal = {};
-    let plotObjectUrl = '';
-    let plotRequestRunning = false;
-    const commandInput = document.getElementById('command');
-    const speechButton = document.getElementById('speech');
-    const speechFileInput = document.getElementById('speech-file');
-    const speechStatus = document.getElementById('speech-status');
-    const sendButton = document.getElementById('send');
-    async function post(path, data) {
-      const response = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
-      if (!response.ok) throw new Error(await response.text());
-    }
-    document.getElementById('command-form').addEventListener('submit', async event => {
-      event.preventDefault();
-      const input = document.getElementById('command');
-      await post('/api/command', {text: input.value});
-      input.value = '';
-    });
-    let recorder = null;
-    let recorderStream = null;
-    let recordingTimeout = null;
-    const audioTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
-    const audioType = window.MediaRecorder
-      ? audioTypes.find(type => MediaRecorder.isTypeSupported(type)) || ''
-      : '';
-    async function transcribeAudio(audio, recordedType) {
-      if (!audio.size) {
-        speechStatus.textContent = 'No audio was recorded. Check the microphone and try again.';
-        return;
-      }
-      speechButton.disabled = true;
-      speechStatus.textContent = 'Transcribing…';
-      try {
-        const response = await fetch('/api/transcribe', {
-          method: 'POST',
-          headers: {
-            'Content-Type': recordedType,
-            'X-Speech-Language': navigator.language || 'en-US'
-          },
-          body: audio
-        });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || 'transcription request failed');
-        commandInput.value = result.text.trim();
-        commandInput.focus();
-        speechStatus.textContent = 'Transcript ready. Review it, then press Send.';
-      } catch (error) {
-        speechStatus.textContent = `Speech transcription failed: ${error.message}. You can still type the command.`;
-      } finally {
-        speechButton.disabled = false;
-      }
-    }
-    speechFileInput.onchange = async () => {
-      const audio = speechFileInput.files[0];
-      if (audio) await transcribeAudio(audio, audio.type);
-      speechFileInput.value = '';
-    };
-    function finishRecording() {
-      if (recordingTimeout) clearTimeout(recordingTimeout);
-      recordingTimeout = null;
-      if (recorderStream) recorderStream.getTracks().forEach(track => track.stop());
-      recorderStream = null;
-      speechButton.classList.remove('listening');
-      speechButton.textContent = 'Push to talk';
-      sendButton.disabled = false;
-    }
-    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-      speechButton.textContent = 'Record command';
-      speechButton.onclick = () => speechFileInput.click();
-      speechStatus.textContent = window.isSecureContext
-        ? 'Use your device recorder to capture one command.'
-        : 'Live microphone access requires HTTPS; use your phone recorder to capture one command.';
-    } else {
-      speechButton.onclick = async () => {
-        if (recorder?.state === 'recording') {
-          speechStatus.textContent = 'Transcribing…';
-          recorder.stop();
-          return;
-        }
-        try {
-          recorderStream = await navigator.mediaDevices.getUserMedia({audio: true});
-          const chunks = [];
-          recorder = new MediaRecorder(recorderStream, audioType ? {mimeType: audioType} : undefined);
-          recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
-          recorder.onerror = event => {
-            speechStatus.textContent = `Microphone recording failed: ${event.error?.message || 'unknown error'}`;
-            finishRecording();
-          };
-          recorder.onstop = async () => {
-            const recordedType = recorder.mimeType || audioType;
-            const audio = new Blob(chunks, {type: recordedType});
-            finishRecording();
-            await transcribeAudio(audio, recordedType);
-          };
-          recorder.start();
-          speechButton.classList.add('listening');
-          speechButton.textContent = 'Stop listening';
-          sendButton.disabled = true;
-          speechStatus.textContent = `Listening in ${navigator.language || 'en-US'}. Speak one command or question.`;
-          recordingTimeout = setTimeout(() => {
-            if (recorder?.state === 'recording') recorder.stop();
-          }, 20000);
-        } catch (error) {
-          finishRecording();
-          speechStatus.textContent = error.name === 'NotAllowedError'
-            ? 'Microphone permission was denied. Allow microphone access in the address bar and try again.'
-            : `Microphone could not start: ${error.message}`;
-        }
-      };
-    }
-    async function decide(decision) {
-      await post('/api/decision', {decision, mission_id: proposal.mission_id, proposal_hash: proposal.proposal_hash});
-    }
-    document.getElementById('approve').onclick = () => decide('APPROVE');
-    document.getElementById('reject').onclick = () => decide('REJECT');
-    async function decideLaunch(decision) {
-      await post('/api/launch-decision', {
-        decision,
-        mission_id: launchProposal.mission_id,
-        plan_id: launchProposal.plan_id,
-        proposal_hash: launchProposal.proposal_hash
-      });
-    }
-    document.getElementById('launch').onclick = () => decideLaunch('APPROVE');
-    document.getElementById('terminate').onclick = () => decideLaunch('DENY');
-    async function refresh() {
-      try {
-        const state = await (await fetch('/api/state', {cache: 'no-store'})).json();
-        const response = state.response || {};
-        proposal = state.proposal || {};
-        launchProposal = state.launch_proposal || {};
-        document.getElementById('status').textContent = `${response.status || 'WAITING'} — ${response.message || ''}`;
-        const environmentWarning = document.getElementById('environment-warning');
-        const environmentFrozen = response.environment_frozen === true;
-        environmentWarning.textContent = response.environment_warning || (
-          environmentFrozen
-            ? 'Environment captured for static planning. Do not move the vehicle or obstacles until launch or termination.'
-            : ''
-        );
-        environmentWarning.style.display = environmentFrozen ? 'block' : 'none';
-        document.getElementById('proposal').textContent = proposal.mission_id ? JSON.stringify(proposal, null, 2) : 'No proposal yet.';
-        const awaiting = (response.gateway_state === 'AWAITING_APPROVAL' || response.status === 'AWAITING_APPROVAL') && Boolean(proposal.mission_id);
-        document.getElementById('approve').disabled = !awaiting;
-        document.getElementById('reject').disabled = !awaiting;
-        document.getElementById('launch-proposal').textContent = launchProposal.plan_id ? JSON.stringify(launchProposal, null, 2) : 'No verified trajectory awaiting launch.';
-        const safetyWarning = document.getElementById('safety-warning');
-        safetyWarning.textContent = launchProposal.safety_warning || '';
-        safetyWarning.style.display = launchProposal.safety_warning ? 'block' : 'none';
-        document.getElementById('launch').textContent = launchProposal.safety_warning
-          ? 'Approve & Launch Despite Warning'
-          : 'Approve & Launch Mission';
-        const awaitingLaunch = (response.gateway_state === 'AWAITING_LAUNCH_APPROVAL' || response.status === 'AWAITING_LAUNCH_APPROVAL') && Boolean(launchProposal.plan_id);
-        document.getElementById('launch').disabled = !awaitingLaunch;
-        document.getElementById('terminate').disabled = !awaitingLaunch;
-      } catch (error) {
-        document.getElementById('status').textContent = `UI backend unavailable: ${error}`;
-      }
-    }
-    async function refreshPlot() {
-      if (plotRequestRunning) return;
-      plotRequestRunning = true;
-      try {
-        const response = await fetch(`/api/contraction.png?t=${Date.now()}`, {cache: 'no-store'});
-        if (!response.ok) {
-          document.getElementById('plot-status').textContent = 'Waiting for the contraction visualizer…';
-          return;
-        }
-        const nextUrl = URL.createObjectURL(await response.blob());
-        const plot = document.getElementById('contraction-plot');
-        const previousUrl = plotObjectUrl;
-        plot.onload = () => { if (previousUrl) URL.revokeObjectURL(previousUrl); };
-        plotObjectUrl = nextUrl;
-        plot.src = nextUrl;
-        plot.style.display = 'block';
-        document.getElementById('plot-status').textContent = 'Live — refreshes every 0.5 s';
-      } catch (error) {
-        document.getElementById('plot-status').textContent = `Plot unavailable: ${error}`;
-      } finally {
-        plotRequestRunning = false;
-      }
-    }
-    setInterval(refresh, 500); refresh();
-    setInterval(refreshPlot, 500); refreshPlot();
+    let proposal={},launchProposal={},latestState={},plotObjectUrl='',plotRequestRunning=false;
+    const $=id=>document.getElementById(id),SVG='http://www.w3.org/2000/svg';
+    async function post(path,data){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(!response.ok)throw new Error(await response.text())}
+    $('mode-acp').onclick=()=>post('/api/mode',{mode:'ADAPTIVE_CONFORMAL_PREDICTION'});$('mode-execution').onclick=()=>post('/api/mode',{mode:'MISSION_EXECUTION'});
+    $('command-form').addEventListener('submit',async event=>{event.preventDefault();const text=$('command').value.trim();if(!text)return;await post('/api/command',{text});$('command').value=''});
+    async function decide(decision){await post('/api/decision',{decision,mission_id:proposal.mission_id,proposal_hash:proposal.proposal_hash})}$('approve').onclick=()=>decide('APPROVE');$('reject').onclick=()=>decide('REJECT');
+    async function decideLaunch(decision){await post('/api/launch-decision',{decision,mission_id:launchProposal.mission_id,plan_id:launchProposal.plan_id,proposal_hash:launchProposal.proposal_hash})}$('launch').onclick=()=>decideLaunch('APPROVE');$('terminate').onclick=()=>decideLaunch('DENY');
+    const speechButton=$('speech'),speechFileInput=$('speech-file'),commandInput=$('command'),speechStatus=$('speech-status'),sendButton=$('send');let recorder=null,recorderStream=null,recordingTimeout=null;const types=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'],audioType=window.MediaRecorder?types.find(type=>MediaRecorder.isTypeSupported(type))||'':'';
+    async function transcribeAudio(audio,type){if(!audio.size)return;speechButton.disabled=true;speechStatus.textContent='Transcribing…';try{const response=await fetch('/api/transcribe',{method:'POST',headers:{'Content-Type':type,'X-Speech-Language':navigator.language||'en-US'},body:audio}),result=await response.json();if(!response.ok)throw new Error(result.error||'transcription failed');commandInput.value=result.text.trim();commandInput.focus();speechStatus.textContent='Transcript ready. Review it, then press Send.'}catch(error){speechStatus.textContent=`Speech transcription failed: ${error.message}`}finally{speechButton.disabled=false}}
+    speechFileInput.onchange=async()=>{const audio=speechFileInput.files[0];if(audio)await transcribeAudio(audio,audio.type);speechFileInput.value=''};function finishRecording(){if(recordingTimeout)clearTimeout(recordingTimeout);if(recorderStream)recorderStream.getTracks().forEach(track=>track.stop());recorderStream=null;speechButton.classList.remove('listening');speechButton.textContent='●';sendButton.disabled=false}
+    if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)speechButton.onclick=()=>speechFileInput.click();else speechButton.onclick=async()=>{if(recorder?.state==='recording'){recorder.stop();return}try{recorderStream=await navigator.mediaDevices.getUserMedia({audio:true});const chunks=[];recorder=new MediaRecorder(recorderStream,audioType?{mimeType:audioType}:undefined);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onstop=async()=>{const type=recorder.mimeType||audioType,audio=new Blob(chunks,{type});finishRecording();await transcribeAudio(audio,type)};recorder.start();speechButton.classList.add('listening');speechButton.textContent='■';sendButton.disabled=true;speechStatus.textContent='Listening…';recordingTimeout=setTimeout(()=>{if(recorder?.state==='recording')recorder.stop()},20000)}catch(error){finishRecording();speechStatus.textContent=`Microphone unavailable: ${error.message}`}};
+    function svgNode(name,attrs={}){const node=document.createElementNS(SVG,name);for(const[key,value]of Object.entries(attrs))node.setAttribute(key,String(value));return node}function pv(point,key,index){return Number(point?.[key]??point?.[index]??0)}
+    function renderMap(state,phase){const svg=$('tactical-map');svg.replaceChildren();const family=state.route_candidates||{},raw=state.raw_plan||{},refined=state.refined_plan||{},verified=state.verified_plan||{};const geometry=Object.keys(family).length?family:Object.keys(proposal).length?proposal:Object.keys(refined).length?refined:state.scene||{};const ws=geometry.workspace||{x:[-3,3],y:[-3,3]},x0=Number(ws.x?.[0]??-3),x1=Number(ws.x?.[1]??3),y0=Number(ws.y?.[0]??-3),y1=Number(ws.y?.[1]??3),p=62,w=900,h=650,sx=x=>p+(x-x0)/(x1-x0)*(w-2*p),sy=y=>h-p-(y-y0)/(y1-y0)*(h-2*p);
+      for(let i=0;i<=10;i++){const x=p+i*(w-2*p)/10,y=p+i*(h-2*p)/10;svg.append(svgNode('line',{x1:x,y1:p,x2:x,y2:h-p,stroke:'rgba(96,221,255,.08)'}),svgNode('line',{x1:p,y1:y,x2:w-p,y2:y,stroke:'rgba(96,221,255,.08)'}))}svg.append(svgNode('rect',{x:p,y:p,width:w-2*p,height:h-2*p,fill:'none',stroke:'rgba(96,221,255,.28)'}));
+      const obstacles=geometry.observed_obstacles||geometry.obstacles||state.scene?.obstacles||[];for(const o of obstacles){const lo=o.min_corner||[],hi=o.max_corner||[],rx=sx(Number(lo[0])),ry=sy(Number(hi[1])),rw=sx(Number(hi[0]))-rx,rh=sy(Number(lo[1]))-ry;svg.append(svgNode('rect',{x:rx,y:ry,width:Math.max(rw,2),height:Math.max(rh,2),rx:4,fill:'rgba(255,101,119,.32)',stroke:'#ff6577','stroke-width':1.5}));const label=svgNode('text',{x:rx+5,y:ry-6,fill:'#ff9aa6','font-size':12});label.textContent=o.label||o.object_id||'obstacle';svg.append(label)}
+      function path(points,color,width=3,opacity=1,dash=''){const value=(points||[]).map(q=>`${sx(pv(q,'x',0))},${sy(pv(q,'y',1))}`).join(' ');if(value)svg.append(svgNode('polyline',{points:value,fill:'none',stroke:color,'stroke-width':width,'stroke-linecap':'round','stroke-linejoin':'round',opacity,'stroke-dasharray':dash}))}
+      const routes=family.routes||[],selected=family.selected_route_id;for(const route of routes){if(selected&&route.route_id!==selected&&phase>=2)continue;path(route.waypoints,route.color||'#60ddff',route.route_id===selected?6:2.5,route.route_id===selected?1:.72)}if(Object.keys(raw).length)path(raw.waypoints,'#ffbd59',2.5,.9,'8 6');if(Object.keys(refined).length)path(refined.waypoints,'#60ddff',4);if(Object.keys(verified).length&&verified.passed!==false)path(verified.waypoints,'#46e6a2',5);
+      const start=geometry.start||raw.start||refined.start,goal=geometry.goal||proposal.goal;if(start)svg.append(svgNode('circle',{cx:sx(pv(start,'x',0)),cy:sy(pv(start,'y',1)),r:7,fill:'#e8f7ff',stroke:'#60ddff','stroke-width':3}));if(goal){const gx=sx(pv(goal,'x',0)),gy=sy(pv(goal,'y',1));svg.append(svgNode('circle',{cx:gx,cy:gy,r:11,fill:'rgba(184,152,255,.18)',stroke:'#b898ff','stroke-width':3}),svgNode('circle',{cx:gx,cy:gy,r:3,fill:'#b898ff'}))}if(!obstacles.length&&!routes.length&&!goal){const text=svgNode('text',{x:450,y:325,'text-anchor':'middle',fill:'#8ea7b7','font-size':16});text.textContent='AWAITING SPATIAL DATA';svg.append(text)}}
+    function phaseInfo(response){const state=response.gateway_state||response.status||'WAITING_FOR_COMMAND';if(['FORMING_SAFETY_TUBES','AWAITING_LAUNCH_APPROVAL','RELEASED_TO_EXECUTOR'].includes(state))return{index:3,label:'Safety review',title:'Verified trajectory & safety tubes',final:true};if(['WAITING_FOR_VERIFICATION','SELECTING_TRAJECTORY'].includes(state)||response.status==='PLANNING')return{index:2,label:'Planning',title:'Selected expert route & LLM plan',final:false};if(['GENERATING_TRAJECTORIES','AWAITING_TRAJECTORY_SELECTION'].includes(state))return{index:2,label:'Route selection',title:'HRRT-star route family',final:false};if(['AWAITING_APPROVAL','PARSING_INTENT'].includes(state)||response.status==='AWAITING_APPROVAL')return{index:1,label:'Goal selection',title:'Proposed mission goal',final:false};return{index:0,label:'Snapshot',title:'Live obstacle snapshot',final:false}}
+    function updatePrompt(info){const route=info.label==='Route selection';$('prompt-title').textContent=route?'Describe your route preference':'Tell Starling where to go';commandInput.placeholder=route?'Take the shortest route that stays far from the person':'Fly near the chair while staying away from the person';const values=route?['Prefer maximum clearance','Use the shortest safe route','Stay far from the person']:['Go near the chair','Stay as far from the person as possible','What objects do you see?'];$('prompt-chips').replaceChildren(...values.map(value=>{const b=document.createElement('button');b.type='button';b.className='chip';b.textContent=value;b.onclick=()=>{commandInput.value=value;commandInput.focus()};return b}));const busy=['GENERATING_TRAJECTORIES','SELECTING_TRAJECTORY'].includes(latestState.response?.gateway_state);commandInput.disabled=busy;sendButton.disabled=busy}
+    function updateUi(state){latestState=state;const response=state.response||{};proposal=state.proposal||{};launchProposal=state.launch_proposal||{};const info=phaseInfo(response),mode=response.interaction_mode||'MISSION_EXECUTION';$('connection-state').textContent='Gateway link active';$('status').textContent=(response.status||'WAITING').replaceAll('_',' ');$('status-message').textContent=response.message||'Waiting for a reliable obstacle snapshot.';$('phase-label').textContent=info.label;$('view-title').textContent=info.title;document.querySelectorAll('.phase').forEach((node,index)=>node.classList.toggle('active',index<=info.index));
+      $('mode-label').textContent=mode==='ADAPTIVE_CONFORMAL_PREDICTION'?'Adaptive conformal prediction':'Mission execution';$('mode-acp').classList.toggle('active',mode==='ADAPTIVE_CONFORMAL_PREDICTION');$('mode-execution').classList.toggle('active',mode!=='ADAPTIVE_CONFORMAL_PREDICTION');const locked=!['WAITING_FOR_COMMAND','CANCELLED','PLANNING_FAILED','SAFETY_TUBE_FAILED',undefined].includes(response.gateway_state);$('mode-acp').disabled=locked;$('mode-execution').disabled=locked;
+      const warning=$('environment-warning'),frozen=response.environment_frozen===true||proposal.environment_frozen===true;warning.textContent=response.environment_warning||(frozen?'Environment frozen for planning. Do not move the vehicle or obstacles until launch or termination.':'');warning.style.display=frozen?'block':'none';const target=proposal.target||{},goal=proposal.goal||{},family=state.route_candidates||{};$('mission-target').textContent=target.label||'—';$('mission-goal').textContent=('x'in goal)?`${Number(goal.x).toFixed(2)}, ${Number(goal.y).toFixed(2)} m`:'—';$('mission-routes').textContent=family.routes?.length?`${family.routes.length} candidates`:'—';$('mission-selected').textContent=family.selected_route_id||'—';
+      $('proposal').textContent=proposal.mission_id?JSON.stringify(proposal,null,2):'No proposal yet.';const awaiting=(response.gateway_state==='AWAITING_APPROVAL'||response.status==='AWAITING_APPROVAL')&&Boolean(proposal.mission_id);$('approve').disabled=!awaiting;$('reject').disabled=!awaiting;$('approval-label').textContent=awaiting?'Goal awaiting approval':family.selected_route_id?'Route selected':'No action required';$('launch-proposal').textContent=launchProposal.plan_id?JSON.stringify(launchProposal,null,2):'No verified trajectory awaiting launch.';const awaitingLaunch=(response.gateway_state==='AWAITING_LAUNCH_APPROVAL'||response.status==='AWAITING_LAUNCH_APPROVAL')&&Boolean(launchProposal.plan_id),safety=$('safety-warning'),showSafety=awaitingLaunch&&Boolean(launchProposal.safety_warning);safety.textContent=showSafety?launchProposal.safety_warning:'';safety.style.display=showSafety?'block':'none';$('launch').textContent=showSafety?'Approve & Launch Despite Warning':'Launch mission';$('launch').disabled=!awaitingLaunch;$('terminate').disabled=!awaitingLaunch;
+      $('tactical-map').style.display=info.final?'none':'block';$('contraction-plot').style.display=info.final?'block':'none';$('view-badge').textContent=info.final?'Frozen safety view':'Live';renderMap(state,info.index);updatePrompt(info);$('plot-status').textContent=info.final?'Frozen after verification — do not move obstacles.':info.title}
+    async function refresh(){try{updateUi(await(await fetch('/api/state',{cache:'no-store'})).json())}catch(error){$('connection-state').textContent='Gateway link unavailable';$('status').textContent='Connection interrupted';$('status-message').textContent=String(error)}}async function refreshPlot(){if(plotRequestRunning||$('contraction-plot').style.display==='none')return;plotRequestRunning=true;try{const response=await fetch(`/api/contraction.png?t=${Date.now()}`,{cache:'no-store'});if(!response.ok)return;const next=URL.createObjectURL(await response.blob()),plot=$('contraction-plot'),previous=plotObjectUrl;plot.onload=()=>{if(previous)URL.revokeObjectURL(previous)};plotObjectUrl=next;plot.src=next}finally{plotRequestRunning=false}}
+    setInterval(refresh,500);refresh();setInterval(refreshPlot,700);
   </script>
 </body>
 </html>

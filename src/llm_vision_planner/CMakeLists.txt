@@ -21,14 +21,7 @@ install(PROGRAMS
   scripts/trajectory_follower.py
   scripts/trajectory_follower_continuous.py
   scripts/control_law_executer.py
-  fine_tuning/scripts/vision_error_dataset_generattor.py
-  fine_tuning/scripts/postprocess_vision_error_dataset.py
-  DESTINATION lib/${PROJECT_NAME}
-)
-
-install(FILES
-  fine_tuning/scripts/min_control_qp.py
-  fine_tuning/scripts/lqr.py
+  fine_tuning/scripts/hrrt_star.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

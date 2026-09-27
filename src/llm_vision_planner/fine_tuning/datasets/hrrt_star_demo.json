@@ -1,0 +1,835 @@
+{
+  "planner": "hrrt_star_clearance_bins",
+  "seed": 17,
+  "start": {
+    "x": -3.5,
+    "y": 0.0,
+    "z": -0.5
+  },
+  "goal": {
+    "x": 3.5,
+    "y": 0.0,
+    "z": -0.5
+  },
+  "workspace": {
+    "x": [
+      -4.0,
+      4.0
+    ],
+    "y": [
+      -3.0,
+      3.0
+    ],
+    "z": -0.5
+  },
+  "hard_clearance_m": 0.4,
+  "signature_modulus": 2,
+  "clearance_bin_thresholds_m": {
+    "backpack": [
+      0.65,
+      0.95
+    ],
+    "bench": [
+      0.65,
+      0.95
+    ],
+    "bottle": [
+      0.55,
+      0.75
+    ],
+    "chair": [
+      0.6,
+      0.8
+    ],
+    "default": [
+      0.65,
+      0.95
+    ],
+    "person": [
+      0.8,
+      1.2
+    ],
+    "potted_plant": [
+      0.65,
+      0.95
+    ],
+    "stop_sign": [
+      0.7,
+      1.0
+    ],
+    "unknown": [
+      0.75,
+      1.1
+    ]
+  },
+  "obstacles": [
+    {
+      "object_id": "person-1",
+      "label": "person",
+      "min_corner": [
+        -1.45,
+        -0.45,
+        -0.5
+      ],
+      "max_corner": [
+        -0.65,
+        0.45,
+        -0.5
+      ]
+    },
+    {
+      "object_id": "chair-1",
+      "label": "chair",
+      "min_corner": [
+        0.65,
+        -0.45,
+        -0.5
+      ],
+      "max_corner": [
+        1.45,
+        0.45,
+        -0.5
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "route_id": "route-001",
+      "color": "#0072B2",
+      "h_signature": [
+        -1,
+        -1
+      ],
+      "clearance_bins": [
+        0,
+        0
+      ],
+      "composite_key": {
+        "h_signature": [
+          -1,
+          -1
+        ],
+        "clearance_bins": [
+          0,
+          0
+        ]
+      },
+      "winding_vector": [
+        -0.5,
+        -0.5
+      ],
+      "minimum_clearance_m": {
+        "person-1": 0.5234,
+        "chair-1": 0.4872
+      },
+      "path_length_m": 7.4968,
+      "waypoints": [
+        {
+          "x": -3.5,
+          "y": 0.0,
+          "z": -0.5
+        },
+        {
+          "x": -1.8504,
+          "y": 0.9745,
+          "z": -0.5
+        },
+        {
+          "x": 1.3593,
+          "y": 0.9714,
+          "z": -0.5
+        },
+        {
+          "x": 2.0741,
+          "y": 0.8041,
+          "z": -0.5
+        },
+        {
+          "x": 3.5,
+          "y": 0.0,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-002",
+      "color": "#D55E00",
+      "h_signature": [
+        -1,
+        1
+      ],
+      "clearance_bins": [
+        0,
+        0
+      ],
+      "composite_key": {
+        "h_signature": [
+          -1,
+          1
+        ],
+        "clearance_bins": [
+          0,
+          0
+        ]
+      },
+      "winding_vector": [
+        -0.5,
+        0.5
+      ],
+      "minimum_clearance_m": {
+        "person-1": 0.5342,
+        "chair-1": 0.5521
+      },
+      "path_length_m": 9.2228,
+      "waypoints": [
+        {
+          "x": -3.5,
+          "y": 0.0,
+          "z": -0.5
+        },
+        {
+          "x": -1.8504,
+          "y": 0.9745,
+          "z": -0.5
+        },
+        {
+          "x": -0.4488,
+          "y": 1.0089,
+          "z": -0.5
+        },
+        {
+          "x": -0.0358,
+          "y": 0.7187,
+          "z": -0.5
+        },
+        {
+          "x": 0.0802,
+          "y": -0.9972,
+          "z": -0.5
+        },
+        {
+          "x": 1.6683,
+          "y": -1.0108,
+          "z": -0.5
+        },
+        {
+          "x": 3.5,
+          "y": 0.0,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-003",
+      "color": "#009E73",
+      "h_signature": [
+        1,
+        -1
+      ],
+      "clearance_bins": [
+        0,
+        1
+      ],
+      "composite_key": {
+        "h_signature": [
+          1,
+          -1
+        ],
+        "clearance_bins": [
+          0,
+          1
+        ]
+      },
+      "winding_vector": [
+        0.5,
+        -0.5
+      ],
+      "minimum_clearance_m": {
+        "person-1": 0.5003,
+        "chair-1": 0.6222
+      },
+      "path_length_m": 10.7185,
+      "waypoints": [
+        {
+          "x": -3.5,
+          "y": 0.0,
+          "z": -0.5
+        },
+        {
+          "x": -1.5267,
+          "y": -1.4785,
+          "z": -0.5
+        },
+        {
+          "x": -0.28,
+          "y": -0.9871,
+          "z": -0.5
+        },
+        {
+          "x": -0.1322,
+          "y": -0.4539,
+          "z": -0.5
+        },
+        {
+          "x": -0.146,
+          "y": 1.7603,
+          "z": -0.5
+        },
+        {
+          "x": 3.3171,
+          "y": 0.3712,
+          "z": -0.5
+        },
+        {
+          "x": 3.5,
+          "y": 0.0,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-004",
+      "color": "#CC79A7",
+      "h_signature": [
+        1,
+        1
+      ],
+      "clearance_bins": [
+        0,
+        1
+      ],
+      "composite_key": {
+        "h_signature": [
+          1,
+          1
+        ],
+        "clearance_bins": [
+          0,
+          1
+        ]
+      },
+      "winding_vector": [
+        0.5,
+        0.5
+      ],
+      "minimum_clearance_m": {
+        "person-1": 0.7959,
+        "chair-1": 0.6014
+      },
+      "path_length_m": 7.8262,
+      "waypoints": [
+        {
+          "x": -3.5,
+          "y": 0.0,
+          "z": -0.5
+        },
+        {
+          "x": -1.5267,
+          "y": -1.4785,
+          "z": -0.5
+        },
+        {
+          "x": -0.168,
+          "y": -1.1528,
+          "z": -0.5
+        },
+        {
+          "x": 1.4466,
+          "y": -1.0806,
+          "z": -0.5
+        },
+        {
+          "x": 2.3498,
+          "y": -0.8009,
+          "z": -0.5
+        },
+        {
+          "x": 3.5,
+          "y": 0.0,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-005",
+      "color": "#E69F00",
+      "h_signature": [
+        -1,
+        -1
+      ],
+      "clearance_bins": [
+        0,
+        1
+      ],
+      "composite_key": {
+        "h_signature": [
+          -1,
+          -1
+        ],
+        "clearance_bins": [
+          0,
+          1
+        ]
+      },
+      "winding_vector": [
+        -0.5,
+        -0.5
+      ],
+      "minimum_clearance_m": {
+        "person-1": 0.5498,
+        "chair-1": 0.6056
+      },
+      "path_length_m": 7.582,
+      "waypoints": [
+        {
+          "x": -3.5,
+          "y": 0.0,
+          "z": -0.5
+        },
+        {
+          "x": -1.8504,
+          "y": 0.9745,
+          "z": -0.5
+        },
+        {
+          "x": 1.3711,
+          "y": 1.1873,
+          "z": -0.5
+        },
+        {
+          "x": 3.5,
+          "y": 0.0,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-006",
+      "color": "#56B4E9",
+      "h_signature": [
+        -1,
+        1
+      ],
+      "clearance_bins": [
+        0,
+        1
+      ],
+      "composite_key": {
+        "h_signature": [
+          -1,
+          1
+        ],
+        "clearance_bins": [
+          0,
+          1
+        ]
+      },
+      "winding_vector": [
+        -0.5,
+        0.5
+      ],
+      "minimum_clearance_m": {
+        "person-1": 0.5342,
+        "chair-1": 0.6055
+      },
+      "path_length_m": 9.3903,
+      "waypoints": [
+        {
+          "x": -3.5,
+          "y": 0.0,
+          "z": -0.5
+        },
+        {
+          "x": -1.8504,
+          "y": 0.9745,
+          "z": -0.5
+        },
+        {
+          "x": -0.4488,
+          "y": 1.0089,
+          "z": -0.5
+        },
+        {
+          "x": -0.0358,
+          "y": 0.7187,
+          "z": -0.5
+        },
+        {
+          "x": 0.0802,
+          "y": -0.9972,
+          "z": -0.5
+        },
+        {
+          "x": 1.3474,
+          "y": -1.3392,
+          "z": -0.5
+        },
+        {
+          "x": 3.5,
+          "y": 0.0,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-007",
+      "color": "#6A3D9A",
+      "h_signature": [
+        1,
+        -1
+      ],
+      "clearance_bins": [
+        0,
+        0
+      ],
+      "composite_key": {
+        "h_signature": [
+          1,
+          -1
+        ],
+        "clearance_bins": [
+          0,
+          0
+        ]
+      },
+      "winding_vector": [
+        0.5,
+        -0.5
+      ],
+      "minimum_clearance_m": {
+        "person-1": 0.6088,
+        "chair-1": 0.5801
+      },
+      "path_length_m": 10.7943,
+      "waypoints": [
+        {
+          "x": -3.5,
+          "y": 0.0,
+          "z": -0.5
+        },
+        {
+          "x": -1.182,
+          "y": -1.4173,
+          "z": -0.5
+        },
+        {
+          "x": 0.0993,
+          "y": -0.7435,
+          "z": -0.5
+        },
+        {
+          "x": -0.1766,
+          "y": 1.7141,
+          "z": -0.5
+        },
+        {
+          "x": 3.3171,
+          "y": 0.3712,
+          "z": -0.5
+        },
+        {
+          "x": 3.5,
+          "y": 0.0,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-008",
+      "color": "#1B9E77",
+      "h_signature": [
+        1,
+        1
+      ],
+      "clearance_bins": [
+        1,
+        1
+      ],
+      "composite_key": {
+        "h_signature": [
+          1,
+          1
+        ],
+        "clearance_bins": [
+          1,
+          1
+        ]
+      },
+      "winding_vector": [
+        0.5,
+        0.5
+      ],
+      "minimum_clearance_m": {
+        "person-1": 0.869,
+        "chair-1": 0.6259
+      },
+      "path_length_m": 7.8288,
+      "waypoints": [
+        {
+          "x": -3.5,
+          "y": 0.0,
+          "z": -0.5
+        },
+        {
+          "x": -1.5267,
+          "y": -1.4785,
+          "z": -0.5
+        },
+        {
+          "x": 1.9799,
+          "y": -1.0106,
+          "z": -0.5
+        },
+        {
+          "x": 3.5,
+          "y": 0.0,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-009",
+      "color": "#E7298A",
+      "h_signature": [
+        -1,
+        -1
+      ],
+      "clearance_bins": [
+        1,
+        1
+      ],
+      "composite_key": {
+        "h_signature": [
+          -1,
+          -1
+        ],
+        "clearance_bins": [
+          1,
+          1
+        ]
+      },
+      "winding_vector": [
+        -0.5,
+        -0.5
+      ],
+      "minimum_clearance_m": {
+        "person-1": 0.8278,
+        "chair-1": 0.6276
+      },
+      "path_length_m": 7.7455,
+      "waypoints": [
+        {
+          "x": -3.5,
+          "y": 0.0,
+          "z": -0.5
+        },
+        {
+          "x": -2.1947,
+          "y": 1.0373,
+          "z": -0.5
+        },
+        {
+          "x": -1.5506,
+          "y": 1.3044,
+          "z": -0.5
+        },
+        {
+          "x": 1.3323,
+          "y": 1.2401,
+          "z": -0.5
+        },
+        {
+          "x": 3.5,
+          "y": 0.0,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-010",
+      "color": "#7570B3",
+      "h_signature": [
+        1,
+        1
+      ],
+      "clearance_bins": [
+        1,
+        0
+      ],
+      "composite_key": {
+        "h_signature": [
+          1,
+          1
+        ],
+        "clearance_bins": [
+          1,
+          0
+        ]
+      },
+      "winding_vector": [
+        0.5,
+        0.5
+      ],
+      "minimum_clearance_m": {
+        "person-1": 0.869,
+        "chair-1": 0.5456
+      },
+      "path_length_m": 8.0228,
+      "waypoints": [
+        {
+          "x": -3.5,
+          "y": 0.0,
+          "z": -0.5
+        },
+        {
+          "x": -1.5267,
+          "y": -1.4785,
+          "z": -0.5
+        },
+        {
+          "x": 1.6885,
+          "y": -1.2044,
+          "z": -0.5
+        },
+        {
+          "x": 2.0273,
+          "y": -0.5115,
+          "z": -0.5
+        },
+        {
+          "x": 3.5,
+          "y": 0.0,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-011",
+      "color": "#66A61E",
+      "h_signature": [
+        -1,
+        -1
+      ],
+      "clearance_bins": [
+        0,
+        2
+      ],
+      "composite_key": {
+        "h_signature": [
+          -1,
+          -1
+        ],
+        "clearance_bins": [
+          0,
+          2
+        ]
+      },
+      "winding_vector": [
+        -0.5,
+        -0.5
+      ],
+      "minimum_clearance_m": {
+        "person-1": 0.5688,
+        "chair-1": 0.8106
+      },
+      "path_length_m": 7.6947,
+      "waypoints": [
+        {
+          "x": -3.5,
+          "y": 0.0,
+          "z": -0.5
+        },
+        {
+          "x": -1.8504,
+          "y": 0.9745,
+          "z": -0.5
+        },
+        {
+          "x": 1.0754,
+          "y": 1.3262,
+          "z": -0.5
+        },
+        {
+          "x": 1.6741,
+          "y": 1.2831,
+          "z": -0.5
+        },
+        {
+          "x": 3.5,
+          "y": 0.0,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-012",
+      "color": "#A6761D",
+      "h_signature": [
+        1,
+        1
+      ],
+      "clearance_bins": [
+        0,
+        0
+      ],
+      "composite_key": {
+        "h_signature": [
+          1,
+          1
+        ],
+        "clearance_bins": [
+          0,
+          0
+        ]
+      },
+      "winding_vector": [
+        0.5,
+        0.5
+      ],
+      "minimum_clearance_m": {
+        "person-1": 0.7959,
+        "chair-1": 0.5635
+      },
+      "path_length_m": 8.0998,
+      "waypoints": [
+        {
+          "x": -3.5,
+          "y": 0.0,
+          "z": -0.5
+        },
+        {
+          "x": -1.5267,
+          "y": -1.4785,
+          "z": -0.5
+        },
+        {
+          "x": -0.168,
+          "y": -1.1528,
+          "z": -0.5
+        },
+        {
+          "x": 1.7753,
+          "y": -1.2009,
+          "z": -0.5
+        },
+        {
+          "x": 2.0273,
+          "y": -0.5115,
+          "z": -0.5
+        },
+        {
+          "x": 3.5,
+          "y": 0.0,
+          "z": -0.5
+        }
+      ]
+    }
+  ],
+  "stats": {
+    "iterations": 300,
+    "tree_nodes": 5248,
+    "composite_subtrees": 27,
+    "goal_keys_found": 22,
+    "routes_returned": 12
+  }
+}

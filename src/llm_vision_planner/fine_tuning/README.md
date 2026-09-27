@@ -9,6 +9,9 @@ its future data-generation entry points.
   implementation with winding-number H-signatures, RRT-star rewiring,
   inter-signature rewiring, label-conditioned clearance bins, finite composite
   route keys, JSON output, validation, and demo plotting.
+- `scripts/min_control_qp.py`: the existing minimum-control QP implementation,
+  copied unchanged for converting verified HRRT waypoints into state and control
+  samples.
 
 ## Reserved for later steps
 

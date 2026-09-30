@@ -45,7 +45,15 @@ def allocate_steps(durations, dt=DT, total_steps=None):
 
 
 def discrete_dynamics(dt=DT, damping=DAMPING):
-    """Exact zero-order-hold dynamics for p_dot=v, v_dot=-d*v+d*u."""
+    """Exact zero-order-hold dynamics.
+
+    ``damping=0`` selects the ideal double integrator ``p_ddot=u`` used by
+    residual calibration.  The historical damped model remains the default.
+    """
+    if math.isclose(float(damping), 0.0, abs_tol=1e-12):
+        a = np.array([[1.0, dt], [0.0, 1.0]], dtype=float)
+        b = np.array([0.5 * dt * dt, dt], dtype=float)
+        return a, b
     decay = math.exp(-damping * dt)
     velocity_gain = 1.0 - decay
     position_velocity_gain = velocity_gain / damping
@@ -80,9 +88,9 @@ def evaluate_sample(samples, timestamp, damping=DAMPING):
     return state, np.asarray(samples[index]["u"], dtype=float)
 
 
-def _solve_controls(waypoints, waypoint_knots, total_steps, dt):
+def _solve_controls(waypoints, waypoint_knots, total_steps, dt, damping=DAMPING):
     """Eliminate states and solve the equality-constrained minimum-norm QP."""
-    a, b = discrete_dynamics(dt)
+    a, b = discrete_dynamics(dt, damping)
     influence = np.zeros((2, total_steps), dtype=float)
     free = np.array([[float(waypoints[0]["x"]), float(waypoints[0]["y"])], [0.0, 0.0]])
     rows = []
@@ -117,16 +125,26 @@ def _positive_limit(name, value):
     return value
 
 
-def _controls_respect_limits(controls, dt, max_velocity_mps, max_acceleration_mps2):
+def _controls_respect_limits(
+    controls,
+    dt,
+    max_velocity_mps,
+    max_acceleration_mps2,
+    damping=DAMPING,
+):
     """Check state velocity, velocity-command, and modeled acceleration bounds."""
     max_velocity_mps = _positive_limit("max_velocity_mps", max_velocity_mps)
     max_acceleration_mps2 = _positive_limit("max_acceleration_mps2", max_acceleration_mps2)
     state = np.array([[0.0, 0.0], [0.0, 0.0]], dtype=float)
-    a, b = discrete_dynamics(dt)
+    a, b = discrete_dynamics(dt, damping)
     for control in controls:
         if max_velocity_mps is not None and float(np.linalg.norm(control)) > max_velocity_mps + 1e-8:
             return False
-        acceleration = DAMPING * (control - state[1])
+        acceleration = (
+            control
+            if math.isclose(float(damping), 0.0, abs_tol=1e-12)
+            else float(damping) * (control - state[1])
+        )
         if max_acceleration_mps2 is not None and float(np.linalg.norm(acceleration)) > max_acceleration_mps2 + 1e-8:
             return False
         state = a @ state + b[:, None] * control[None, :]
@@ -144,6 +162,7 @@ def generate_trajectory(
     total_steps=None,
     max_velocity_mps=None,
     max_acceleration_mps2=None,
+    damping=DAMPING,
 ):
     """Solve a minimum-control QP whose accepted reference meets hard motion bounds."""
     usable_waypoints = list(waypoints)
@@ -163,12 +182,13 @@ def generate_trajectory(
         steps = allocate_steps(natural_durations, dt=dt, total_steps=candidate_total_steps)
         waypoint_knots = np.concatenate(([0], np.cumsum(steps))).astype(int).tolist()
         total_steps = waypoint_knots[-1]
-        controls = _solve_controls(usable_waypoints, waypoint_knots, total_steps, dt)
+        controls = _solve_controls(usable_waypoints, waypoint_knots, total_steps, dt, damping)
         if not bounded or _controls_respect_limits(
             controls,
             dt,
             max_velocity_mps,
             max_acceleration_mps2,
+            damping,
         ):
             break
         last_error = "requested horizon exceeds a horizontal safety bound"
@@ -177,7 +197,7 @@ def generate_trajectory(
             "Bounded minimum-control QP remains infeasible after lengthening the horizon: "
             f"{last_error}"
         )
-    a, b = discrete_dynamics(dt)
+    a, b = discrete_dynamics(dt, damping)
     states = np.array(
         [[float(usable_waypoints[0]["x"]), float(usable_waypoints[0]["y"])], [0.0, 0.0]],
         dtype=float,
@@ -216,6 +236,7 @@ def generate_shared_pair(
     dt=DT,
     max_velocity_mps=None,
     max_acceleration_mps2=None,
+    damping=DAMPING,
 ):
     """Solve RRT and LLM QPs with one bounded shared horizon."""
     rrt_natural = segment_durations(rrt_waypoints)
@@ -231,6 +252,7 @@ def generate_shared_pair(
             total_steps=total_steps,
             max_velocity_mps=max_velocity_mps,
             max_acceleration_mps2=max_acceleration_mps2,
+            damping=damping,
         )
         llm = generate_trajectory(
             llm_waypoints,
@@ -241,6 +263,7 @@ def generate_shared_pair(
             total_steps=total_steps,
             max_velocity_mps=max_velocity_mps,
             max_acceleration_mps2=max_acceleration_mps2,
+            damping=damping,
         )
         required_steps = max(rrt["waypoint_knots"][-1], llm["waypoint_knots"][-1])
         if rrt["waypoint_knots"][-1] == llm["waypoint_knots"][-1] == total_steps:

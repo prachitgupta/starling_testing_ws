@@ -2,6 +2,7 @@
 """Minimal local web UI bridging operator actions to ROS 2 topics."""
 
 import json
+import math
 import os
 import re
 import threading
@@ -11,7 +12,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import rclpy
+from px4_msgs.msg import VehicleOdometry
 from rclpy.node import Node
+from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import String
 
 
@@ -27,6 +30,11 @@ AUDIO_EXTENSIONS = {
     "audio/x-m4a": "m4a",
     "audio/x-wav": "wav",
 }
+ODOM_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=10,
+)
 
 
 def audio_file_metadata(content_type):
@@ -56,6 +64,7 @@ class WebUiBridge(Node):
         self.declare_parameter("raw_plan_topic", "/llm_vision/plan_raw")
         self.declare_parameter("refined_plan_topic", "/llm_vision/plan_refined")
         self.declare_parameter("verified_plan_topic", "/llm_vision/plan_candidate_verified")
+        self.declare_parameter("pose_topic", "/fmu/out/vehicle_odometry")
         self.declare_parameter("visualizer", "contraction")
         self.declare_parameter("transcription_model", "gpt-4o-mini-transcribe")
         self.declare_parameter(
@@ -120,6 +129,12 @@ class WebUiBridge(Node):
             10,
         )
         self.create_subscription(
+            VehicleOdometry,
+            str(self.get_parameter("pose_topic").value),
+            self.pose_callback,
+            ODOM_QOS,
+        )
+        self.create_subscription(
             String,
             str(self.get_parameter("mission_proposal_topic").value),
             self.proposal_callback,
@@ -140,6 +155,7 @@ class WebUiBridge(Node):
         self.latest_raw_plan = {}
         self.latest_refined_plan = {}
         self.latest_verified_plan = {}
+        self.latest_pose = {}
         self.transcription_model = str(self.get_parameter("transcription_model").value)
         self.transcription_client = None
         self.contraction_plot_enabled = (
@@ -216,6 +232,20 @@ class WebUiBridge(Node):
         with self.lock:
             self.latest_verified_plan = self.decode_payload(msg)
 
+    def pose_callback(self, msg):
+        if msg.pose_frame != VehicleOdometry.POSE_FRAME_NED:
+            return
+        position = [float(value) for value in msg.position[:3]]
+        if not all(math.isfinite(value) for value in position):
+            return
+        with self.lock:
+            self.latest_pose = {
+                "x": position[0],
+                "y": position[1],
+                "z": position[2],
+                "timestamp": int(msg.timestamp),
+            }
+
     def state_payload(self):
         with self.lock:
             return {
@@ -227,6 +257,7 @@ class WebUiBridge(Node):
                 "raw_plan": self.latest_raw_plan,
                 "refined_plan": self.latest_refined_plan,
                 "verified_plan": self.latest_verified_plan,
+                "drone_odometry": self.latest_pose,
                 "timestamp": time.time(),
             }
 

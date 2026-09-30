@@ -82,6 +82,25 @@ class PathVerifier(Node):
         output["thresholds"] = metrics["thresholds"]
         output["verification_feedback_table"] = metrics["feedback_table"]
         output["timestamp_verified"] = time.time()
+        expert = payload.get("selected_expert_route_refined")
+        if isinstance(expert, dict) and len(expert.get("waypoints", [])) >= 2:
+            expert_payload = dict(payload)
+            expert_payload["waypoints"] = expert["waypoints"]
+            expert_metrics = self.compute_metrics(expert_payload)
+            output["selected_expert_route_verification"] = {
+                **expert,
+                "metrics": expert_metrics,
+                "passed": expert_metrics["passed"],
+                "failed_constraints": expert_metrics["failed_constraints"],
+            }
+            if (
+                payload.get("interaction_mode") == "ADAPTIVE_CONFORMAL_PREDICTION"
+                and not expert_metrics["passed"]
+            ):
+                output["passed"] = False
+                output["failed_constraints"] = list(output["failed_constraints"]) + [
+                    "expert_hrrt_route"
+                ]
 
         out = String()
         out.data = json.dumps(output)

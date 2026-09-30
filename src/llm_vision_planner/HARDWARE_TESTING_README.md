@@ -26,8 +26,8 @@ sudo apt install -y git build-essential cmake python3-colcon-common-extensions \
 
 mkdir -p ~/Desktop
 git clone --depth 1 --single-branch --branch starling_multiple_trajectory_idea \
-  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/starling_testing_ws
-cd ~/Desktop/starling_testing_ws
+  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/starling_multiple_trajectory_idea
+cd ~/Desktop/starling_multiple_trajectory_idea
 source /opt/ros/humble/setup.bash
 bash scripts/setup_workspace.sh
 if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
@@ -49,8 +49,8 @@ monitors and service/launch commands each need their own terminal; stop a
 monitor with `Ctrl+C` before running the next monitor command.
 
 Follow Sections 1–10 for hardware setup, Section 11 for simulated-obstacle
-gateway checks, and Section 12 for the real TFLite/ToF mission. The new
-calibration-data procedure is intentionally outside this guide.
+gateway checks, Section 12 for the real TFLite/ToF mission, and Section 13 for
+the two-stage residual-calibration data workflow.
 
 This procedure uses:
 
@@ -88,7 +88,7 @@ Tracker/DataStream through the Windows firewall if this check fails.
 #### Run once on the ground station
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_multiple_trajectory_idea
 source /opt/ros/humble/setup.bash
 colcon build --packages-select llm_vision_planner
 source install/setup.bash
@@ -128,7 +128,7 @@ systemctl show voxl-microdds-agent --property=LoadState,ActiveState,Environment
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -212,7 +212,7 @@ Run in every new ground-station ROS 2 terminal:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
 unset RMW_IMPLEMENTATION ROS_DOMAIN_ID ROS_LOCALHOST_ONLY \
   FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
 ros2 daemon stop
@@ -299,7 +299,7 @@ done
 2. Configure the adapter:
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_multiple_trajectory_idea
 ADAPTER="$PWD/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_hrrt_lora"
 test -s "$ADAPTER/adapter_config.json" && test -s "$ADAPTER/adapter_model.safetensors"
 ```
@@ -343,7 +343,7 @@ On the ground station:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -358,7 +358,7 @@ In another terminal:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -452,7 +452,7 @@ Source it in every Vicon bridge terminal:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
 source ~/colcon_ws/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
@@ -566,7 +566,7 @@ On the ground station, verify both MPA and PX4 DDS topics:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -606,7 +606,7 @@ Vehicle Setup > Parameters > Tools > Load from file
 Load:
 
 ```text
-~/Desktop/starling_testing_ws/src/llm_vision_planner/params/vicon_voxl.params
+~/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/params/vicon_voxl.params
 ```
 
 Load this file after any QVIO parameter profile; loading the QVIO profile
@@ -723,7 +723,7 @@ keep the prompt/gateway `fixed_z`, goal Z, refiner fallback, and executor
 On the ground station:
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_multiple_trajectory_idea
 source /opt/ros/humble/setup.bash
 colcon build --packages-select px4_msgs voxl_msgs llm_vision_planner
 source install/setup.bash
@@ -760,7 +760,7 @@ publisher, and monitors.
 ### 11.1 Terminal 1: publish dummy obstacles
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_multiple_trajectory_idea
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -771,7 +771,7 @@ ros2 topic pub -r 2 /llm_vision/sim_obstacles std_msgs/msg/String \
 ### 11.2 Terminal 2: launch the interactive gateway once
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_multiple_trajectory_idea
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 read -rsp "OpenAI API key: " OPENAI_API_KEY
@@ -785,7 +785,6 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   use_dataset_scene:=false \
   llm_provider:=llama \
   visualizer:=contraction \
-  obs_safety_bracket:=conformal \
   web_ui_host:=127.0.0.1
 ```
 
@@ -803,7 +802,7 @@ Open `http://127.0.0.1:8080`.
 ### 11.3 Terminal 3: monitor the pipeline
 
 ```bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
 ros2 topic echo /llm_vision/mission_state
 ros2 topic echo /llm_vision/hrrt_route_candidates
 ros2 topic echo /llm_vision/prompt
@@ -908,7 +907,7 @@ voxl-inspect-services | grep -E 'camera|qvio|tflite|mpa-to-ros2'
 Run on the ground station:
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_multiple_trajectory_idea
 source /opt/ros/humble/setup.bash
 colcon build --packages-select llm_vision_planner
 source install/setup.bash
@@ -919,18 +918,18 @@ source install/setup.bash
 Terminal 1:
 
 ```bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
 ros2 run llm_vision_planner perception_detection.py --ros-args \
-  --params-file ~/Desktop/starling_testing_ws/src/llm_vision_planner/config/llm_vision_planner.yaml
+  --params-file ~/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/config/llm_vision_planner.yaml
 ```
 
 Terminal 2:
 
 ```bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -940,7 +939,7 @@ ros2 topic echo --full-length /llm_vision/semantic_obstacles
 ### Open the live perception plot
 
 ```bash
-source ~/Desktop/starling_testing_ws/install/setup.bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
 ros2 daemon start
@@ -963,7 +962,7 @@ This command starts real flight control. Run it only when the vehicle is ready
 to fly.
 
 ```bash
-cd ~/Desktop/starling_testing_ws
+cd ~/Desktop/starling_multiple_trajectory_idea
 source install/setup.bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
   enable auto 42
@@ -978,8 +977,7 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   intent_provider:=openai \
   llm_provider:=llama \
   visualizer:=contraction \
-  web_ui_host:=0.0.0.0 \
-  obs_safety_bracket:=hardcoded
+  web_ui_host:=0.0.0.0
 ```
 
 Use the RC kill switch or change PX4/QGroundControl mode to abort.
@@ -991,6 +989,301 @@ address to type into the browser. Select either mode from the left panel before
 submitting the first mission prompt. See Section 11 for the approval walkthrough.
 Add `land_after_complete:=false` to the launch command to hold the final goal
 instead of landing automatically.
+
+## 13. Generate the residual calibration dataset
+
+This workflow is deliberately split into two stages. The flight records only
+comma-delimited perceived/ground-truth obstacle geometry. Offline processing
+then runs HRRT-star on ground truth, the Llama planner on perception, both
+ideal-double-integrator QPs, and writes one residual conformity score per
+capture. Never use the raw CSV as the conformal calibration input.
+
+### 13.1 Check the supplied dummy files
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+RAW_DUMMY="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw_dummy.csv"
+SCORED_DUMMY="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_scored_dummy.csv"
+
+head -n 3 "$RAW_DUMMY"
+head -n 3 "$SCORED_DUMMY"
+
+python3 src/llm_vision_planner/fine_tuning/scripts/postprocess_residual_calibration.py \
+  --raw-csv "$RAW_DUMMY" \
+  --output-csv /tmp/calibration_residual_scored_smoke.csv \
+  --delimiter ',' \
+  --l1-text "Fly to the point beyond the chair." \
+  --l2-text "Use a short route while staying away from the person." \
+  --goal-x 3.0 \
+  --goal-y 0.0 \
+  --fixed-z -0.5 \
+  --planner-provider mock \
+  --expert-selector heuristic \
+  --all-captures \
+  --placeholder
+
+head -n 3 /tmp/calibration_residual_scored_smoke.csv
+```
+
+The dummy rows have `placeholder=true`. They verify the schema only and must
+not be mixed with real calibration data.
+
+### 13.2 Start the all-object Vicon bridge
+
+Stop any other Vicon bridge first. Run this on the ground station:
+
+```bash
+export VICON_COMPUTER_IP=10.117.229.124
+
+ros2 run vicon_bridge vicon_bridge --ros-args \
+  -p host_name:="${VICON_COMPUTER_IP}:801" \
+  -p stream_mode:="ServerPush" \
+  -p update_rate_hz:=125.0 \
+  -p expected_rate_hz:=50.0 \
+  -p publish_specific_segment:=false \
+  -p world_frame_id:="vicon_world" \
+  -p tf_namespace:="vicon" \
+  -r /vicon/Starling2/Starling2/pose:=/mavros/vision_pose/pose
+```
+
+In another terminal, verify every required stream:
+
+```bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
+ros2 topic echo /vicon/Starling2/Starling2 --once
+ros2 topic echo /vicon/chair1/chair1 --once
+ros2 topic echo /vicon/person/person --once
+ros2 topic echo /vicon/stopsign/stopsign --once
+ros2 topic echo /fmu/out/vehicle_odometry --once
+```
+
+### 13.3 Record raw hardware captures
+
+This launch owns Offboard control: do not run `full_plot.launch.py` or another
+Offboard publisher at the same time. Keep QGroundControl land/kill controls
+available. The vehicle takes off, holds its initial X/Y position, and records
+only after frame alignment reports `FRAME_READY`.
+
+In the launch terminal:
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+
+read -rsp "OpenAI API key: " OPENAI_API_KEY
+export OPENAI_API_KEY
+read -rp "Chair X width in metres: " CHAIR_WIDTH_M
+read -rp "Chair Y depth in metres: " CHAIR_DEPTH_M
+read -rp "Person target X width in metres: " PERSON_WIDTH_M
+read -rp "Person target Y depth in metres: " PERSON_DEPTH_M
+read -rp "Stop-sign target X width in metres: " STOPSIGN_WIDTH_M
+read -rp "Stop-sign target Y depth in metres: " STOPSIGN_DEPTH_M
+
+export CHAIR_WIDTH_M CHAIR_DEPTH_M PERSON_WIDTH_M PERSON_DEPTH_M \
+  STOPSIGN_WIDTH_M STOPSIGN_DEPTH_M
+VICON_OBJECTS_JSON="$(python3 - <<'PY'
+import json
+import os
+
+print(json.dumps([
+    {
+        "object_id": "chair-1",
+        "label": "chair",
+        "topic": "/vicon/chair1/chair1",
+        "dimensions_m": [float(os.environ["CHAIR_WIDTH_M"]), float(os.environ["CHAIR_DEPTH_M"])],
+    },
+    {
+        "object_id": "person-1",
+        "label": "person",
+        "topic": "/vicon/person/person",
+        "dimensions_m": [float(os.environ["PERSON_WIDTH_M"]), float(os.environ["PERSON_DEPTH_M"])],
+    },
+    {
+        "object_id": "stop-sign-1",
+        "label": "stop sign",
+        "topic": "/vicon/stopsign/stopsign",
+        "dimensions_m": [float(os.environ["STOPSIGN_WIDTH_M"]), float(os.environ["STOPSIGN_DEPTH_M"])],
+    },
+]))
+PY
+)"
+
+RAW_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw.csv"
+TRIAL_ID="residual-$(date +%Y%m%d-%H%M%S)"
+
+ros2 launch llm_vision_planner vision_error_calibration.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  trial_id:="$TRIAL_ID" \
+  output_csv:="$RAW_CSV" \
+  vicon_objects_json:="$VICON_OBJECTS_JSON"
+```
+
+In a monitor terminal:
+
+```bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
+ros2 topic echo /llm_vision/mission_state --once
+ros2 topic echo /llm_vision/vision_calibration_status --once
+tail -f \
+  ~/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw.csv
+```
+
+After each `RECORDED` status, move one or more tracked obstacles to a clearly
+different pose, then leave every object stationary for the next capture. Do not
+move the aircraft by hand while it holds position.
+
+Land before stopping the launch:
+
+```bash
+ros2 topic pub --once /llm_vision/executor_command std_msgs/msg/String \
+  "{data: '{\"command\":\"LAND\",\"reason\":\"residual calibration complete\"}'}"
+ros2 topic echo /llm_vision/mission_state
+```
+
+Wait for `COMPLETE` and verify that the vehicle is landed and disarmed. Then
+press `Ctrl+C` in the launch terminal.
+
+### 13.4 Validate the raw comma-delimited CSV
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+RAW_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw.csv"
+
+python3 - "$RAW_CSV" <<'PY'
+import csv
+import sys
+
+with open(sys.argv[1], newline="", encoding="utf-8") as stream:
+    rows = list(csv.DictReader(stream, delimiter=","))
+required = {
+    "session_id", "capture_id", "object_id", "label",
+    "pred_min_x", "pred_min_y", "pred_max_x", "pred_max_y",
+    "gt_min_x", "gt_min_y", "gt_max_x", "gt_max_y", "placeholder",
+}
+if not rows:
+    raise SystemExit("No raw calibration rows were recorded.")
+missing = required.difference(rows[0])
+if missing:
+    raise SystemExit(f"Missing raw CSV columns: {sorted(missing)}")
+if any(row["placeholder"].lower() != "false" for row in rows):
+    raise SystemExit("Real raw data contains a placeholder row.")
+print(f"raw rows: {len(rows)}")
+print(f"independent captures: {len({row['capture_id'] for row in rows})}")
+PY
+```
+
+### 13.5 Compute the scored calibration CSV offline
+
+Section 3.1 must already be serving the trained adapter as `hrrt_planner`.
+Each command scores only the captures selected for that `L1`/`L2`/goal batch.
+The Llama adapter plans on perceived geometry; ChatGPT selects the expert HRRT
+route on ground-truth geometry. If a human already selected an exact displayed
+route, replace `--expert-selector openai` with
+`--expert-route-id ROUTE_ID_FROM_GATEWAY`.
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+RAW_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw.csv"
+CALIBRATION_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_scored.csv"
+export VLLM_BASE_URL=http://172.22.224.93:8000/v1
+read -rsp "OpenAI API key: " OPENAI_API_KEY
+export OPENAI_API_KEY
+export EXPERT_MODEL=gpt-5.4
+
+curl --fail --silent --show-error "$VLLM_BASE_URL/models"
+
+python3 src/llm_vision_planner/fine_tuning/scripts/postprocess_residual_calibration.py \
+  --raw-csv "$RAW_CSV" \
+  --list-captures
+
+python3 src/llm_vision_planner/fine_tuning/scripts/postprocess_residual_calibration.py \
+  --raw-csv "$RAW_CSV" \
+  --output-csv "$CALIBRATION_CSV" \
+  --delimiter ',' \
+  --l1-text "Fly to the point beyond the chair." \
+  --l2-text "Use a short route while staying as far from the person as possible." \
+  --goal-x 3.0 \
+  --goal-y 0.0 \
+  --fixed-z -0.5 \
+  --workspace-x-min -4.0 \
+  --workspace-x-max 4.0 \
+  --workspace-y-min -3.0 \
+  --workspace-y-max 3.0 \
+  --clearance-m 0.4 \
+  --dt 0.1 \
+  --hrrt-iterations 500 \
+  --max-candidates 8 \
+  --max-waypoints 8 \
+  --sample-count 25 \
+  --sample-seed 17 \
+  --expert-selector openai \
+  --expert-model "$EXPERT_MODEL" \
+  --planner-provider vllm \
+  --vllm-base-url "$VLLM_BASE_URL" \
+  --vllm-api-key EMPTY \
+  --llama-model hrrt_planner \
+  --append
+```
+
+Run the command again with a different `L1`/`L2`/goal and either a different
+`--sample-seed` or repeated `--capture-id CAPTURE_ID` flags. `--append` builds
+one calibration CSV and rejects duplicate `(capture_id, L1, L2)` labels. Use
+`--all-captures` only when applying one variant to every capture intentionally.
+
+For an exact batch, replace `--sample-count 25 --sample-seed 17` with:
+
+```bash
+--capture-id residual-YYYYMMDD-HHMMSS-capture-000003 \
+--capture-id residual-YYYYMMDD-HHMMSS-capture-000011
+```
+
+### 13.6 Validate the scored CSV
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+CALIBRATION_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_scored.csv"
+
+python3 - "$CALIBRATION_CSV" <<'PY'
+import csv
+import math
+import sys
+
+with open(sys.argv[1], newline="", encoding="utf-8") as stream:
+    rows = list(csv.DictReader(stream, delimiter=","))
+required = {
+    "capture_id", "l1_text", "l2_text", "expert_selector", "expert_model", "expert_route_id",
+    "ground_truth_environment_json", "perceived_environment_json",
+    "conformity_score", "dynamics_model", "planner_provider", "placeholder",
+}
+if not rows:
+    raise SystemExit("No scored calibration rows were generated.")
+missing = required.difference(rows[0])
+if missing:
+    raise SystemExit(f"Missing scored CSV columns: {sorted(missing)}")
+scores = [float(row["conformity_score"]) for row in rows]
+if not all(math.isfinite(score) and score >= 0.0 for score in scores):
+    raise SystemExit("A conformity score is invalid.")
+if any(row["placeholder"].lower() != "false" for row in rows):
+    raise SystemExit("Real scored data contains a placeholder row.")
+print(f"scored captures: {len(rows)}")
+print(f"score range: [{min(scores):.6f}, {max(scores):.6f}]")
+PY
+
+head -n 2 "$CALIBRATION_CSV"
+```
+
+Use `calibration_residual_scored.csv`, not the raw file or either dummy file,
+when the adaptive conformal initial-radius loader is enabled.
 
 ## Working with the branches
 
@@ -1006,7 +1299,7 @@ git -C ~/Desktop/hrrt_hardware_ws pull --ff-only
 ```
 
 For this alternate path, substitute `~/Desktop/hrrt_hardware_ws` for
-`~/Desktop/starling_testing_ws` in this README, then install dependencies,
+`~/Desktop/starling_multiple_trajectory_idea` in this README, then install dependencies,
 build, and source inside that clone.
 `main` retains the complete original workspace. Do not merge an isolated branch
 into `main` just to use it. To move an adapter or completed calibration between

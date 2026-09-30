@@ -18,36 +18,39 @@ def generate_launch_description():
         DeclareLaunchArgument("trial_id", default_value="unset"),
         DeclareLaunchArgument(
             "output_csv",
-            default_value="fine_tuning/datasets/calibration_vision_error_raw.csv",
+            default_value="fine_tuning/datasets/calibration_residual_raw.csv",
         ),
+        DeclareLaunchArgument("vicon_objects_json", default_value="[]"),
         DeclareLaunchArgument("object_id", default_value="obj-1"),
         DeclareLaunchArgument("object_label", default_value="chair"),
         DeclareLaunchArgument("object_vicon_topic", default_value="/vicon/chair1/chair1"),
         DeclareLaunchArgument("object_width_m", default_value="0.0"),
         DeclareLaunchArgument("object_depth_m", default_value="0.0"),
-        DeclareLaunchArgument("marker_to_object_json", default_value="{}"),
         DeclareLaunchArgument("vicon_vehicle_topic", default_value="/vicon/Starling2/Starling2"),
         DeclareLaunchArgument("vicon_vehicle_frame_convention", default_value="flu"),
         DeclareLaunchArgument("pose_topic", default_value="/fmu/out/vehicle_odometry"),
-        DeclareLaunchArgument("auto_vicon_world_to_ned", default_value="true"),
-        DeclareLaunchArgument("vicon_world_to_ned_json", default_value="{}"),
         DeclareLaunchArgument("frame_calibration_samples", default_value="20"),
+        DeclareLaunchArgument("frame_sync_tolerance_s", default_value="0.10"),
+        DeclareLaunchArgument("sync_tolerance_s", default_value="0.10"),
+        DeclareLaunchArgument("match_distance_m", default_value="0.75"),
         DeclareLaunchArgument("calibration_capture_delay_s", default_value="1.0"),
         DeclareLaunchArgument("calibration_capture_interval_s", default_value="3.0"),
-        DeclareLaunchArgument("object_stability_window_s", default_value="0.5"),
         DeclareLaunchArgument("openai_intent_model", default_value="gpt-5.4-nano"),
     ]
 
     recorder = Node(
         package="llm_vision_planner",
-        executable="vision_error_dataset_generattor.py",
-        name="vision_error_dataset_generator",
+        executable="residual_calibration_recorder.py",
+        name="residual_calibration_recorder",
         output="screen",
         parameters=[
             params_file,
             {
                 "trial_id": LaunchConfiguration("trial_id"),
                 "output_csv": LaunchConfiguration("output_csv"),
+                "vicon_objects_json": ParameterValue(
+                    LaunchConfiguration("vicon_objects_json"), value_type=str
+                ),
                 "object_id": LaunchConfiguration("object_id"),
                 "object_label": LaunchConfiguration("object_label"),
                 "object_vicon_topic": LaunchConfiguration("object_vicon_topic"),
@@ -57,26 +60,22 @@ def generate_launch_description():
                 "object_depth_m": ParameterValue(
                     LaunchConfiguration("object_depth_m"), value_type=float
                 ),
-                "marker_to_object_json": ParameterValue(
-                    LaunchConfiguration("marker_to_object_json"), value_type=str
-                ),
                 "vicon_vehicle_topic": LaunchConfiguration("vicon_vehicle_topic"),
                 "vicon_vehicle_frame_convention": LaunchConfiguration(
                     "vicon_vehicle_frame_convention"
                 ),
                 "pose_topic": LaunchConfiguration("pose_topic"),
-                "auto_vicon_world_to_ned": ParameterValue(
-                    LaunchConfiguration("auto_vicon_world_to_ned"), value_type=bool
-                ),
-                "vicon_world_to_ned_json": ParameterValue(
-                    LaunchConfiguration("vicon_world_to_ned_json"), value_type=str
-                ),
                 "frame_calibration_samples": ParameterValue(
                     LaunchConfiguration("frame_calibration_samples"), value_type=int
                 ),
-                "continuous_recording": True,
-                "object_stability_window_s": ParameterValue(
-                    LaunchConfiguration("object_stability_window_s"), value_type=float
+                "frame_sync_tolerance_s": ParameterValue(
+                    LaunchConfiguration("frame_sync_tolerance_s"), value_type=float
+                ),
+                "sync_tolerance_s": ParameterValue(
+                    LaunchConfiguration("sync_tolerance_s"), value_type=float
+                ),
+                "match_distance_m": ParameterValue(
+                    LaunchConfiguration("match_distance_m"), value_type=float
                 ),
             },
         ],
@@ -116,7 +115,6 @@ def generate_launch_description():
                 "intent_provider": "openai",
                 "openai_intent_model": LaunchConfiguration("openai_intent_model"),
                 "visualizer": "standard",
-                "obs_safety_bracket": "hardcoded",
                 "require_mission_state": True,
                 "calibration_only": True,
                 "auto_calibration_capture": True,

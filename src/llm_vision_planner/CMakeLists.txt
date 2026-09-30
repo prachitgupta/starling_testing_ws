@@ -23,6 +23,8 @@ install(PROGRAMS
   scripts/control_law_executer.py
   fine_tuning/scripts/hrrt_star.py
   fine_tuning/scripts/lqr.py
+  fine_tuning/scripts/residual_calibration_recorder.py
+  fine_tuning/scripts/postprocess_residual_calibration.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -54,6 +56,14 @@ if(BUILD_TESTING)
   add_test(
     NAME interactive_gateway_ros
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_interactive_gateway_ros.py
+  )
+  add_test(
+    NAME hrrt_finetuning_pipeline
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_hrrt_finetuning_pipeline.py
+  )
+  add_test(
+    NAME residual_calibration_pipeline
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_residual_calibration_pipeline.py
   )
 endif()
 

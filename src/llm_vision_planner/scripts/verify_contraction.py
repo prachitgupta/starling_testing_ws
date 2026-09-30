@@ -204,6 +204,8 @@ class ContractionVisualizer(Node):
         self.latest_proposal = None
         self.reference_samples = []
         self.reference_xy = []
+        self.expert_reference_samples = []
+        self.expert_reference_xy = []
         self.pose_trail = []
         self.latest_pose = None
         self.reference_start_timestamp_us = None
@@ -358,6 +360,8 @@ class ContractionVisualizer(Node):
         self.latest_verification = None
         self.reference_samples = []
         self.reference_xy = []
+        self.expert_reference_samples = []
+        self.expert_reference_xy = []
         self.pose_trail = []
         self.reference_start_timestamp_us = None
         self.tube_gate = None
@@ -476,6 +480,28 @@ class ContractionVisualizer(Node):
         self.reference_xy = [
             (float(sample["x"][0]), float(sample["x"][1])) for sample in self.reference_samples
         ]
+        self.expert_reference_samples = []
+        self.expert_reference_xy = []
+        expert = payload.get("selected_expert_route_verification")
+        if isinstance(expert, dict) and expert.get("passed", False):
+            try:
+                expert_trajectory = generate_trajectory(
+                    expert.get("waypoints", []),
+                    payload.get("workspace", {}),
+                    payload.get("obstacles", []),
+                    dt=float(self.get_parameter("trajectory_dt").value),
+                    max_velocity_mps=float(self.get_parameter("max_horizontal_speed_mps").value),
+                    max_acceleration_mps2=float(
+                        self.get_parameter("max_horizontal_acceleration_mps2").value
+                    ),
+                )
+                self.expert_reference_samples = expert_trajectory["samples"]
+                self.expert_reference_xy = [
+                    (float(sample["x"][0]), float(sample["x"][1]))
+                    for sample in self.expert_reference_samples
+                ]
+            except (RuntimeError, ValueError) as exc:
+                self.get_logger().error(f"could not generate HRRT expert QP reference: {exc}")
         required_radius = self.drone_radius + self.q_p + self.discretization_allowance
         try:
             self.tube_gate = evaluate_swept_tube(
@@ -600,7 +626,7 @@ class ContractionVisualizer(Node):
                 annotate=True,
             )
 
-        if active_path is not None:
+        if active_path is not None and self.plan is None:
             self.draw_candidate_path(axis, active_path)
         elif self.latest_proposal is not None:
             self.draw_proposed_goal(axis, self.latest_proposal)
@@ -632,7 +658,24 @@ class ContractionVisualizer(Node):
                         zorder=5,
                     )
                 )
-            axis.plot(xs, ys, "--", color="#f97316", linewidth=1.4, zorder=6)
+            axis.plot(xs, ys, color="#f97316", linewidth=2.2, zorder=6)
+
+        if self.plan is not None and self.expert_reference_xy:
+            expert_xs = [point[0] for point in self.expert_reference_xy]
+            expert_ys = [point[1] for point in self.expert_reference_xy]
+            display_step = max(1, len(self.expert_reference_xy) // 30)
+            for x, y in self.expert_reference_xy[::display_step]:
+                axis.add_patch(
+                    Circle(
+                        (x, y),
+                        self.q_p,
+                        facecolor="#34d399",
+                        edgecolor="none",
+                        alpha=0.09,
+                        zorder=5,
+                    )
+                )
+            axis.plot(expert_xs, expert_ys, color="#059669", linewidth=2.2, zorder=6)
 
         if self.pose_trail:
             xs = [point[0] for point in self.pose_trail]
@@ -685,7 +728,7 @@ class ContractionVisualizer(Node):
                     facecolor="#60a5fa",
                     edgecolor="none",
                     alpha=0.35,
-                    label=rf"RRT-relative $q_p={self.q_p:.2f}$ m",
+                    label=rf"LLM conformal tube $q_p={self.q_p:.2f}$ m",
                 ),
                 Patch(
                     facecolor="#c4b5fd",
@@ -693,14 +736,27 @@ class ContractionVisualizer(Node):
                     alpha=0.35,
                     label=rf"$q_w={self.q_w:.2f}$",
                 ),
+                Line2D([0], [0], color="#f97316", linewidth=2.2, label="LLM optimized QP"),
                 Line2D(
                     [0],
                     [0],
                     color="#16a34a",
                     linewidth=2.0,
-                    label=f"Live tracking error {live_error}",
+                    label=f"Drone odometry / live error {live_error}",
                 ),
             ]
+            if self.expert_reference_xy:
+                legend_handles[3:3] = [
+                    Line2D(
+                        [0], [0], color="#059669", linewidth=2.2, label="HRRT optimized QP"
+                    ),
+                    Patch(
+                        facecolor="#34d399",
+                        edgecolor="none",
+                        alpha=0.35,
+                        label=rf"HRRT conformal tube $q_p={self.q_p:.2f}$ m",
+                    ),
+                ]
             axis.legend(
                 handles=legend_handles,
                 loc="upper left",

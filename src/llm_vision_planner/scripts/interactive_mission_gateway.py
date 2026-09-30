@@ -1001,7 +1001,15 @@ def describe_goal_relations(relations):
     return "; ".join(descriptions)
 
 
-def build_planner_prompt(start, goal, workspace, obstacles, clearance, goal_relations=None):
+def build_planner_prompt(
+    start,
+    goal,
+    workspace,
+    obstacles,
+    clearance,
+    goal_relations=None,
+    route_preference=None,
+):
     distance = math.hypot(float(goal["x"]) - float(start["x"]), float(goal["y"]) - float(start["y"]))
     nl_env = (
         "Mission state: the UAV has already taken off and is holding hover at the start position. "
@@ -1017,6 +1025,8 @@ def build_planner_prompt(start, goal, workspace, obstacles, clearance, goal_rela
             " The deterministic gateway selected the goal to satisfy these approved object-surface "
             f"distance relations: {describe_goal_relations(goal_relations)}."
         )
+    if route_preference:
+        nl_env += f" Approved operator route preference: {route_preference.strip()}"
     constraints = (
         "Constraints:\n"
         f"- all waypoints in NED frame, z must stay {workspace['z']:.2f}\n"
@@ -1096,7 +1106,7 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("vision_error_delta", 0.10)
         self.declare_parameter("max_start_drift_m", 0.25)
         self.declare_parameter("max_release_start_drift_m", 0.08)
-        self.declare_parameter("max_planning_attempts", 3)
+        self.declare_parameter("max_planning_attempts", 2)
         self.declare_parameter("debug", True)
 
         self.environment = str(self.get_parameter("environment").value).strip().lower()
@@ -1452,6 +1462,7 @@ class InteractiveMissionGateway(Node):
             "WAITING_FOR_COMMAND",
             "CANCELLED",
             "PLANNING_FAILED",
+            "NO_SAFE_PLAN_FOUND",
             "SAFETY_TUBE_FAILED",
         ) or self.intent_request_token is not None or self.route_request_token is not None:
             self.publish_response("MODE_REJECTED", "Finish or cancel the active mission before changing mode.")
@@ -1686,6 +1697,15 @@ class InteractiveMissionGateway(Node):
         self.conversation.append({"role": "operator", "content": operator_text})
         self.active_mission["route_preference_text"] = operator_text
         self.active_mission["selected_expert_route"] = copy.deepcopy(selected)
+        self.active_mission["base_prompt"], self.active_mission["nl_env"] = build_planner_prompt(
+            self.active_mission["start"],
+            self.active_mission["goal"],
+            self.active_mission["workspace"],
+            self.active_mission["obstacles"],
+            self.clearance_m,
+            self.active_mission["goal_relations"],
+            operator_text,
+        )
         self.latest_route_family["selected_route_id"] = selected["route_id"]
         self.latest_route_family["selection_reason"] = selection.reason
         self.route_candidates_pub.publish(String(data=json.dumps(self.latest_route_family)))
@@ -2182,10 +2202,10 @@ class InteractiveMissionGateway(Node):
             "timestamp": time.time(),
         }
         if self.active_mission["attempt"] >= int(self.get_parameter("max_planning_attempts").value):
-            self.state = "PLANNING_FAILED"
+            self.state = "NO_SAFE_PLAN_FOUND"
             self.publish_response(
-                "PLANNING_FAILED",
-                "No planning attempt passed verification; the vehicle remains holding.",
+                "NO_SAFE_PLAN_FOUND",
+                "No safe plan found after both planning attempts; the vehicle remains holding.",
                 mission_id=self.active_mission["mission_id"],
                 plan_id=self.active_plan_id,
                 failed_constraints=list(candidate.get("failed_constraints", [])),
@@ -2466,7 +2486,7 @@ class InteractiveMissionGateway(Node):
 
     def publish_response(self, status, message, **metadata):
         if (
-            status in ("INTENT_ERROR", "NO_SAFE_GOAL", "PLANNING_FAILED")
+            status in ("INTENT_ERROR", "NO_SAFE_GOAL", "PLANNING_FAILED", "NO_SAFE_PLAN_FOUND")
             or status.endswith("_REJECTED")
         ):
             self.last_failure = {

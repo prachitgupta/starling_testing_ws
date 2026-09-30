@@ -1,3 +1,14 @@
 plots/**/*.png
+plots/**/*.tmp
 fine_tuning/plots/**/*.png
 fine_tuning/results/**/*.json
+.venv-hrrt-data/
+fine_tuning/datasets/.~lock.*#
+fine_tuning/datasets/hrrt_teacher_raw.jsonl
+fine_tuning/datasets/hrrt_human_audit.jsonl
+fine_tuning/datasets/hrrt_human_reviews.jsonl
+fine_tuning/datasets/hrrt_sft_*.csv
+fine_tuning/datasets/calibration_residual_raw.csv
+fine_tuning/datasets/calibration_residual_scored.csv
+fine_tuning/outputs/llama31_8b_hrrt_lora/*
+!fine_tuning/outputs/llama31_8b_hrrt_lora/PLACEHOLDER.txt

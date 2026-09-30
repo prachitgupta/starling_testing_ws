@@ -170,6 +170,9 @@ class LLMPlanner(Node):
             "vision_error_calibration_csv",
             "vision_error_calibration_placeholder",
             "scene_guard_band_m",
+            "interaction_mode",
+            "route_preference_text",
+            "selected_expert_route",
         ):
             if field in payload:
                 result[field] = payload[field]

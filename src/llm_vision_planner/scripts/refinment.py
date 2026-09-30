@@ -71,6 +71,14 @@ class PathRefinement(Node):
             "spacing_m": self.interpolation_spacing_m,
             "safety_margin_m": self.safety_margin_m,
         }
+        expert = payload.get("selected_expert_route")
+        if isinstance(expert, dict) and len(expert.get("waypoints", [])) >= 2:
+            expert_refined = dict(expert)
+            expert_refined["waypoints_sparse"] = expert["waypoints"]
+            expert_refined["waypoints"] = self.interpolate_waypoints(
+                expert["waypoints"], workspace, obstacles
+            )
+            output["selected_expert_route_refined"] = expert_refined
 
         out = String()
         out.data = json.dumps(output)

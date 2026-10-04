@@ -4,6 +4,7 @@
 import argparse
 import csv
 import importlib.util
+import json
 import math
 import tempfile
 from pathlib import Path
@@ -55,8 +56,25 @@ def raw_rows(module):
                 "gt_max_y": str(max_y),
                 "gt_center_x": str(0.5 * (min_x + max_x)),
                 "gt_center_y": str(0.5 * (min_y + max_y)),
+                "gt_yaw_rad": "0.0",
+                "pred_front_center_x": str(min_x + shift),
+                "pred_front_center_y": str(0.5 * (min_y + max_y)),
+                "pred_view_axis_x": "1.0",
+                "pred_view_axis_y": "0.0",
+                "pred_lateral_axis_x": "0.0",
+                "pred_lateral_axis_y": "1.0",
+                "pred_visible_width_m": str(max_y - min_y),
+                "pred_chatgpt_depth_m": str(max_x - min_x),
             }
         )
+        gt_corners = [(min_x, min_y), (min_x, max_y), (max_x, min_y), (max_x, max_y)]
+        pred_corners = [
+            (min_x + shift, min_y), (min_x + shift, max_y),
+            (max_x + shift, min_y), (max_x + shift, max_y),
+        ]
+        for index, (gt_point, pred_point) in enumerate(zip(gt_corners, pred_corners)):
+            row[f"gt_corner_{index}_x"], row[f"gt_corner_{index}_y"] = map(str, gt_point)
+            row[f"pred_corner_{index}_x"], row[f"pred_corner_{index}_y"] = map(str, pred_point)
         rows.append(row)
     assert set(rows[0]) == set(module.RAW_REQUIRED_FIELDS) | {
         "capture_index", "timestamp_s", "vicon_timestamp_s", "stable_pose",
@@ -106,6 +124,12 @@ def test_end_to_end():
     assert record["placeholder"] == "true"
     assert math.isfinite(float(record["conformity_score"]))
     assert float(record["conformity_score"]) >= 0.0
+    ground_truth = json.loads(record["ground_truth_environment_json"])
+    perceived = json.loads(record["perceived_environment_json"])
+    assert all(len(item["footprint_corners_xy"]) == 4 for item in ground_truth)
+    assert all("yaw_rad" in item for item in ground_truth)
+    assert all(len(item["footprint_corners_xy"]) == 4 for item in perceived)
+    assert all("effective_depth_along_view_m" in item for item in perceived)
 
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "calibration.csv"

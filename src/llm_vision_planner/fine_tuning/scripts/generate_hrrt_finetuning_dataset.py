@@ -9,7 +9,8 @@ import math
 import os
 from pathlib import Path
 import random
-from typing import Dict, Iterable, List, Mapping, Sequence
+import re
+from typing import Dict, List, Mapping, Sequence
 
 from hrrt_star import normalize_obstacles, plan_hrrt_star, segment_clear
 
@@ -25,6 +26,50 @@ SIZES = {
     "bench": (1.00, 0.55),
     "stop_sign": (0.45, 0.45),
 }
+DISTILLATION_MODES = ("dss", "dss_scott")
+FORBIDDEN_STUDENT_REASONING = (
+    "route card",
+    "candidate",
+    "candidate route",
+    "alternative",
+    "alternative route",
+    "supplied route",
+    "selected route",
+    "best route",
+)
+
+DSS_TEACHER_PROMPT = """You generate supervision for a smaller UAV trajectory planner.
+Select exactly one supplied verified HRRT-star route that best satisfies the human preference.
+The candidates are already collision-free. Do not create coordinates or modify a route.
+
+Return an audit_selection_reason that may compare route IDs and metrics.
+Return trajectory_reasoning for the student using exactly this compact structure:
+Preference: ... Geometry: ... Decision: ... Safety: ...
+
+The student will see only the environment, human preference, clearance requirement, and output constraints.
+Therefore trajectory_reasoning must use only those deployment-visible facts plus the geometry of the selected
+trajectory. It must not mention route IDs, route cards, candidates, alternatives, or the selection process.
+Describe the relevant obstacle/corridor and the above/below spatial movement. Keep it concise and factual."""
+
+DSS_SCOTT_TEACHER_PROMPT = """You generate answer-conditioned reasoning for a smaller UAV trajectory planner.
+The target trajectory and safe counterfactual trajectory supplied below are fixed. Do not select another route,
+change coordinates, or create a route.
+
+Produce trajectory_reasoning that specifically supports the human preference, visible obstacle geometry, and
+spatial movement of the fixed target trajectory. Use exactly:
+Preference: ... Geometry: ... Decision: ... Safety: ...
+
+Produce counterfactual_trajectory_reasoning using the same structure to describe the different spatial intention
+of the fixed counterfactual trajectory. Produce counterfactual_conflict explaining why the counterfactual is less
+consistent with the original preference.
+
+The student will not see route IDs, route cards, or candidate comparisons. Neither rationale may mention them.
+Keep both rationales concise and factual. Return preference_supported, geometry_supported, and safety_supported
+consistency checks for the positive rationale."""
+
+ROUTE_SELECTION_PROMPT = """Select exactly one supplied verified HRRT-star route that best satisfies the human
+preference. Never create coordinates or a route ID. Return the supplied selected_route_id and a concise audit
+reason that may compare supplied route metrics."""
 SCENE_PROFILES = {
     # Each profile includes a central blocker, so a trivial start-goal segment
     # cannot dominate the dataset. Remaining offsets create different corridor
@@ -48,7 +93,11 @@ def append_jsonl(path: Path, record: Mapping[str, object]) -> None:
         stream.write(compact(record) + "\n")
 
 
-def prepare_resume_file(path: Path, expected_per_scene: int) -> set[int]:
+def prepare_resume_file(
+    path: Path,
+    expected_per_scene: int,
+    expected_distillation_mode: str | None = None,
+) -> set[int]:
     """Drop partial scenes so resuming never duplicates or silently skips labels."""
     by_scene: Dict[int, List[Dict[str, object]]] = {}
     if not path.is_file():
@@ -57,6 +106,12 @@ def prepare_resume_file(path: Path, expected_per_scene: int) -> set[int]:
         for line in stream:
             if line.strip():
                 row = json.loads(line)
+                row_mode = str(row.get("distillation_mode", "legacy"))
+                if expected_distillation_mode and row_mode != expected_distillation_mode:
+                    raise ValueError(
+                        f"{path} contains distillation_mode={row_mode!r}; use a different --output "
+                        f"or resume with --distillation-mode {row_mode}"
+                    )
                 by_scene.setdefault(int(row["scene_id"]), []).append(row)
     complete = {
         scene_id
@@ -266,39 +321,269 @@ def mock_select(preference: Mapping[str, str], cards: Sequence[Mapping[str, obje
     return {"selected_route_id": str(chosen["route_id"]), "reason": f"Deterministic {preference_type} teacher."}
 
 
+def card_by_id(cards: Sequence[Mapping[str, object]], route_id: str) -> Mapping[str, object]:
+    for card in cards:
+        if str(card["route_id"]) == route_id:
+            return card
+    raise ValueError(f"Unknown route card {route_id!r}")
+
+
+def preference_summary(preference: Mapping[str, str]) -> str:
+    preference_type = str(preference["preference_type"])
+    target = str(preference.get("target_object_id", "the relevant object"))
+    summaries = {
+        "shortest": "minimize travel distance while remaining safe",
+        "widest": "maximize clearance from obstacles",
+        "balanced": "balance route efficiency with comfortable obstacle clearance",
+        "far_from_object": f"maximize separation from {target}",
+        "close_to_object": f"pass near {target} without violating clearance",
+        "deadline_then_clearance": "remain efficient while preferring the clearest feasible corridor",
+    }
+    return summaries.get(preference_type, str(preference["text"]).rstrip("."))
+
+
+def deterministic_trajectory_reasoning(
+    preference: Mapping[str, str], card: Mapping[str, object], *, counterfactual: bool = False
+) -> str:
+    summary = str(card.get("route_summary") or "uses an open collision-free corridor")
+    objective = (
+        "follow the supplied counterfactual spatial intention"
+        if counterfactual
+        else preference_summary(preference)
+    )
+    return (
+        f"Preference: {objective}. "
+        f"Geometry: the path {summary}. "
+        f"Decision: follow that corridor and then continue toward the goal. "
+        "Safety: keep the path inside the workspace and outside the required obstacle clearance."
+    )
+
+
+def student_reasoning_is_valid(reason: object) -> bool:
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 1200:
+        return False
+    lowered = reason.lower()
+    if any(phrase in lowered for phrase in FORBIDDEN_STUDENT_REASONING):
+        return False
+    if re.search(r"\broute[-_ ]?\d+\b", lowered):
+        return False
+    return all(field in reason for field in ("Preference:", "Geometry:", "Decision:", "Safety:"))
+
+
+def counterfactual_route_id(
+    selected_id: str, cards: Sequence[Mapping[str, object]]
+) -> str:
+    selected = card_by_id(cards, selected_id)
+    alternatives = [card for card in cards if str(card["route_id"]) != selected_id]
+    if not alternatives:
+        raise ValueError("DSS-SCOTT requires at least two candidate routes")
+    return str(
+        max(
+            alternatives,
+            key=lambda card: (
+                abs(float(card["path_length_m"]) - float(selected["path_length_m"])),
+                abs(
+                    float(card["overall_minimum_clearance_m"])
+                    - float(selected["overall_minimum_clearance_m"])
+                ),
+                str(card["route_id"]),
+            ),
+        )["route_id"]
+    )
+
+
 def openai_select(
-    preference: Mapping[str, str], cards: Sequence[Mapping[str, object]], model: str
-) -> Dict[str, str]:
+    scene: Mapping[str, object],
+    preference: Mapping[str, str],
+    cards: Sequence[Mapping[str, object]],
+    routes: Sequence[Mapping[str, object]],
+    model: str,
+    distillation_mode: str,
+    clearance_m: float,
+) -> Dict[str, object]:
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is required for --teacher openai")
     from openai import OpenAI
     from pydantic import BaseModel, ConfigDict
 
-    class Selection(BaseModel):
+    class DSSSelection(BaseModel):
         model_config = ConfigDict(extra="forbid")
         selected_route_id: str
-        reason: str
+        audit_selection_reason: str
+        trajectory_reasoning: str
 
-    response = OpenAI().responses.parse(
+    class RouteSelection(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        selected_route_id: str
+        audit_selection_reason: str
+
+    class ScottConsistencyChecks(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        preference_supported: bool
+        geometry_supported: bool
+        safety_supported: bool
+
+    class ScottRationales(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        counterfactual_trajectory_reasoning: str
+        counterfactual_conflict: str
+        trajectory_reasoning: str
+        consistency_checks: ScottConsistencyChecks
+
+    deployment_input = {
+        "environment": scene,
+        "human_preference": preference,
+        "required_clearance_m": clearance_m,
+        "output_constraints": {
+            "minimum_waypoints": 2,
+            "maximum_waypoints": 8,
+            "fixed_altitude": scene["workspace"]["z"],
+        },
+    }
+    client = OpenAI()
+    if distillation_mode == "dss":
+        response = client.responses.parse(
+            model=model,
+            input=[
+                {"role": "system", "content": DSS_TEACHER_PROMPT},
+                {
+                    "role": "user",
+                    "content": compact(
+                        {
+                            "deployment_input": deployment_input,
+                            "teacher_only": {"route_cards": cards, "candidate_routes": routes},
+                        }
+                    ),
+                },
+            ],
+            text_format=DSSSelection,
+        )
+        if response.output_parsed is None:
+            raise RuntimeError("Teacher returned no structured DSS selection")
+        return response.output_parsed.model_dump()
+
+    selection_response = client.responses.parse(
         model=model,
         input=[
-            {
-                "role": "system",
-                "content": (
-                    "Select exactly one supplied route_id that best satisfies the operator preference. "
-                    "Never create coordinates or a new route. Return concise reasoning."
-                ),
-            },
+            {"role": "system", "content": ROUTE_SELECTION_PROMPT},
             {
                 "role": "user",
-                "content": compact({"preference": preference["text"], "route_cards": cards}),
+                "content": compact(
+                    {
+                        "environment": scene,
+                        "human_preference": preference,
+                        "route_cards": cards,
+                    }
+                ),
             },
         ],
-        text_format=Selection,
+        text_format=RouteSelection,
     )
-    if response.output_parsed is None:
-        raise RuntimeError("Teacher returned no structured selection")
-    return response.output_parsed.model_dump()
+    if selection_response.output_parsed is None:
+        raise RuntimeError("Teacher returned no structured DSS-SCOTT route selection")
+    selected = selection_response.output_parsed.model_dump()
+    selected_id = str(selected["selected_route_id"])
+    selected_route_record = selected_route(routes, selected_id)
+    selected_card = card_by_id(cards, selected_id)
+    counterfactual_id = counterfactual_route_id(selected_id, cards)
+    counterfactual_route_record = selected_route(routes, counterfactual_id)
+    counterfactual_card = card_by_id(cards, counterfactual_id)
+    rationale_response = client.responses.parse(
+        model=model,
+        input=[
+            {"role": "system", "content": DSS_SCOTT_TEACHER_PROMPT},
+            {
+                "role": "user",
+                "content": compact(
+                    {
+                        "deployment_input": deployment_input,
+                        "teacher_only": {
+                            "target_trajectory": {
+                                "waypoints": selected_route_record["waypoints"],
+                                "verified_metrics": selected_card,
+                            },
+                            "counterfactual_trajectory": {
+                                "waypoints": counterfactual_route_record["waypoints"],
+                                "verified_metrics": counterfactual_card,
+                            },
+                        },
+                    }
+                ),
+            },
+        ],
+        text_format=ScottRationales,
+    )
+    if rationale_response.output_parsed is None:
+        raise RuntimeError("Teacher returned no structured DSS-SCOTT rationales")
+    return {
+        **selected,
+        **rationale_response.output_parsed.model_dump(),
+        "counterfactual_route_id": counterfactual_id,
+    }
+
+
+def normalize_teacher_output(
+    selection: Mapping[str, object],
+    preference: Mapping[str, str],
+    cards: Sequence[Mapping[str, object]],
+    distillation_mode: str,
+) -> Dict[str, object]:
+    selected_id = str(selection["selected_route_id"])
+    selected_card = card_by_id(cards, selected_id)
+    raw_reason = selection.get("trajectory_reasoning")
+    consistency_checks = selection.get("consistency_checks", {})
+    checks_pass = not consistency_checks or all(bool(value) for value in consistency_checks.values())
+    trajectory_reasoning = (
+        str(raw_reason).strip()
+        if checks_pass and student_reasoning_is_valid(raw_reason)
+        else deterministic_trajectory_reasoning(preference, selected_card)
+    )
+    normalized: Dict[str, object] = {
+        "selected_route_id": selected_id,
+        "audit_selection_reason": str(
+            selection.get("audit_selection_reason") or selection.get("reason") or ""
+        ).strip(),
+        "trajectory_reasoning": trajectory_reasoning,
+        "trajectory_reasoning_raw": str(raw_reason or "").strip(),
+    }
+    if distillation_mode == "dss_scott":
+        proposed_id = str(selection.get("counterfactual_route_id") or "")
+        valid_ids = {str(card["route_id"]) for card in cards}
+        counterfactual_id = (
+            proposed_id
+            if proposed_id in valid_ids and proposed_id != selected_id
+            else counterfactual_route_id(selected_id, cards)
+        )
+        counterfactual_card = card_by_id(cards, counterfactual_id)
+        raw_counterfactual = selection.get("counterfactual_trajectory_reasoning")
+        normalized.update(
+            {
+                "counterfactual_route_id": counterfactual_id,
+                "counterfactual_trajectory_reasoning": (
+                    str(raw_counterfactual).strip()
+                    if student_reasoning_is_valid(raw_counterfactual)
+                    else deterministic_trajectory_reasoning(
+                        preference, counterfactual_card, counterfactual=True
+                    )
+                ),
+                "counterfactual_trajectory_reasoning_raw": str(raw_counterfactual or "").strip(),
+                "counterfactual_conflict": str(
+                    selection.get("counterfactual_conflict")
+                    or (
+                        f"This path {counterfactual_card.get('route_summary', 'uses a different corridor')}, "
+                        f"which is less consistent with the original preference: {preference['text']}"
+                    )
+                ).strip(),
+                "consistency_checks": consistency_checks or (
+                    {
+                        "preference_supported": True,
+                        "geometry_supported": True,
+                        "safety_supported": True,
+                    }
+                ),
+            }
+        )
+    return normalized
 
 
 def selected_route(routes: Sequence[Mapping[str, object]], route_id: str) -> Mapping[str, object]:
@@ -314,7 +599,7 @@ def generate(args: argparse.Namespace) -> None:
     if not 2 <= args.min_obstacles <= args.max_obstacles <= 4:
         raise ValueError("obstacle counts must satisfy 2 <= min <= max <= 4")
     completed = (
-        prepare_resume_file(args.output, args.preferences_per_scene)
+        prepare_resume_file(args.output, args.preferences_per_scene, args.distillation_mode)
         if args.resume
         else set()
     )
@@ -333,6 +618,7 @@ def generate(args: argparse.Namespace) -> None:
                     scene["goal"],
                     scene["obstacles"],
                     scene["workspace"],
+                    clearance_m=args.clearance_m,
                     seed=args.seed + scene_id * 100 + attempt,
                     max_iterations=args.hrrt_iterations,
                     max_candidates=args.max_candidates,
@@ -349,7 +635,7 @@ def generate(args: argparse.Namespace) -> None:
                 (float(scene["goal"]["x"]), float(scene["goal"]["y"])),
                 normalize_obstacles(scene["obstacles"]),
                 scene["workspace"],
-                0.40,
+                args.clearance_m,
             )
             if len(routes) >= args.min_routes and len(signatures) >= 2 and not direct_is_clear:
                 break
@@ -363,13 +649,25 @@ def generate(args: argparse.Namespace) -> None:
             selection = (
                 mock_select(preference, cards)
                 if args.teacher == "mock"
-                else openai_select(preference, cards, args.teacher_model)
+                else openai_select(
+                    scene,
+                    preference,
+                    cards,
+                    routes,
+                    args.teacher_model,
+                    args.distillation_mode,
+                    args.clearance_m,
+                )
+            )
+            selection = normalize_teacher_output(
+                selection, preference, cards, args.distillation_mode
             )
             route = selected_route(routes, selection["selected_route_id"])
             record = {
-                "schema_version": "hrrt_sft_raw_v1",
+                "schema_version": "hrrt_sft_raw_v2",
                 "sample_id": f"scene-{scene_id:06d}-pref-{preference_index:02d}",
                 "scene_id": scene_id,
+                "distillation_mode": args.distillation_mode,
                 "environment": scene,
                 "preference": preference,
                 "route_cards": cards,
@@ -377,9 +675,28 @@ def generate(args: argparse.Namespace) -> None:
                 "teacher_provider": args.teacher,
                 "teacher_model": args.teacher_model if args.teacher == "openai" else "deterministic_mock",
                 "teacher_route_id": selection["selected_route_id"],
-                "teacher_reason": selection["reason"],
+                "teacher_reason": selection["trajectory_reasoning"],
+                "teacher_selection_reason": selection["audit_selection_reason"],
+                "teacher_trajectory_reasoning": selection["trajectory_reasoning"],
+                "teacher_trajectory_reasoning_raw": selection["trajectory_reasoning_raw"],
                 "selected_waypoints": route["waypoints"],
             }
+            if args.distillation_mode == "dss_scott":
+                counterfactual = selected_route(routes, str(selection["counterfactual_route_id"]))
+                record.update(
+                    {
+                        "counterfactual_route_id": selection["counterfactual_route_id"],
+                        "counterfactual_waypoints": counterfactual["waypoints"],
+                        "counterfactual_trajectory_reasoning": selection[
+                            "counterfactual_trajectory_reasoning"
+                        ],
+                        "counterfactual_trajectory_reasoning_raw": selection[
+                            "counterfactual_trajectory_reasoning_raw"
+                        ],
+                        "counterfactual_conflict": selection["counterfactual_conflict"],
+                        "teacher_consistency_checks": selection["consistency_checks"],
+                    }
+                )
             append_jsonl(args.output, record)
             written += 1
         print(f"scene {scene_id}: wrote {len(preferences)} labels", flush=True)
@@ -394,6 +711,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=1701)
     parser.add_argument("--teacher", choices=("openai", "mock"), default="openai")
     parser.add_argument("--teacher-model", default="gpt-5.4")
+    parser.add_argument(
+        "--distillation-mode",
+        choices=DISTILLATION_MODES,
+        default="dss",
+        help="dss creates positive rationale labels; dss_scott also creates safe counterfactual supervision.",
+    )
     parser.add_argument("--min-obstacles", type=int, default=2)
     parser.add_argument("--max-obstacles", type=int, default=4)
     parser.add_argument("--min-routes", type=int, default=2)
@@ -403,6 +726,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-nodes-per-key", type=int, default=180)
     parser.add_argument("--scene-attempts", type=int, default=8)
     parser.add_argument("--nominal-speed-mps", type=float, default=0.5)
+    parser.add_argument("--clearance-m", type=float, default=0.40)
     parser.add_argument("--resume", action="store_true")
     return parser
 

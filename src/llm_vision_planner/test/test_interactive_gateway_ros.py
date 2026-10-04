@@ -613,6 +613,7 @@ def run_adaptive_route_selection_test():
         assert prompt["interaction_mode"] == "ADAPTIVE_CONFORMAL_PREDICTION"
         assert prompt["selected_expert_route"]["route_id"] == route_id
         assert f"Approved operator route preference: Use {route_id}" in prompt["prompt"]
+        assert "Preference: ... Geometry: ... Decision: ... Safety: ..." in prompt["prompt"]
         assert "selected_expert_route" not in prompt["prompt"]
     finally:
         executor.remove_node(gateway)

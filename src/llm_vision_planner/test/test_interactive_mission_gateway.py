@@ -71,6 +71,7 @@ def test_grounding_helpers():
     assert "chair (obj-1)" in prompt
     assert "bottle (obj-2)" in prompt
     assert "maintain >=0.40m clearance" in prompt
+    assert "Preference: ... Geometry: ... Decision: ... Safety: ..." in prompt
     assert nl_env in prompt
 
 

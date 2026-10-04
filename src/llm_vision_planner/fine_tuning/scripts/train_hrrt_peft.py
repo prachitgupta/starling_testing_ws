@@ -9,20 +9,8 @@ import inspect
 import json
 from pathlib import Path
 
-import torch
-from datasets import Dataset
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-    DataCollatorForSeq2Seq,
-    Trainer,
-    TrainingArguments,
-)
-
-
 DEFAULT_MODEL = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+DISTILLATION_MODES = ("dss", "dss_scott")
 TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 
@@ -31,7 +19,19 @@ def read_rows(path: Path):
         return list(csv.DictReader(stream))
 
 
+def validate_rows(rows, path: Path, distillation_mode: str):
+    if not rows:
+        raise ValueError(f"No training rows found in {path}")
+    modes = {row.get("distillation_mode", "dss") for row in rows}
+    if modes != {distillation_mode}:
+        raise ValueError(
+            f"{path} contains distillation modes {sorted(modes)}, expected only {distillation_mode!r}"
+        )
+
+
 def tokenize_rows(rows, tokenizer, max_length):
+    from datasets import Dataset
+
     encoded_rows = []
     for row in rows:
         prompt = row["prompt"]
@@ -57,6 +57,8 @@ def tokenize_rows(rows, tokenizer, max_length):
 
 
 def compatible_training_arguments(**kwargs):
+    from transformers import TrainingArguments
+
     parameters = inspect.signature(TrainingArguments.__init__).parameters
     evaluation_key = "eval_strategy" if "eval_strategy" in parameters else "evaluation_strategy"
     kwargs[evaluation_key] = "steps"
@@ -75,6 +77,7 @@ def main():
     parser.add_argument("--validation", type=Path, default=Path("fine_tuning/datasets/hrrt_sft_validation.csv"))
     parser.add_argument("--output-dir", type=Path, default=Path("fine_tuning/outputs/llama31_8b_hrrt_lora"))
     parser.add_argument("--model-name", default=DEFAULT_MODEL)
+    parser.add_argument("--distillation-mode", choices=DISTILLATION_MODES, default="dss")
     parser.add_argument("--max-seq-length", type=int, default=2048)
     parser.add_argument("--epochs", type=float, default=3.0)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -90,11 +93,26 @@ def main():
     parser.add_argument("--qlora", action="store_true", help="Load the base model in 4-bit NF4.")
     args = parser.parse_args()
 
+    import torch
+    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    from transformers import (
+        AutoModelForCausalLM,
+        AutoTokenizer,
+        BitsAndBytesConfig,
+        DataCollatorForSeq2Seq,
+        Trainer,
+    )
+
+    train_rows = read_rows(args.train)
+    validation_rows = read_rows(args.validation)
+    validate_rows(train_rows, args.train, args.distillation_mode)
+    validate_rows(validation_rows, args.validation, args.distillation_mode)
+
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, use_fast=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    train_data = tokenize_rows(read_rows(args.train), tokenizer, args.max_seq_length)
-    validation_data = tokenize_rows(read_rows(args.validation), tokenizer, args.max_seq_length)
+    train_data = tokenize_rows(train_rows, tokenizer, args.max_seq_length)
+    validation_data = tokenize_rows(validation_rows, tokenizer, args.max_seq_length)
 
     model_kwargs = {"device_map": "auto", "torch_dtype": torch.bfloat16}
     if args.qlora:
@@ -157,6 +175,15 @@ def main():
     trainer.model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
     save_history(trainer.state.log_history, args.output_dir)
+    with (args.output_dir / "training_config.json").open("w", encoding="utf-8") as stream:
+        json.dump(
+            {
+                key: str(value) if isinstance(value, Path) else value
+                for key, value in vars(args).items()
+            },
+            stream,
+            indent=2,
+        )
     print(f"Saved HRRT adapter to {args.output_dir}")
 
 

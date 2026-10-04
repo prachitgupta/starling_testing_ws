@@ -36,6 +36,11 @@ def generate_launch_description():
         default_value="llama",
         description="Planner LLM provider: chatgpt or llama",
     )
+    llama_model_name_arg = DeclareLaunchArgument(
+        "llama_model_name",
+        default_value="hrrt_planner",
+        description="OpenAI-compatible served model name for the DSS or DSS-SCOTT Llama adapter.",
+    )
     show_rrt_arg = DeclareLaunchArgument(
         "show_rrt",
         default_value="true",
@@ -152,6 +157,7 @@ def generate_launch_description():
             {
                 "environment": LaunchConfiguration("environment"),
                 "llm_provider": LaunchConfiguration("llm_provider"),
+                "llama_model_name": LaunchConfiguration("llama_model_name"),
                 **fixed_goal,
             },
         ],
@@ -169,6 +175,7 @@ def generate_launch_description():
                 "environment": LaunchConfiguration("environment"),
                 "intent_provider": LaunchConfiguration("intent_provider"),
                 "planner_llm_provider": LaunchConfiguration("llm_provider"),
+                "planner_model_name": LaunchConfiguration("llama_model_name"),
                 "visualizer": LaunchConfiguration("visualizer"),
                 "obs_safety_bracket": LaunchConfiguration("obs_safety_bracket"),
                 "vision_error_calibration_csv": LaunchConfiguration(
@@ -213,7 +220,13 @@ def generate_launch_description():
         executable="llm_planner.py",
         name="llm_planner",
         output="screen",
-        parameters=[params_file, {"llm_provider": LaunchConfiguration("llm_provider")}],
+        parameters=[
+            params_file,
+            {
+                "llm_provider": LaunchConfiguration("llm_provider"),
+                "llama_model_name": LaunchConfiguration("llama_model_name"),
+            },
+        ],
     )
 
     refinement = Node(
@@ -282,6 +295,7 @@ def generate_launch_description():
             goal_x_arg,
             goal_y_arg,
             llm_provider_arg,
+            llama_model_name_arg,
             show_rrt_arg,
             visualizer_arg,
             land_after_complete_arg,

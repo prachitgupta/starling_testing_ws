@@ -11,6 +11,9 @@ from pathlib import Path
 import re
 
 
+DISTILLATION_MODES = ("dss", "dss_scott")
+
+
 def read_rows(path: Path):
     with path.open(newline="", encoding="utf-8") as stream:
         return list(csv.DictReader(stream))
@@ -119,7 +122,13 @@ def load_predictions(path: Path):
 
 
 def evaluate(rows, predictions, clearance_m):
-    totals = {"samples": len(rows), "structured_valid": 0, "feasible": 0, "route_match": 0}
+    totals = {
+        "samples": len(rows),
+        "structured_valid": 0,
+        "reasoning_schema_valid": 0,
+        "feasible": 0,
+        "route_match": 0,
+    }
     endpoint_errors, path_errors = [], []
     details = []
     for row in rows:
@@ -128,7 +137,8 @@ def evaluate(rows, predictions, clearance_m):
         try:
             plan = parse_plan(prediction)
             waypoints = plan["waypoints"]
-            if not isinstance(plan.get("reasoning"), str) or not isinstance(waypoints, list):
+            reasoning = plan.get("reasoning")
+            if not isinstance(reasoning, str) or not isinstance(waypoints, list):
                 raise ValueError("missing reasoning or waypoints")
             if not 2 <= len(waypoints) <= 8:
                 raise ValueError("waypoints must contain between 2 and 8 points")
@@ -139,6 +149,10 @@ def evaluate(rows, predictions, clearance_m):
                     if not math.isfinite(float(point[axis])):
                         raise ValueError("waypoint coordinates must be finite")
             totals["structured_valid"] += 1
+            reasoning_schema_valid = all(
+                field in reasoning for field in ("Preference:", "Geometry:", "Decision:", "Safety:")
+            )
+            totals["reasoning_schema_valid"] += int(reasoning_schema_valid)
             environment = json.loads(row["environment"])
             routes = json.loads(row["candidate_routes"])
             target = json.loads(row["completion"])["waypoints"]
@@ -152,6 +166,7 @@ def evaluate(rows, predictions, clearance_m):
             path_errors.append(path_error)
             detail.update(
                 structured_valid=True,
+                reasoning_schema_valid=reasoning_schema_valid,
                 feasible=feasible,
                 predicted_route_id=predicted_route_id,
                 target_route_id=row["selected_route_id"],
@@ -165,6 +180,7 @@ def evaluate(rows, predictions, clearance_m):
     metrics = {
         **totals,
         "structured_valid_rate": totals["structured_valid"] / denominator,
+        "reasoning_schema_valid_rate": totals["reasoning_schema_valid"] / denominator,
         "feasible_rate": totals["feasible"] / denominator,
         "route_match_rate": totals["route_match"] / denominator,
         "mean_endpoint_error_m": sum(endpoint_errors) / len(endpoint_errors) if endpoint_errors else None,
@@ -178,12 +194,18 @@ def main():
     parser.add_argument("--test", type=Path, default=Path("fine_tuning/datasets/hrrt_sft_test.csv"))
     parser.add_argument("--adapter", type=Path, default=Path("fine_tuning/outputs/llama31_8b_hrrt_lora"))
     parser.add_argument("--base-model", default="meta-llama/Meta-Llama-3.1-8B-Instruct")
+    parser.add_argument("--distillation-mode", choices=DISTILLATION_MODES, default="dss")
     parser.add_argument("--predictions", type=Path, help="Optional JSONL predictions for offline scoring.")
     parser.add_argument("--output", type=Path, default=Path("fine_tuning/outputs/llama31_8b_hrrt_lora/test_metrics.json"))
     parser.add_argument("--clearance-m", type=float, default=0.40)
     parser.add_argument("--max-new-tokens", type=int, default=600)
     args = parser.parse_args()
     rows = read_rows(args.test)
+    modes = {row.get("distillation_mode", "dss") for row in rows}
+    if modes != {args.distillation_mode}:
+        raise ValueError(
+            f"{args.test} contains distillation modes {sorted(modes)}, expected {args.distillation_mode!r}"
+        )
     predictions = load_predictions(args.predictions) if args.predictions else generate_predictions(rows, args)
     report = evaluate(rows, predictions, args.clearance_m)
     args.output.parent.mkdir(parents=True, exist_ok=True)

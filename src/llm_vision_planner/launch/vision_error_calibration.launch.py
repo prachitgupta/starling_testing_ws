@@ -33,6 +33,8 @@ def generate_launch_description():
         DeclareLaunchArgument("frame_sync_tolerance_s", default_value="0.10"),
         DeclareLaunchArgument("sync_tolerance_s", default_value="0.10"),
         DeclareLaunchArgument("match_distance_m", default_value="0.75"),
+        DeclareLaunchArgument("capture_position_change_threshold_m", default_value="0.15"),
+        DeclareLaunchArgument("capture_yaw_change_threshold_rad", default_value="0.261799"),
         DeclareLaunchArgument("calibration_capture_delay_s", default_value="1.0"),
         DeclareLaunchArgument("calibration_capture_interval_s", default_value="3.0"),
         DeclareLaunchArgument("openai_intent_model", default_value="gpt-5.4-nano"),
@@ -76,6 +78,12 @@ def generate_launch_description():
                 ),
                 "match_distance_m": ParameterValue(
                     LaunchConfiguration("match_distance_m"), value_type=float
+                ),
+                "capture_position_change_threshold_m": ParameterValue(
+                    LaunchConfiguration("capture_position_change_threshold_m"), value_type=float
+                ),
+                "capture_yaw_change_threshold_rad": ParameterValue(
+                    LaunchConfiguration("capture_yaw_change_threshold_rad"), value_type=float
                 ),
             },
         ],

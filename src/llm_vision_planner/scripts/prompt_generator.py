@@ -497,6 +497,7 @@ class PromptGenerator(Node):
             "- stay within workspace\n"
             "- no waypoint should be within obstacle boxes, walls, or near corners\n"
             "- prefer sparse, smooth, monotonic progress through open space\n"
+            "- reasoning must use: Preference: ... Geometry: ... Decision: ... Safety: ...\n"
             "- return only the structured output requested by the response model"
         )
 

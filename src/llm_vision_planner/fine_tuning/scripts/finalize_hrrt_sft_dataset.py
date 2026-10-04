@@ -5,10 +5,18 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 from pathlib import Path
 from typing import Dict, List, Mapping, Sequence
+
+from generate_hrrt_finetuning_dataset import (
+    DISTILLATION_MODES,
+    card_by_id,
+    deterministic_trajectory_reasoning,
+    student_reasoning_is_valid,
+)
 
 
 def compact(value: object) -> str:
@@ -31,7 +39,7 @@ def describe_obstacles(obstacles: Sequence[Mapping[str, object]]) -> str:
     return " ".join(descriptions) if descriptions else "No obstacles."
 
 
-def build_prompt(environment: Mapping[str, object], preference_text: str, clearance_m: float) -> str:
+def build_scene_context(environment: Mapping[str, object], preference_text: str) -> str:
     start, goal, workspace = environment["start"], environment["goal"], environment["workspace"]
     distance = math.hypot(float(goal["x"]) - float(start["x"]), float(goal["y"]) - float(start["y"]))
     return (
@@ -43,13 +51,28 @@ def build_prompt(environment: Mapping[str, object], preference_text: str, cleara
         f"Start: ({start['x']:.2f},{start['y']:.2f},{start['z']:.2f}); "
         f"goal: ({goal['x']:.2f},{goal['y']:.2f},{goal['z']:.2f}); distance={distance:.2f}m. "
         f"Obstacles: {describe_obstacles(environment['obstacles'])}\n"
-        f"Approved route preference: {preference_text}\n"
+        f"Approved route preference: {preference_text}"
+    )
+
+
+def waypoint_constraints(clearance_m: float) -> str:
+    return (
         "Constraints:\n"
         "- first waypoint exactly equals start and final waypoint exactly equals goal\n"
         "- return between 2 and 8 sparse waypoints inside the workspace at fixed z\n"
         f"- maintain at least {clearance_m:.2f}m geometric clearance from obstacle boxes\n"
         "- satisfy the approved route preference without inventing objects\n"
+        "- reasoning must use: Preference: ... Geometry: ... Decision: ... Safety: ...\n"
         "- return only the structured output requested by the response model"
+    )
+
+
+def build_prompt(environment: Mapping[str, object], preference_text: str, clearance_m: float) -> str:
+    return "\n".join(
+        (
+            build_scene_context(environment, preference_text),
+            waypoint_constraints(clearance_m),
+        )
     )
 
 
@@ -72,8 +95,96 @@ def write_csv(path: Path, rows: List[Mapping[str, object]]) -> None:
     temporary.replace(path)
 
 
+def selected_for_auxiliary(sample_id: str, ratio: float, seed: int, salt: str) -> bool:
+    if ratio <= 0.0:
+        return False
+    if ratio >= 1.0:
+        return True
+    digest = hashlib.sha256(f"{seed}:{salt}:{sample_id}".encode()).digest()
+    value = int.from_bytes(digest[:8], "big") / float(2**64)
+    return value < ratio
+
+
+def reasoning_prompt(
+    environment: Mapping[str, object], preference_text: str, clearance_m: float
+) -> str:
+    return (
+        build_scene_context(environment, preference_text)
+        + f"\nSafety requirement: maintain at least {clearance_m:.2f}m clearance from obstacle boxes."
+        + "\nAuxiliary DSS task: explain the intended route using "
+        "Preference: ... Geometry: ... Decision: ... Safety: ... "
+        "Return only a JSON object containing the reasoning field; do not return waypoints."
+    )
+
+
+def reasoning_conditioned_prompt(
+    environment: Mapping[str, object],
+    preference_text: str,
+    clearance_m: float,
+    reasoning: str,
+) -> str:
+    return (
+        build_scene_context(environment, preference_text)
+        + "\n"
+        + waypoint_constraints(clearance_m).replace(
+            "- reasoning must use: Preference: ... Geometry: ... Decision: ... Safety: ...\n",
+            "",
+        )
+        + "\nAuxiliary SCOTT consistency task: the following rationale is authoritative for this task. "
+        "Generate the waypoint sequence that follows it. Return only a JSON object containing waypoints.\n"
+        + f"Supplied rationale: {reasoning}"
+    )
+
+
+def completed_row(
+    raw: Mapping[str, object],
+    review: Mapping[str, object] | None,
+    split: str,
+    label_source: str,
+    distillation_mode: str,
+    sample_id: str,
+    task_type: str,
+    route_id: str,
+    prompt: str,
+    completion: Mapping[str, object],
+) -> Dict[str, object]:
+    return {
+        "sample_id": sample_id,
+        "parent_sample_id": raw["sample_id"],
+        "scene_id": raw["scene_id"],
+        "split": split,
+        "distillation_mode": distillation_mode,
+        "task_type": task_type,
+        "label_source": label_source,
+        "preference_type": raw["preference"]["preference_type"],
+        "preference_text": raw["preference"]["text"],
+        "selected_route_id": route_id,
+        "prompt": prompt,
+        "completion": compact(completion),
+        "messages": compact(
+            [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": compact(completion)},
+            ]
+        ),
+        "environment": compact(raw["environment"]),
+        "route_cards": compact(raw["route_cards"]),
+        "candidate_routes": compact(raw["routes"]),
+        "human_review": compact(review) if review else "",
+    }
+
+
 def finalize(args: argparse.Namespace) -> None:
     raw_rows = read_jsonl(args.raw)
+    if not 0.0 <= args.reasoning_aux_ratio <= 1.0:
+        raise ValueError("--reasoning-aux-ratio must be between 0 and 1")
+    if not 0.0 <= args.counterfactual_aux_ratio <= 1.0:
+        raise ValueError("--counterfactual-aux-ratio must be between 0 and 1")
+    raw_modes = {str(row.get("distillation_mode", "dss")) for row in raw_rows}
+    if raw_modes != {args.distillation_mode}:
+        raise ValueError(
+            f"Raw data modes {sorted(raw_modes)} do not match --distillation-mode {args.distillation_mode!r}"
+        )
     manifest = {str(row["sample_id"]): row for row in read_jsonl(args.audit)}
     reviews = {str(row["sample_id"]): row for row in read_jsonl(args.reviews)}
     missing = sorted(set(manifest) - set(reviews))
@@ -108,32 +219,105 @@ def finalize(args: argparse.Namespace) -> None:
             label_source = "human_accepted" if review else "teacher"
         route = route_by_id(raw, route_id)
         prompt = build_prompt(raw["environment"], str(raw["preference"]["text"]), args.clearance_m)
+        human_reason = str(
+            (review or {}).get("human_reason") or (review or {}).get("notes") or ""
+        ).strip()
+        teacher_reason = raw.get("teacher_trajectory_reasoning") or raw.get("teacher_reason")
+        if human_reason and student_reasoning_is_valid(human_reason):
+            reason = human_reason
+        elif route_id == str(raw["teacher_route_id"]) and student_reasoning_is_valid(teacher_reason):
+            reason = str(teacher_reason).strip()
+        else:
+            reason = deterministic_trajectory_reasoning(
+                raw["preference"], card_by_id(raw["route_cards"], route_id)
+            )
         completion = {
-            "reasoning": "Selected a safe HRRT-star route that best matches the approved operator preference.",
+            "reasoning": reason,
             "waypoints": route["waypoints"],
         }
-        messages = [
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": compact(completion)},
-        ]
         outputs[split].append(
-            {
-                "sample_id": sample_id,
-                "scene_id": scene_id,
-                "split": split,
-                "label_source": label_source,
-                "preference_type": raw["preference"]["preference_type"],
-                "preference_text": raw["preference"]["text"],
-                "selected_route_id": route_id,
-                "prompt": prompt,
-                "completion": compact(completion),
-                "messages": compact(messages),
-                "environment": compact(raw["environment"]),
-                "route_cards": compact(raw["route_cards"]),
-                "candidate_routes": compact(raw["routes"]),
-                "human_review": compact(review) if review else "",
-            }
+            completed_row(
+                raw,
+                review,
+                split,
+                label_source,
+                args.distillation_mode,
+                sample_id,
+                "full_plan",
+                route_id,
+                prompt,
+                completion,
+            )
         )
+        if split != "train":
+            continue
+        if selected_for_auxiliary(
+            sample_id, args.reasoning_aux_ratio, args.auxiliary_seed, "reasoning"
+        ):
+            outputs[split].append(
+                completed_row(
+                    raw,
+                    review,
+                    split,
+                    label_source,
+                    args.distillation_mode,
+                    sample_id + "::reasoning",
+                    "reasoning",
+                    route_id,
+                    reasoning_prompt(
+                        raw["environment"], str(raw["preference"]["text"]), args.clearance_m
+                    ),
+                    {"reasoning": reason},
+                )
+            )
+        if (
+            args.distillation_mode == "dss_scott"
+            and not (review and review["decision"] == "corrected")
+            and selected_for_auxiliary(
+                sample_id,
+                args.counterfactual_aux_ratio,
+                args.auxiliary_seed,
+                "counterfactual",
+            )
+        ):
+            counterfactual_id = str(raw["counterfactual_route_id"])
+            counterfactual_route = route_by_id(raw, counterfactual_id)
+            counterfactual_reason = str(raw["counterfactual_trajectory_reasoning"])
+            if not student_reasoning_is_valid(counterfactual_reason):
+                counterfactual_reason = deterministic_trajectory_reasoning(
+                    raw["preference"],
+                    card_by_id(raw["route_cards"], counterfactual_id),
+                    counterfactual=True,
+                )
+            conditioned_pairs = (
+                ("conditioned_positive", route_id, reason, route["waypoints"]),
+                (
+                    "conditioned_counterfactual",
+                    counterfactual_id,
+                    counterfactual_reason,
+                    counterfactual_route["waypoints"],
+                ),
+            )
+            for task_type, target_route_id, supplied_reason, waypoints in conditioned_pairs:
+                outputs[split].append(
+                    completed_row(
+                        raw,
+                        review,
+                        split,
+                        label_source,
+                        args.distillation_mode,
+                        sample_id + "::" + task_type,
+                        task_type,
+                        target_route_id,
+                        reasoning_conditioned_prompt(
+                            raw["environment"],
+                            str(raw["preference"]["text"]),
+                            args.clearance_m,
+                            supplied_reason,
+                        ),
+                        {"waypoints": waypoints},
+                    )
+                )
 
     write_csv(args.output_dir / "hrrt_sft_train.csv", outputs["train"])
     write_csv(args.output_dir / "hrrt_sft_validation.csv", outputs["validation"])
@@ -143,7 +327,21 @@ def finalize(args: argparse.Namespace) -> None:
     test_scenes = {row["scene_id"] for row in outputs["test"]}
     if train_scenes & validation_scenes or train_scenes & test_scenes or validation_scenes & test_scenes:
         raise AssertionError("Scene leakage detected after finalization")
-    print(json.dumps({split: len(rows) for split, rows in outputs.items()}, indent=2))
+    task_counts: Dict[str, int] = {}
+    for rows in outputs.values():
+        for row in rows:
+            task = str(row["task_type"])
+            task_counts[task] = task_counts.get(task, 0) + 1
+    print(
+        json.dumps(
+            {
+                "distillation_mode": args.distillation_mode,
+                "split_counts": {split: len(rows) for split, rows in outputs.items()},
+                "task_counts": task_counts,
+            },
+            indent=2,
+        )
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -153,6 +351,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reviews", type=Path, default=Path("fine_tuning/datasets/hrrt_human_reviews.jsonl"))
     parser.add_argument("--output-dir", type=Path, default=Path("fine_tuning/datasets"))
     parser.add_argument("--clearance-m", type=float, default=0.40)
+    parser.add_argument("--distillation-mode", choices=DISTILLATION_MODES, default="dss")
+    parser.add_argument(
+        "--reasoning-aux-ratio",
+        type=float,
+        default=0.25,
+        help="Fraction of training examples duplicated as DSS reasoning-only tasks.",
+    )
+    parser.add_argument(
+        "--counterfactual-aux-ratio",
+        type=float,
+        default=0.25,
+        help="DSS-SCOTT fraction receiving positive/counterfactual rationale-conditioned plan tasks.",
+    )
+    parser.add_argument("--auxiliary-seed", type=int, default=42)
     return parser
 
 

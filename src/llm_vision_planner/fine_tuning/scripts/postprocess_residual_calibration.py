@@ -41,6 +41,13 @@ RAW_REQUIRED_FIELDS = {
     "pred_min_x", "pred_min_y", "pred_max_x", "pred_max_y",
     "gt_min_x", "gt_min_y", "gt_max_x", "gt_max_y",
     "missed_detection", "observer_x", "observer_y", "observer_z",
+    "gt_yaw_rad",
+    *(f"gt_corner_{index}_{axis}" for index in range(4) for axis in ("x", "y")),
+    "pred_front_center_x", "pred_front_center_y",
+    "pred_view_axis_x", "pred_view_axis_y",
+    "pred_lateral_axis_x", "pred_lateral_axis_y",
+    "pred_visible_width_m", "pred_chatgpt_depth_m",
+    *(f"pred_corner_{index}_{axis}" for index in range(4) for axis in ("x", "y")),
 }
 SCORED_FIELDS = [
     "session_id",
@@ -102,12 +109,31 @@ def read_raw(path: Path, delimiter: str = CSV_DELIMITER):
 
 
 def obstacle(row: Mapping[str, str], prefix: str):
-    return {
+    item = {
         "object_id": row["object_id"],
         "label": row["label"],
         "min_corner": [float(row[f"{prefix}_min_x"]), float(row[f"{prefix}_min_y"]), -1.0],
         "max_corner": [float(row[f"{prefix}_max_x"]), float(row[f"{prefix}_max_y"]), 0.0],
     }
+    item["footprint_corners_xy"] = [
+        [float(row[f"{prefix}_corner_{index}_x"]), float(row[f"{prefix}_corner_{index}_y"])]
+        for index in range(4)
+    ]
+    if prefix == "gt":
+        item["yaw_rad"] = float(row["gt_yaw_rad"])
+    else:
+        item.update({
+            "front_surface_center": [
+                float(row["pred_front_center_x"]), float(row["pred_front_center_y"])
+            ],
+            "view_axis_xy": [float(row["pred_view_axis_x"]), float(row["pred_view_axis_y"])],
+            "lateral_axis_xy": [
+                float(row["pred_lateral_axis_x"]), float(row["pred_lateral_axis_y"])
+            ],
+            "visible_width_m": float(row["pred_visible_width_m"]),
+            "effective_depth_along_view_m": float(row["pred_chatgpt_depth_m"]),
+        })
+    return item
 
 
 def environments(rows: Sequence[Mapping[str, str]]):

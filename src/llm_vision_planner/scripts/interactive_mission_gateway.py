@@ -1036,6 +1036,7 @@ def build_planner_prompt(
         "- stay within workspace\n"
         "- no waypoint should be within obstacle boxes, walls, or near corners\n"
         "- prefer sparse, smooth, monotonic progress through open space\n"
+        "- reasoning must use: Preference: ... Geometry: ... Decision: ... Safety: ...\n"
         "- return only the structured output requested by the response model"
     )
     return "\n".join((INSTRUCTIONS, nl_env, constraints)), nl_env

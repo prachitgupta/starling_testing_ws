@@ -45,6 +45,20 @@ RAW_FIELDS = [
     "stable_pose",
     "gt_center_x",
     "gt_center_y",
+    "gt_yaw_rad",
+    "gt_corner_0_x", "gt_corner_0_y",
+    "gt_corner_1_x", "gt_corner_1_y",
+    "gt_corner_2_x", "gt_corner_2_y",
+    "gt_corner_3_x", "gt_corner_3_y",
+    "pred_front_center_x", "pred_front_center_y",
+    "pred_view_axis_x", "pred_view_axis_y",
+    "pred_lateral_axis_x", "pred_lateral_axis_y",
+    "pred_visible_width_m",
+    "pred_chatgpt_depth_m",
+    "pred_corner_0_x", "pred_corner_0_y",
+    "pred_corner_1_x", "pred_corner_1_y",
+    "pred_corner_2_x", "pred_corner_2_y",
+    "pred_corner_3_x", "pred_corner_3_y",
     "observer_x",
     "observer_y",
     "observer_z",
@@ -171,7 +185,12 @@ def ground_truth_aabb(config, marker_pose, world_to_ned):
         "max_corner": [float(np.max(corners[:, 0])), float(np.max(corners[:, 1]))],
         "center": [float(center[0]), float(center[1])],
         "yaw": math.atan2(float(object_rotation[1, 0]), float(object_rotation[0, 0])),
+        "corners": [[float(point[0]), float(point[1])] for point in corners],
     }
+
+
+def angle_difference(first, second):
+    return abs(math.atan2(math.sin(first - second), math.cos(first - second)))
 
 
 def match_prediction(obstacles, config, ground_truth, maximum_distance):
@@ -217,6 +236,8 @@ class ResidualCalibrationRecorder(Node):
         self.declare_parameter("object_stability_window_s", 0.50)
         self.declare_parameter("object_stability_min_samples", 5)
         self.declare_parameter("object_stability_position_tolerance_m", 0.02)
+        self.declare_parameter("capture_position_change_threshold_m", 0.15)
+        self.declare_parameter("capture_yaw_change_threshold_rad", 0.261799)
 
         self.session_id = str(self.get_parameter("trial_id").value).strip()
         if not self.session_id or self.session_id.lower() in ("unset", "placeholder"):
@@ -230,6 +251,14 @@ class ResidualCalibrationRecorder(Node):
         self.stability_position_tolerance = float(
             self.get_parameter("object_stability_position_tolerance_m").value
         )
+        self.capture_position_threshold = float(
+            self.get_parameter("capture_position_change_threshold_m").value
+        )
+        self.capture_yaw_threshold = float(
+            self.get_parameter("capture_yaw_change_threshold_rad").value
+        )
+        if self.capture_position_threshold <= 0.0 or self.capture_yaw_threshold <= 0.0:
+            raise ValueError("capture position/yaw change thresholds must be positive")
         self.vehicle_convention = str(self.get_parameter("vicon_vehicle_frame_convention").value)
         marker_from_body(self.vehicle_convention)
 
@@ -274,6 +303,9 @@ class ResidualCalibrationRecorder(Node):
         self.vehicle_px4 = deque(maxlen=100)
         self.object_history = {item["topic"]: deque(maxlen=500) for item in self.objects}
         self.recorded = set()
+        self.pending_rows = {}
+        self.rejected_captures = set()
+        self.last_accepted_scene = None
         self.status = self.create_publisher(
             String, str(self.get_parameter("calibration_status_topic").value), LATCHED_QOS
         )
@@ -361,6 +393,7 @@ class ResidualCalibrationRecorder(Node):
             "timestamp": timestamp,
             "capture_id": f"{safe}-capture-{self.capture_index:06d}",
         }
+        self.pending_rows = {self.latest_nominal["capture_id"]: {}}
         for configured in self.objects:
             self.try_record(configured)
 
@@ -393,6 +426,8 @@ class ResidualCalibrationRecorder(Node):
         if not history:
             return
         nominal = self.latest_nominal
+        if nominal["capture_id"] in self.rejected_captures:
+            return
         half_window = 0.5 * self.stability_window
         if history[-1][0] < nominal["timestamp"] + half_window:
             return
@@ -406,7 +441,8 @@ class ResidualCalibrationRecorder(Node):
         centers = np.asarray([sample["center"] for sample in stability_samples], dtype=float)
         center_deviation = float(np.max(np.linalg.norm(centers - np.mean(centers, axis=0), axis=1)))
         if center_deviation > self.stability_position_tolerance:
-            self.recorded.add((nominal["capture_id"], configured["object_id"]))
+            self.rejected_captures.add(nominal["capture_id"])
+            self.pending_rows.pop(nominal["capture_id"], None)
             self.publish_status(
                 "SKIPPED_MOVING_OBJECT",
                 f"Skipped moving object {configured['object_id']} for {nominal['capture_id']}.",
@@ -441,9 +477,13 @@ class ResidualCalibrationRecorder(Node):
             "stable_pose": "true",
             "gt_center_x": f"{ground_truth['center'][0]:.9f}",
             "gt_center_y": f"{ground_truth['center'][1]:.9f}",
+            "gt_yaw_rad": f"{ground_truth['yaw']:.9f}",
             "placeholder": "false",
             **self.observer_fields(nominal["payload"]),
         }
+        for index, point in enumerate(ground_truth["corners"]):
+            row[f"gt_corner_{index}_x"] = f"{point[0]:.9f}"
+            row[f"gt_corner_{index}_y"] = f"{point[1]:.9f}"
         for prefix, source in (("pred", predicted),):
             minimum = source.get("min_corner", []) if source else []
             maximum = source.get("max_corner", []) if source else []
@@ -451,12 +491,73 @@ class ResidualCalibrationRecorder(Node):
             row[f"{prefix}_min_y"] = f"{float(minimum[1]):.9f}" if len(minimum) >= 2 else ""
             row[f"{prefix}_max_x"] = f"{float(maximum[0]):.9f}" if len(maximum) >= 2 else ""
             row[f"{prefix}_max_y"] = f"{float(maximum[1]):.9f}" if len(maximum) >= 2 else ""
-        self.writer.writerow(row)
+        perceived_fields = {
+            "pred_front_center_x": ("front_surface_center", 0),
+            "pred_front_center_y": ("front_surface_center", 1),
+            "pred_view_axis_x": ("view_axis_xy", 0),
+            "pred_view_axis_y": ("view_axis_xy", 1),
+            "pred_lateral_axis_x": ("lateral_axis_xy", 0),
+            "pred_lateral_axis_y": ("lateral_axis_xy", 1),
+        }
+        for field, (source_field, index) in perceived_fields.items():
+            values = predicted.get(source_field, []) if predicted else []
+            row[field] = f"{float(values[index]):.9f}" if len(values) > index else ""
+        row["pred_visible_width_m"] = (
+            f"{float(predicted['visible_width_m']):.9f}"
+            if predicted and predicted.get("visible_width_m") is not None else ""
+        )
+        row["pred_chatgpt_depth_m"] = (
+            f"{float(predicted['effective_depth_along_view_m']):.9f}"
+            if predicted and predicted.get("effective_depth_along_view_m") is not None else ""
+        )
+        predicted_corners = predicted.get("nominal_footprint_corners_xy", []) if predicted else []
+        for index in range(4):
+            point = predicted_corners[index] if len(predicted_corners) > index else []
+            row[f"pred_corner_{index}_x"] = f"{float(point[0]):.9f}" if len(point) >= 2 else ""
+            row[f"pred_corner_{index}_y"] = f"{float(point[1]):.9f}" if len(point) >= 2 else ""
+
+        pending = self.pending_rows.setdefault(nominal["capture_id"], {})
+        pending[configured["object_id"]] = (row, ground_truth)
+        if len(pending) != len(self.objects):
+            return
+        scene = {
+            object_id: {"center": value[1]["center"], "yaw": value[1]["yaw"]}
+            for object_id, value in pending.items()
+        }
+        different = self.last_accepted_scene is None or set(scene) != set(self.last_accepted_scene)
+        if not different:
+            for object_id, pose in scene.items():
+                previous = self.last_accepted_scene[object_id]
+                if (
+                    math.dist(pose["center"], previous["center"])
+                    >= self.capture_position_threshold
+                    or angle_difference(pose["yaw"], previous["yaw"])
+                    >= self.capture_yaw_threshold
+                ):
+                    different = True
+                    break
+        if not different:
+            self.rejected_captures.add(nominal["capture_id"])
+            self.pending_rows.pop(nominal["capture_id"], None)
+            self.publish_status(
+                "SKIPPED_DUPLICATE_ENVIRONMENT",
+                "No tracked object exceeded the configured position or yaw threshold.",
+                capture_id=nominal["capture_id"],
+                position_threshold_m=self.capture_position_threshold,
+                yaw_threshold_rad=self.capture_yaw_threshold,
+            )
+            return
+        for item in self.objects:
+            object_id = item["object_id"]
+            self.writer.writerow(pending[object_id][0])
+            self.recorded.add((nominal["capture_id"], object_id))
         self.stream.flush()
-        self.recorded.add(key)
+        self.last_accepted_scene = scene
+        self.pending_rows.pop(nominal["capture_id"], None)
         self.publish_status(
-            "RECORDED", f"Recorded {configured['object_id']} for {nominal['capture_id']}.",
-            capture_id=nominal["capture_id"], output_csv=str(self.output_csv),
+            "RECORDED", f"Recorded complete environment {nominal['capture_id']}.",
+            capture_id=nominal["capture_id"], object_count=len(scene),
+            output_csv=str(self.output_csv),
         )
 
     def destroy_node(self):

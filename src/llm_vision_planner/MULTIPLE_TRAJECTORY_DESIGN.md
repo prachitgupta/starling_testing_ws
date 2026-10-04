@@ -72,7 +72,13 @@ to retain at least:
 - Use the high-capacity teacher/selection procedure to map environment plus
   `L2` to one candidate.
 - Fine-tuning input: serialized environment context plus natural-language `L2`.
-- Fine-tuning target: the selected HRRT-star sparse waypoint sequence.
+- Fine-tuning target: deployment-visible reasoning followed by the selected
+  HRRT-star sparse waypoint sequence. The reasoning uses the fixed
+  `Preference/Geometry/Decision/Safety` structure and never exposes route cards.
+- Support `dss` and a minimal SFT-compatible `dss_scott` dataset mode. The latter
+  tests counterfactual rationale conditioning without a custom loss. DSS-SCOTT counterfactual routes
+  remain in explicitly prefixed training-only tasks; validation, test, and
+  deployment keep the same one-call reasoning-plus-waypoints contract.
 - Split evaluation by both unseen environments and unseen language paraphrases.
 
 ## Scaffolded implementation files
@@ -80,6 +86,9 @@ to retain at least:
 - `fine_tuning/scripts/hrrt_star.py`
 - `fine_tuning/scripts/generate_hrrt_acp_dataset.py`
 - `fine_tuning/scripts/generate_hrrt_finetuning_dataset.py`
+- `fine_tuning/scripts/finalize_hrrt_sft_dataset.py`
+- `fine_tuning/scripts/train_hrrt_peft.py`
+- `fine_tuning/scripts/evaluate_hrrt_adapter.py`
 
-These files are intentionally empty until their individual implementation
-plans are approved.
+The complete commands and mode-specific data directories are documented in
+`fine_tuning/README.md`.

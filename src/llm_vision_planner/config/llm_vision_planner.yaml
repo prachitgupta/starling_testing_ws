@@ -86,6 +86,7 @@ prompt_generator:
     environment: real
     llm_provider: llama
     chatgpt_model_name: gpt-5.4-nano
+    # Override with launch argument llama_model_name for a DSS or DSS-SCOTT served adapter.
     llama_model_name: hrrt_planner
     single_shot: True
     initial_plan_id: 1
@@ -122,6 +123,7 @@ interactive_mission_gateway:
     intent_provider: openai
     openai_intent_model: gpt-5.4-nano
     planner_llm_provider: llama
+    # full_plot.launch.py maps its llama_model_name argument to this parameter.
     planner_model_name: hrrt_planner
     visualizer: contraction
     interaction_mode: MISSION_EXECUTION
@@ -238,6 +240,10 @@ residual_calibration_recorder:
     object_stability_window_s: 0.50
     object_stability_min_samples: 5
     object_stability_position_tolerance_m: 0.02
+    # A new capture is written only when at least one Vicon object exceeds
+    # either threshold relative to the last accepted complete environment.
+    capture_position_change_threshold_m: 0.15
+    capture_yaw_change_threshold_rad: 0.261799
 
 llm_planner:
   ros__parameters:
@@ -246,6 +252,7 @@ llm_planner:
     model_name: gpt-5.4-nano
     llm_provider: llama
     chatgpt_model_name: gpt-5.4-nano
+    # Must match the model alias exposed by the OpenAI-compatible Llama server.
     llama_model_name: hrrt_planner
     vllm_base_url: http://172.22.224.93:8000/v1
     vllm_api_key: EMPTY

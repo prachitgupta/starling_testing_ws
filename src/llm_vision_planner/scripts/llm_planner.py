@@ -42,7 +42,9 @@ class Waypoint(BaseModel):
 class WaypointPlan(BaseModel):
     reasoning: str = Field(
         ...,
-        description="2-3 concise statements explaining obstacle-avoidance routing.",
+        description=(
+            "Concise deployment-visible rationale using Preference, Geometry, Decision, and Safety fields."
+        ),
     )
     waypoints: List[Waypoint] = Field(
         ...,

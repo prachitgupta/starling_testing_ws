@@ -8,7 +8,7 @@ and the complete Starling 2 hardware mission.
 In adaptive conformal prediction mode, HRRT-star generates a finite route family
 and the operator describes the preferred route in natural language. In mission
 execution mode, the second route-selection stage is skipped. In both modes the
-local `hrrt_planner` Llama adapter produces the online plan, which is refined,
+local DSS or DSS-SCOTT Llama adapter produces the online plan, which is refined,
 verified, optimized, and displayed with the contraction tube.
 
 ## 0. Clone, install, build, and source
@@ -276,10 +276,10 @@ environment, or create a separate one with `python3 -m venv ~/vllm_env`, activat
 it, and install `vllm`. Authenticate with `hf auth login` using an account that
 has access to the base model.
 
-No adapter weights are bundled:
-`fine_tuning/outputs/llama31_8b_hrrt_lora/PLACEHOLDER.txt` marks the expected
-directory. Put the trained HRRT preference-conditioned adapter in that directory
-on the GPU server before continuing.
+No adapter weights are bundled. Choose `dss` or `dss_scott`; the corresponding
+`fine_tuning/outputs/llama31_8b_hrrt_lora_<mode>/PLACEHOLDER.txt` marks the
+expected directory. Replace the placeholder with the trained adapter on the GPU
+server before continuing.
 
 1. Check GPU processes:
 
@@ -300,7 +300,9 @@ done
 
 ```bash
 cd ~/Desktop/starling_multiple_trajectory_idea
-ADAPTER="$PWD/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_hrrt_lora"
+DISTILLATION_MODE=dss
+LLAMA_MODEL_NAME="hrrt_planner_$DISTILLATION_MODE"
+ADAPTER="$PWD/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_hrrt_lora_$DISTILLATION_MODE"
 test -s "$ADAPTER/adapter_config.json" && test -s "$ADAPTER/adapter_model.safetensors"
 ```
 
@@ -310,8 +312,8 @@ test -s "$ADAPTER/adapter_config.json" && test -s "$ADAPTER/adapter_model.safete
 CUDA_VISIBLE_DEVICES=0 vllm serve meta-llama/Meta-Llama-3.1-8B-Instruct \
   --enable-lora \
   --max-lora-rank 128 \
-  --lora-modules hrrt_planner="$ADAPTER" \
-  --served-model-name hrrt_planner \
+  --lora-modules "$LLAMA_MODEL_NAME=$ADAPTER" \
+  --served-model-name "$LLAMA_MODEL_NAME" \
   --dtype float16 \
   --gpu-memory-utilization 0.80 \
   --max-model-len 4096 \
@@ -328,11 +330,12 @@ export VLLM_BASE_URL=http://172.22.224.93:8000/v1
 curl --fail --silent --show-error "$VLLM_BASE_URL/models"
 ```
 
-The response must list `hrrt_planner`. In
+The response must list the chosen alias, such as `hrrt_planner_dss`. In
 `src/llm_vision_planner/config/llm_vision_planner.yaml`, set
 `llm_planner.ros__parameters.vllm_base_url` to that URL; exporting the variable
-alone does not override the ROS parameter. Keep `hrrt_planner` in the
-`llm_planner`, `prompt_generator`, and `interactive_mission_gateway` model fields.
+alone does not override the ROS parameter. Pass the served alias through the
+`llama_model_name` launch argument; the launch file applies it consistently to
+the planner, prompt generator, and interactive gateway.
 For calibration and interactive missions, also export a valid `OPENAI_API_KEY`
 in the launch terminal. The camera mounts/intrinsics and network addresses below
 describe the original vehicle and must match your hardware.
@@ -776,6 +779,7 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 read -rsp "OpenAI API key: " OPENAI_API_KEY
 export OPENAI_API_KEY
+LLAMA_MODEL_NAME=hrrt_planner_dss
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -784,6 +788,7 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   intent_provider:=openai \
   use_dataset_scene:=false \
   llm_provider:=llama \
+  llama_model_name:="$LLAMA_MODEL_NAME" \
   visualizer:=contraction \
   web_ui_host:=127.0.0.1
 ```
@@ -936,6 +941,105 @@ ros2 daemon start
 ros2 topic echo --full-length /llm_vision/semantic_obstacles
 ```
 
+### Record all perception topics from a remote machine
+
+Use a separate Ubuntu 22.04/ROS 2 Humble computer on the same flight network so
+point-cloud recording does not consume resources on the flight computer or the
+ground station. The recorder must use the same DDS option and ROS domain as the
+vehicle and ground station. The commands below assume Option A and domain 42.
+
+Run once on the remote recorder:
+
+```bash
+sudo apt update
+sudo apt install -y git rsync python3-colcon-common-extensions python3-rosdep python3-vcstool \
+  ros-humble-rosbag2 ros-humble-rosbag2-storage-mcap
+
+mkdir -p ~/Desktop
+git clone --depth 1 --single-branch --branch starling_multiple_trajectory_idea \
+  https://github.com/prachitgupta/starling_testing_ws.git ~/Desktop/starling_multiple_trajectory_idea
+cd ~/Desktop/starling_multiple_trajectory_idea
+source /opt/ros/humble/setup.bash
+bash scripts/setup_workspace.sh
+if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
+  sudo rosdep init
+fi
+rosdep update
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install --packages-select px4_msgs voxl_msgs llm_vision_planner
+```
+
+If that clone already exists, pull and rebuild it instead of cloning again.
+Before each recording, start the vehicle bridges and the perception node, then
+run this on the remote recorder:
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon stop
+ros2 daemon start
+
+printenv ROS_DOMAIN_ID RMW_IMPLEMENTATION ROS_LOCALHOST_ONLY
+ros2 topic list | sort | grep -E \
+  '^(/tof_pc|/voa_pc_out|/tflite|/tflite_data|/fmu/out/vehicle_odometry|/llm_vision/(semantic_obstacles|obstacles)|/tf|/tf_static)$'
+ros2 topic hz /tof_pc
+ros2 topic hz /llm_vision/semantic_obstacles
+```
+
+Both `ros2 topic hz` commands must receive messages. Stop each check with
+`Ctrl+C`. If `/tof_pc` is missing, do not start the experiment: the bag would not
+contain the raw depth data required for later point-cloud work.
+
+Record raw sensor inputs, synchronized pose/frames, the optional VOA cloud, and
+both custom obstacle outputs:
+
+```bash
+mkdir -p ~/rosbags
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BAG_DIR="$HOME/rosbags/perception-$STAMP"
+
+ros2 bag record --storage mcap --output "$BAG_DIR" \
+  /tof_pc \
+  /tflite_data \
+  /tflite \
+  /fmu/out/vehicle_odometry \
+  /tf \
+  /tf_static \
+  /voa_pc_out \
+  /llm_vision/semantic_obstacles \
+  /llm_vision/obstacles
+```
+
+Leave this terminal running for the entire scene or flight. Press `Ctrl+C` once
+to stop and allow rosbag2 to finish its metadata. Do not power off or disconnect
+the recorder while it is closing the bag. Topics not published by a particular
+configuration may remain at zero messages; `/tof_pc`, `/tflite_data`,
+`/fmu/out/vehicle_odometry`, and `/llm_vision/semantic_obstacles` are required for
+this perception pipeline.
+
+Verify the recording before moving or deleting it:
+
+```bash
+ros2 bag info "$BAG_DIR"
+du -sh "$BAG_DIR"
+```
+
+The bag information must show non-zero message counts for the four required
+topics. Copy the complete bag directory, including `metadata.yaml` and every
+`.mcap` file, from the recorder to the analysis computer:
+
+```bash
+rsync -av --progress "$BAG_DIR/" \
+  USER@ANALYSIS_COMPUTER:~/rosbags/"$(basename "$BAG_DIR")"/
+```
+
+Replace `USER@ANALYSIS_COMPUTER` with the analysis computer's SSH login and
+network address. When using Option B DDS, omit `ros_wifi_dds.sh enable` and use
+the Option B environment from Section 1 on the recorder as well.
+
 ### Open the live perception plot
 
 ```bash
@@ -969,6 +1073,7 @@ source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dd
 ros2 daemon start
 read -rsp "OpenAI API key: " OPENAI_API_KEY
 export OPENAI_API_KEY
+LLAMA_MODEL_NAME=hrrt_planner_dss
 
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
@@ -976,6 +1081,7 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   interaction_mode:=interactive \
   intent_provider:=openai \
   llm_provider:=llama \
+  llama_model_name:="$LLAMA_MODEL_NAME" \
   visualizer:=contraction \
   web_ui_host:=0.0.0.0
 ```
@@ -993,7 +1099,11 @@ instead of landing automatically.
 ## 13. Generate the residual calibration dataset
 
 This workflow is deliberately split into two stages. The flight records only
-comma-delimited perceived/ground-truth obstacle geometry. Offline processing
+comma-delimited perceived/ground-truth obstacle geometry. Each accepted capture
+is an atomic environment: every configured Vicon object is written under one
+`capture_id`, including Vicon yaw and four NED corners. Detected objects also
+include the perceived front center, view/lateral axes, visible width, ChatGPT
+depth, and four reconstructed NED footprint corners. Offline processing
 then runs HRRT-star on ground truth, the Llama planner on perception, both
 ideal-double-integrator QPs, and writes one residual conformity score per
 capture. Never use the raw CSV as the conformal calibration input.
@@ -1117,12 +1227,16 @@ PY
 
 RAW_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw.csv"
 TRIAL_ID="residual-$(date +%Y%m%d-%H%M%S)"
+POSITION_CHANGE_M=0.15
+YAW_CHANGE_RAD=0.261799  # 15 degrees
 
 ros2 launch llm_vision_planner vision_error_calibration.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
   trial_id:="$TRIAL_ID" \
   output_csv:="$RAW_CSV" \
-  vicon_objects_json:="$VICON_OBJECTS_JSON"
+  vicon_objects_json:="$VICON_OBJECTS_JSON" \
+  capture_position_change_threshold_m:="$POSITION_CHANGE_M" \
+  capture_yaw_change_threshold_rad:="$YAW_CHANGE_RAD"
 ```
 
 In a monitor terminal:
@@ -1135,9 +1249,12 @@ tail -f \
   ~/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw.csv
 ```
 
-After each `RECORDED` status, move one or more tracked obstacles to a clearly
-different pose, then leave every object stationary for the next capture. Do not
-move the aircraft by hand while it holds position.
+After each `RECORDED` status, move at least one tracked obstacle by
+`POSITION_CHANGE_M` or rotate it by `YAW_CHANGE_RAD`, then leave every object
+stationary. The recorder waits for all configured Vicon objects and writes the
+complete environment together. `SKIPPED_DUPLICATE_ENVIRONMENT` means neither
+threshold was reached; `SKIPPED_MOVING_OBJECT` means the scene was not stable.
+Do not move the aircraft by hand while it holds position.
 
 Land before stopping the launch:
 
@@ -1166,6 +1283,13 @@ required = {
     "session_id", "capture_id", "object_id", "label",
     "pred_min_x", "pred_min_y", "pred_max_x", "pred_max_y",
     "gt_min_x", "gt_min_y", "gt_max_x", "gt_max_y", "placeholder",
+    "gt_yaw_rad",
+    *(f"gt_corner_{i}_{axis}" for i in range(4) for axis in ("x", "y")),
+    "pred_front_center_x", "pred_front_center_y",
+    "pred_view_axis_x", "pred_view_axis_y",
+    "pred_lateral_axis_x", "pred_lateral_axis_y",
+    "pred_visible_width_m", "pred_chatgpt_depth_m",
+    *(f"pred_corner_{i}_{axis}" for i in range(4) for axis in ("x", "y")),
 }
 if not rows:
     raise SystemExit("No raw calibration rows were recorded.")
@@ -1174,14 +1298,24 @@ if missing:
     raise SystemExit(f"Missing raw CSV columns: {sorted(missing)}")
 if any(row["placeholder"].lower() != "false" for row in rows):
     raise SystemExit("Real raw data contains a placeholder row.")
+captures = {}
+for row in rows:
+    captures.setdefault(row["capture_id"], []).append(row)
+if any(len({row["object_id"] for row in group}) != len(group) for group in captures.values()):
+    raise SystemExit("A capture contains duplicate object rows.")
+for row in rows:
+    if row["missed_detection"].lower() == "false":
+        perceived = [name for name in required if name.startswith("pred_")]
+        if any(not row[name] for name in perceived):
+            raise SystemExit(f"Detected object is missing perceived geometry: {row['object_id']}")
 print(f"raw rows: {len(rows)}")
-print(f"independent captures: {len({row['capture_id'] for row in rows})}")
+print(f"independent captures: {len(captures)}")
 PY
 ```
 
 ### 13.5 Compute the scored calibration CSV offline
 
-Section 3.1 must already be serving the trained adapter as `hrrt_planner`.
+Section 3.1 must already be serving the trained adapter under its selected alias.
 Each command scores only the captures selected for that `L1`/`L2`/goal batch.
 The Llama adapter plans on perceived geometry; ChatGPT selects the expert HRRT
 route on ground-truth geometry. If a human already selected an exact displayed
@@ -1199,6 +1333,7 @@ export VLLM_BASE_URL=http://172.22.224.93:8000/v1
 read -rsp "OpenAI API key: " OPENAI_API_KEY
 export OPENAI_API_KEY
 export EXPERT_MODEL=gpt-5.4
+LLAMA_MODEL_NAME=hrrt_planner_dss
 
 curl --fail --silent --show-error "$VLLM_BASE_URL/models"
 
@@ -1231,7 +1366,7 @@ python3 src/llm_vision_planner/fine_tuning/scripts/postprocess_residual_calibrat
   --planner-provider vllm \
   --vllm-base-url "$VLLM_BASE_URL" \
   --vllm-api-key EMPTY \
-  --llama-model hrrt_planner \
+  --llama-model "$LLAMA_MODEL_NAME" \
   --append
 ```
 

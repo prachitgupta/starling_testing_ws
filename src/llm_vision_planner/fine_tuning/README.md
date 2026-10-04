@@ -110,6 +110,7 @@ python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
   --seed 1701 \
   --teacher openai \
   --teacher-model gpt-5.4 \
+  --reasoning-effort medium \
   --distillation-mode "$DISTILLATION_MODE" \
   --min-obstacles 2 \
   --max-obstacles 4 \

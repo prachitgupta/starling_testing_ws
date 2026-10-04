@@ -406,6 +406,7 @@ def openai_select(
     cards: Sequence[Mapping[str, object]],
     routes: Sequence[Mapping[str, object]],
     model: str,
+    reasoning_effort: str | None,
     distillation_mode: str,
     clearance_m: float,
 ) -> Dict[str, object]:
@@ -449,6 +450,9 @@ def openai_select(
         },
     }
     client = OpenAI()
+    reasoning_kwargs = (
+        {"reasoning": {"effort": reasoning_effort}} if reasoning_effort else {}
+    )
     if distillation_mode == "dss":
         response = client.responses.parse(
             model=model,
@@ -465,6 +469,7 @@ def openai_select(
                 },
             ],
             text_format=DSSSelection,
+            **reasoning_kwargs,
         )
         if response.output_parsed is None:
             raise RuntimeError("Teacher returned no structured DSS selection")
@@ -486,6 +491,7 @@ def openai_select(
             },
         ],
         text_format=RouteSelection,
+        **reasoning_kwargs,
     )
     if selection_response.output_parsed is None:
         raise RuntimeError("Teacher returned no structured DSS-SCOTT route selection")
@@ -520,6 +526,7 @@ def openai_select(
             },
         ],
         text_format=ScottRationales,
+        **reasoning_kwargs,
     )
     if rationale_response.output_parsed is None:
         raise RuntimeError("Teacher returned no structured DSS-SCOTT rationales")
@@ -663,6 +670,7 @@ def generate(args: argparse.Namespace) -> None:
                     cards,
                     routes,
                     args.teacher_model,
+                    args.reasoning_effort,
                     args.distillation_mode,
                     args.clearance_m,
                 )
@@ -682,6 +690,7 @@ def generate(args: argparse.Namespace) -> None:
                 "routes": routes,
                 "teacher_provider": args.teacher,
                 "teacher_model": args.teacher_model if args.teacher == "openai" else "deterministic_mock",
+                "teacher_reasoning_effort": args.reasoning_effort,
                 "teacher_route_id": selection["selected_route_id"],
                 "teacher_reason": selection["trajectory_reasoning"],
                 "teacher_selection_reason": selection["audit_selection_reason"],
@@ -719,6 +728,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=1701)
     parser.add_argument("--teacher", choices=("openai", "mock"), default="openai")
     parser.add_argument("--teacher-model", default="gpt-5.4")
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=("none", "minimal", "low", "medium", "high", "xhigh"),
+        default=None,
+        help="OpenAI Responses reasoning effort; used only with --teacher openai.",
+    )
     parser.add_argument(
         "--distillation-mode",
         choices=DISTILLATION_MODES,

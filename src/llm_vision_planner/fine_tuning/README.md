@@ -77,6 +77,15 @@ python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
 wc -l "$DATASET_ROOT/hrrt_teacher_smoke.jsonl"
 ```
 
+`--min-obstacles` and `--max-obstacles` accept values from `0` through `4`.
+Use at least `1` for useful HRRT preference data: zero-obstacle scenes normally
+fail the generator's non-trivial-route check because the direct start-to-goal
+segment is clear.
+
+Synthetic teacher-data scenes use only the three deployment test classes:
+`person`, `chair`, and `stop_sign`. If a scene contains four obstacles, one of
+these classes is repeated with a distinct object ID.
+
 Add `--resume` only when continuing the same output file. Resume refuses to mix
 `dss` and `dss_scott` records. Without `--resume`, an existing output file is
 replaced.

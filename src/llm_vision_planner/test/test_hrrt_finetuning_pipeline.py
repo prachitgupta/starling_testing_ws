@@ -18,11 +18,15 @@ sys.path.insert(0, str(SCRIPTS))
 from build_hrrt_human_audit import build_manifest, read_jsonl  # noqa: E402
 from evaluate_hrrt_adapter import evaluate  # noqa: E402
 from finalize_hrrt_sft_dataset import finalize  # noqa: E402
-from generate_hrrt_finetuning_dataset import prepare_resume_file  # noqa: E402
+from generate_hrrt_finetuning_dataset import LABELS, prepare_resume_file  # noqa: E402
 
 
 def write_jsonl(path, rows):
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
+def test_teacher_data_object_classes():
+    assert LABELS == ("person", "chair", "stop_sign")
 
 
 def route(route_id, y):
@@ -258,6 +262,7 @@ def test_offline_evaluation_metrics():
 
 
 def main():
+    test_teacher_data_object_classes()
     with tempfile.TemporaryDirectory() as directory:
         tmp = Path(directory)
         test_resume_removes_partial_scene(tmp)

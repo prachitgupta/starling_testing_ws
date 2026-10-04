@@ -16,15 +16,23 @@ from hrrt_star import normalize_obstacles, plan_hrrt_star, segment_clear
 
 
 WORKSPACE = {"x": [-4.0, 4.0], "y": [-3.0, 3.0], "z": -0.5}
-LABELS = ("person", "chair", "backpack", "bottle", "potted_plant", "bench", "stop_sign")
+LABELS = (
+    "person",
+    "chair",
+    "stop_sign",
+    # "backpack",
+    # "bottle",
+    # "potted_plant",
+    # "bench",
+)
 SIZES = {
     "person": (0.55, 0.55),
     "chair": (0.65, 0.65),
-    "backpack": (0.45, 0.35),
-    "bottle": (0.30, 0.30),
-    "potted_plant": (0.60, 0.60),
-    "bench": (1.00, 0.55),
     "stop_sign": (0.45, 0.45),
+    # "backpack": (0.45, 0.35),
+    # "bottle": (0.30, 0.30),
+    # "potted_plant": (0.60, 0.60),
+    # "bench": (1.00, 0.55),
 }
 DISTILLATION_MODES = ("dss", "dss_scott")
 FORBIDDEN_STUDENT_REASONING = (
@@ -596,8 +604,8 @@ def selected_route(routes: Sequence[Mapping[str, object]], route_id: str) -> Map
 def generate(args: argparse.Namespace) -> None:
     if not 1 <= args.preferences_per_scene <= 6:
         raise ValueError("--preferences-per-scene must be between 1 and 6")
-    if not 2 <= args.min_obstacles <= args.max_obstacles <= 4:
-        raise ValueError("obstacle counts must satisfy 2 <= min <= max <= 4")
+    if not 0 <= args.min_obstacles <= args.max_obstacles <= 4:
+        raise ValueError("obstacle counts must satisfy 0 <= min <= max <= 4")
     completed = (
         prepare_resume_file(args.output, args.preferences_per_scene, args.distillation_mode)
         if args.resume

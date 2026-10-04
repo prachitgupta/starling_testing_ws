@@ -1239,6 +1239,105 @@ ros2 launch llm_vision_planner vision_error_calibration.launch.py \
   capture_yaw_change_threshold_rad:="$YAW_CHANGE_RAD"
 ```
 
+#### Person-only collection, with no chair or stop sign
+
+Use this complete launch block instead of the all-object block above when the
+arena contains only the tracked person. The recorder will wait only for
+`/vicon/person/person`; do not include absent objects in `VICON_OBJECTS_JSON`.
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon start
+
+read -rsp "OpenAI API key: " OPENAI_API_KEY
+export OPENAI_API_KEY
+read -rp "Person target X width in metres: " PERSON_WIDTH_M
+read -rp "Person target Y depth in metres: " PERSON_DEPTH_M
+export PERSON_WIDTH_M PERSON_DEPTH_M
+
+VICON_OBJECTS_JSON="$(python3 - <<'PY'
+import json
+import os
+
+print(json.dumps([
+    {
+        "object_id": "person-1",
+        "label": "person",
+        "topic": "/vicon/person/person",
+        "dimensions_m": [
+            float(os.environ["PERSON_WIDTH_M"]),
+            float(os.environ["PERSON_DEPTH_M"]),
+        ],
+    },
+]))
+PY
+)"
+
+RAW_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw_person.csv"
+TRIAL_ID="person-residual-$(date +%Y%m%d-%H%M%S)"
+POSITION_CHANGE_M=0.15
+YAW_CHANGE_RAD=0.261799
+
+ros2 topic echo /vicon/person/person --once
+
+ros2 launch llm_vision_planner vision_error_calibration.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  trial_id:="$TRIAL_ID" \
+  output_csv:="$RAW_CSV" \
+  vicon_objects_json:="$VICON_OBJECTS_JSON" \
+  capture_position_change_threshold_m:="$POSITION_CHANGE_M" \
+  capture_yaw_change_threshold_rad:="$YAW_CHANGE_RAD"
+```
+
+Before starting that launch, use the remote recorder prepared in Section 12 and
+run this in a separate terminal on that machine. Rosbag2 continues discovering
+topics after startup, so it may be started before the calibration nodes:
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" \
+  enable auto 42
+ros2 daemon stop
+ros2 daemon start
+
+mkdir -p ~/rosbags
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BAG_DIR="$HOME/rosbags/person-calibration-$STAMP"
+
+ros2 bag record --storage mcap --output "$BAG_DIR" \
+  /tof_pc \
+  /tflite_data \
+  /tflite \
+  /fmu/out/vehicle_odometry \
+  /tf \
+  /tf_static \
+  /voa_pc_out \
+  /llm_vision/semantic_obstacles \
+  /llm_vision/obstacles \
+  /vicon/person/person \
+  /vicon/Starling2/Starling2 \
+  /llm_vision/vision_calibration_status \
+  /llm_vision/mission_state
+```
+
+Keep rosbag running throughout data collection. After landing, press `Ctrl+C`
+once in the rosbag terminal and verify the result with:
+
+```bash
+ros2 bag info "$BAG_DIR"
+du -sh "$BAG_DIR"
+```
+
+The bag must contain non-zero counts for `/tof_pc`, `/tflite_data`,
+`/fmu/out/vehicle_odometry`, `/llm_vision/semantic_obstacles`, and
+`/vicon/person/person`.
+
 In a monitor terminal:
 
 ```bash

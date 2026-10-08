@@ -101,6 +101,15 @@ def append_jsonl(path: Path, record: Mapping[str, object]) -> None:
         stream.write(compact(record) + "\n")
 
 
+def expected_scene_rows(rows: Sequence[Mapping[str, object]], requested: int) -> int:
+    """Return the preference count possible for this scene's obstacle count."""
+    environment = rows[0].get("environment", {}) if rows else {}
+    obstacles = environment.get("obstacles", []) if isinstance(environment, Mapping) else []
+    obstacle_count = len(obstacles) if isinstance(obstacles, list) else 2
+    # shortest, widest, balanced, deadline; then far-from first and close-to second.
+    return min(requested, 4 + min(obstacle_count, 2))
+
+
 def prepare_resume_file(
     path: Path,
     expected_per_scene: int,
@@ -124,8 +133,8 @@ def prepare_resume_file(
     complete = {
         scene_id
         for scene_id, rows in by_scene.items()
-        if len(rows) == expected_per_scene
-        and len({str(row["sample_id"]) for row in rows}) == expected_per_scene
+        if len(rows) == expected_scene_rows(rows, expected_per_scene)
+        and len({str(row["sample_id"]) for row in rows}) == expected_scene_rows(rows, expected_per_scene)
     }
     retained = [row for scene_id in sorted(complete) for row in by_scene[scene_id]]
     temporary = path.with_suffix(path.suffix + ".resume.tmp")

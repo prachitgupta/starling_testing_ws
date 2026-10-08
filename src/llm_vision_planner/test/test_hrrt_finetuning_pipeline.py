@@ -116,6 +116,14 @@ def test_resume_removes_partial_scene(tmp):
     assert len(retained) == 2 and {row["scene_id"] for row in retained} == {0}
 
 
+def test_resume_retains_complete_one_obstacle_scene(tmp):
+    output = tmp / "raw.jsonl"
+    rows = [raw_row(0, preference) for preference in range(5)]
+    write_jsonl(output, rows)
+    assert prepare_resume_file(output, 6) == {0}
+    assert len(read_jsonl(output)) == 5
+
+
 def test_human_review_and_finalization(tmp):
     raw = tmp / "raw.jsonl"
     audit = tmp / "audit.jsonl"
@@ -266,6 +274,8 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         tmp = Path(directory)
         test_resume_removes_partial_scene(tmp)
+    with tempfile.TemporaryDirectory() as directory:
+        test_resume_retains_complete_one_obstacle_scene(Path(directory))
     with tempfile.TemporaryDirectory() as directory:
         test_human_review_and_finalization(Path(directory))
     with tempfile.TemporaryDirectory() as directory:

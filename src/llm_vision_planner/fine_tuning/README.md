@@ -126,7 +126,9 @@ python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
 ```
 
 If interrupted, rerun exactly the same command. Resume removes only an incomplete
-scene before continuing, so a scene cannot contain a partial preference set.
+scene before continuing, so a scene cannot contain a partial preference set. A
+one-obstacle scene has five valid preferences (there is no second object for the
+close-to-object preference), and resume retains that five-row scene as complete.
 
 Create scene-isolated review assignments:
 

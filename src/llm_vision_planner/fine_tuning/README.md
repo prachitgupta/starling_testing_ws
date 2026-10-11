@@ -173,6 +173,37 @@ reason. If a corrected route has an unusable reason, finalization constructs a
 factual deterministic explanation for the corrected route. Ambiguous rows are
 removed.
 
+### Share the review UI with remote reviewers
+
+`127.0.0.1` is reachable only from the machine running the server. For a
+temporary HTTPS URL that reviewers can open from their own computers or phones,
+install `cloudflared` on that machine and use two terminals.
+
+Terminal 1 (bind to all interfaces so the tunnel can reach the service):
+
+```bash
+python fine_tuning/scripts/review_hrrt_labels.py \
+  --raw "$DATASET_ROOT/hrrt_teacher_raw.jsonl" \
+  --audit "$DATASET_ROOT/hrrt_human_audit.jsonl" \
+  --reviews "$DATASET_ROOT/hrrt_human_reviews.jsonl" \
+  --host 0.0.0.0 \
+  --port 8090
+```
+
+Terminal 2:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8090
+```
+
+Copy the `https://...trycloudflare.com` URL printed by `cloudflared` and send
+it to the reviewers. Keep both terminals running; the URL stops working when
+the tunnel process exits. Stop the server and tunnel with `Ctrl-C` after the
+review is complete. Because this review service has no login, treat the URL as
+a secret and share it only with the intended reviewers. For a stable URL,
+create a named Cloudflare Tunnel and protect it with Cloudflare Access instead
+of using the temporary quick tunnel.
+
 ## 5. Finalize train, validation, and test CSVs
 
 For DSS:

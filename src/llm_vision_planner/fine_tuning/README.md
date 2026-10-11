@@ -31,7 +31,11 @@ python3 -m venv .venv-hrrt-data
 source .venv-hrrt-data/bin/activate
 python -m pip install --upgrade pip openai pydantic numpy scipy matplotlib
 export OPENAI_API_KEY=YOUR_KEY
+TEACHER_MODEL=gpt-6-luna
 ```
+
+Use `gpt-6-luna` for lower-cost, high-volume generation. For a stronger but
+more expensive teacher, set `TEACHER_MODEL=gpt-6.1-sol` instead.
 
 Choose one mode. Keep the two modes in different directories so raw labels,
 reviews, splits, adapters, and metrics cannot overwrite each other.
@@ -62,7 +66,7 @@ python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
   --preferences-per-scene 6 \
   --seed 1701 \
   --teacher mock \
-  --teacher-model gpt-5.4 \
+  --teacher-model "$TEACHER_MODEL" \
   --distillation-mode "$DISTILLATION_MODE" \
   --min-obstacles 2 \
   --max-obstacles 4 \
@@ -109,7 +113,7 @@ python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
   --preferences-per-scene 6 \
   --seed 1701 \
   --teacher openai \
-  --teacher-model gpt-5.4 \
+  --teacher-model "$TEACHER_MODEL" \
   --reasoning-effort medium \
   --distillation-mode "$DISTILLATION_MODE" \
   --min-obstacles 2 \

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import csv
 import inspect
 import json
@@ -29,6 +30,19 @@ def validate_rows(rows, path: Path, distillation_mode: str):
         )
 
 
+def token_id_list(encoded):
+    """Normalize tokenizer list, tensor, or BatchEncoding output."""
+    if isinstance(encoded, Mapping):
+        encoded = encoded["input_ids"]
+    if hasattr(encoded, "tolist"):
+        encoded = encoded.tolist()
+    if encoded and isinstance(encoded[0], (list, tuple)):
+        if len(encoded) != 1:
+            raise ValueError("Expected one tokenized conversation")
+        encoded = encoded[0]
+    return [int(token_id) for token_id in encoded]
+
+
 def tokenize_rows(rows, tokenizer, max_length):
     from datasets import Dataset
 
@@ -36,15 +50,19 @@ def tokenize_rows(rows, tokenizer, max_length):
     for row in rows:
         prompt = row["prompt"]
         completion = row["completion"]
-        prompt_ids = tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
-            tokenize=True,
-            add_generation_prompt=True,
+        prompt_ids = token_id_list(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=True,
+                add_generation_prompt=True,
+            )
         )
-        completion_ids = tokenizer(
-            completion + tokenizer.eos_token,
-            add_special_tokens=False,
-        )["input_ids"]
+        completion_ids = token_id_list(
+            tokenizer(
+                completion + tokenizer.eos_token,
+                add_special_tokens=False,
+            )
+        )
         input_ids = (prompt_ids + completion_ids)[:max_length]
         prompt_length = min(len(prompt_ids), len(input_ids))
         labels = [-100] * prompt_length + input_ids[prompt_length:]

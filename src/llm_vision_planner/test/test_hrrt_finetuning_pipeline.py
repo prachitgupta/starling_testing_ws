@@ -8,6 +8,7 @@ import csv
 from pathlib import Path
 import sys
 import tempfile
+from unittest.mock import patch
 from types import SimpleNamespace
 
 
@@ -19,7 +20,7 @@ from build_hrrt_human_audit import build_manifest, read_jsonl  # noqa: E402
 from evaluate_hrrt_adapter import evaluate  # noqa: E402
 from finalize_hrrt_sft_dataset import finalize  # noqa: E402
 from generate_hrrt_finetuning_dataset import LABELS, prepare_resume_file  # noqa: E402
-from train_hrrt_peft import token_id_list  # noqa: E402
+from train_hrrt_peft import compatible_training_arguments, token_id_list  # noqa: E402
 
 
 def write_jsonl(path, rows):
@@ -34,6 +35,18 @@ def test_token_ids_accept_batch_encoding_and_list_shapes():
     assert token_id_list({"input_ids": [11, 12, 13]}) == [11, 12, 13]
     assert token_id_list([21, 22]) == [21, 22]
     assert token_id_list({"input_ids": [[31, 32]]}) == [31, 32]
+
+
+def test_training_arguments_ignore_options_unsupported_by_installed_transformers():
+    class OldTrainingArguments:
+        def __init__(self, output_dir, evaluation_strategy):
+            self.output_dir = output_dir
+            self.evaluation_strategy = evaluation_strategy
+
+    with patch.dict(sys.modules, {"transformers": SimpleNamespace(TrainingArguments=OldTrainingArguments)}):
+        arguments = compatible_training_arguments(output_dir="output", warmup_ratio=0.05)
+    assert arguments.output_dir == "output"
+    assert arguments.evaluation_strategy == "steps"
 
 
 def route(route_id, y):

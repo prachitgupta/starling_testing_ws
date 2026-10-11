@@ -80,6 +80,11 @@ def compatible_training_arguments(**kwargs):
     parameters = inspect.signature(TrainingArguments.__init__).parameters
     evaluation_key = "eval_strategy" if "eval_strategy" in parameters else "evaluation_strategy"
     kwargs[evaluation_key] = "steps"
+    if not any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        unsupported = sorted(set(kwargs) - set(parameters))
+        if unsupported:
+            print(f"Ignoring unsupported TrainingArguments: {', '.join(unsupported)}")
+            kwargs = {key: value for key, value in kwargs.items() if key in parameters}
     return TrainingArguments(**kwargs)
 
 

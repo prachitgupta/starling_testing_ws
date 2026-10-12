@@ -104,15 +104,16 @@ def scene_setup(rows, args):
     return ground_truth, perceived, start, workspace
 
 
-def derive_goal(l1, perceived, goal_obstacles, start, workspace, intent_parser, args):
-    intent = intent_parser.parse(l1, obstacle_catalog(perceived), [])
+def derive_goal(l1, planning_obstacles, start, workspace, intent_parser, args):
+    """Parse and ground the L1 goal against the mode's obstacle snapshot."""
+    intent = intent_parser.parse(l1, obstacle_catalog(planning_obstacles), [])
     if intent.status != "READY":
         raise ValueError(intent.clarifying_question or f"intent parser returned {intent.status}")
     if intent.intent_type != "NAVIGATION" or intent.navigation_action not in ("HOVER", "GO_TO"):
         raise ValueError("L1 must describe object-relative HOVER or GO_TO navigation")
     relations = normalize_goal_relations(
         intent.relations,
-        goal_obstacles,
+        planning_obstacles,
         default_standoff=args.default_standoff_m,
         clearance=args.clearance_m,
         guard_band=0.0,
@@ -122,7 +123,7 @@ def derive_goal(l1, perceived, goal_obstacles, start, workspace, intent_parser, 
     goal, relation_results = range_constrained_goal(
         start,
         relations,
-        goal_obstacles,
+        planning_obstacles,
         workspace,
         args.fixed_z,
         args.clearance_m,
@@ -783,7 +784,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             planning = perceived if mode == "env_uncertainty" else gt
             if self.path in ("/propose", "/prepare"):
                 intent, relations, relation_results, goal = derive_goal(
-                    form.get("l1", ""), perceived, gt, start, workspace,
+                    form.get("l1", ""), planning, start, workspace,
                     self.state["intent_parser"], self.args,
                 )
                 self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "mode": mode, "l1": form.get("l1", ""), "intent": intent.model_dump(), "goal_relations": relations, "goal_relation_results": relation_results, "goal": goal, "goal_accepted": False, "start": start, "ground_truth_obstacles": gt, "perceived_obstacles": perceived, "routes": [], "route_data": [], "result": None, "results": {}})

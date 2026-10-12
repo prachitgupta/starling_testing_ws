@@ -17,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import threading
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,10 +54,13 @@ from postprocess_residual_calibration import (  # noqa: E402
 )
 from interactive_mission_gateway import (  # noqa: E402
     MockIntentParser,
+    MockRouteSelector,
     OpenAIIntentParser,
+    OpenAIRouteSelector,
     normalize_goal_relations,
     obstacle_catalog,
     range_constrained_goal,
+    route_cards as mission_route_cards,
 )
 
 
@@ -241,6 +245,9 @@ function stopRecording(){if(timer)clearTimeout(timer);if(stream)stream.getTracks
 fileInput.onchange=async()=>{const file=fileInput.files[0];if(file)await transcribe(file,file.type);fileInput.value=''};
 if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)button.onclick=()=>fileInput.click();else button.onclick=async()=>{if(recorder?.state==='recording'){recorder.stop();return}try{stream=await navigator.mediaDevices.getUserMedia({audio:true});const chunks=[];recorder=new MediaRecorder(stream,audioType?{mimeType:audioType}:undefined);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onstop=async()=>{const type=recorder.mimeType||audioType;stopRecording();await transcribe(new Blob(chunks,{type}),type)};recorder.start();button.classList.add('listening');button.textContent='■';status.textContent='Listening…';timer=setTimeout(()=>{if(recorder?.state==='recording')recorder.stop()},20000)}catch(error){stopRecording();status.textContent=`Microphone unavailable: ${error.message}`}}}
 setupSpeech('speech-l1','speech-file-l1','l1','speech-status-l1');setupSpeech('speech-l2','speech-file-l2','l2','speech-status-l2');
+const scoreForm=document.getElementById('score-form'),scoreButton=document.getElementById('score-button'),pipelineStatus=document.getElementById('pipeline-status'),plotContainer=document.getElementById('plot-container'),plotLegend=document.getElementById('plot-legend');
+async function pollPipeline(){const response=await fetch('/api/progress',{cache:'no-store'}),progress=await response.json();pipelineStatus.textContent=`${progress.stage}: ${progress.message}`;if(progress.plot)plotContainer.innerHTML=progress.plot;if(progress.legend)plotLegend.textContent=progress.legend;if(progress.done){scoreButton.disabled=false;if(progress.error){pipelineStatus.classList.add('error')}else{window.location.reload()}return}setTimeout(pollPipeline,350)}
+scoreForm.addEventListener('submit',async event=>{event.preventDefault();scoreButton.disabled=true;pipelineStatus.classList.remove('error');pipelineStatus.textContent='Starting LLM route selection…';const response=await fetch('/api/score',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(scoreForm))});const payload=await response.json();if(!response.ok){pipelineStatus.textContent=payload.error||'Unable to start scoring';pipelineStatus.classList.add('error');scoreButton.disabled=false;return}pollPipeline()});
 </script>
 """
 
@@ -252,13 +259,11 @@ def html_page(state, args, message=""):
     )
     selected = state["row_number"]
     routes = state.get("routes", [])
-    route_options = "".join(
-        f'<option value="{html.escape(route["route_id"])}">{html.escape(route["route_id"])} — '
-        f'{route["path_length_m"]:.2f} m</option>' for route in routes
-    )
     result = state.get("result")
     results = state.get("results", {})
     result_json = compact(result) if result else ""
+    l1_value = html.escape(state.get("l1") or "Go near the person.")
+    l2_value = html.escape(state.get("l2") or "Prefer the route with the largest clearance.")
     view_error = ""
     try:
         preview = scene_preview(state, args)
@@ -290,15 +295,14 @@ def html_page(state, args, message=""):
 <form class='card' method='post' action='/prepare'><h2>1. Environment and language</h2>
 <label>Refined calibration row</label><select name='row' onchange="window.location='/?row='+this.value">{capture_options}</select>
 <label>Mode</label><select name='mode'><option value='env_uncertainty'>With environment uncertainty (LLM uses perceived E-hat)</option><option value='planner_only'>Planner uncertainty only (both use ground-truth E)</option></select>
-<label>L1 — object-relative goal instruction</label><div class='speech-row'><textarea id='l1' name='l1'>Go near the person.</textarea><button id='speech-l1' type='button' title='Record L1 prompt' aria-label='Record L1 prompt'>●</button></div><input id='speech-file-l1' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l1' class='hint'>Speak or type naturally. Review the transcript before generating routes.</p>
-<label>L2 — expert preference</label><div class='speech-row'><textarea id='l2' name='l2'>Prefer the route with the largest clearance.</textarea><button id='speech-l2' type='button' title='Record L2 preference' aria-label='Record L2 preference'>●</button></div><input id='speech-file-l2' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l2' class='hint'>Speak or type the preference, then review the transcript.</p>
+<label>L1 — object-relative goal instruction</label><div class='speech-row'><textarea id='l1' name='l1'>{l1_value}</textarea><button id='speech-l1' type='button' title='Record L1 prompt' aria-label='Record L1 prompt'>●</button></div><input id='speech-file-l1' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l1' class='hint'>Speak or type L1, then generate the HRRT family.</p>
 <button>Generate HRRT route family</button></form>
-<form class='card' method='post' action='/score'><h2>2. Human expert selection</h2>
-<input type='hidden' name='row' value='{selected}'><input type='hidden' name='mode' value='{html.escape(state.get('mode','env_uncertainty'))}'><input type='hidden' name='l1' value='{html.escape(state.get('l1',''))}'><input type='hidden' name='l2' value='{html.escape(state.get('l2',''))}'>
-<label>Selected HRRT expert route</label><select name='route'>{route_options}</select>
-<button {'disabled' if not routes else ''}>Score and plot trajectories</button></form>
+<form id='score-form' class='card' method='post' action='/score'><h2>2. LLM expert selection and scoring</h2>
+<input type='hidden' name='row' value='{selected}'><input type='hidden' name='mode' value='{html.escape(state.get('mode','env_uncertainty'))}'><input type='hidden' name='l1' value='{html.escape(state.get('l1',''))}'>
+<label>L2 — route preference for the OpenAI selector</label><div class='speech-row'><textarea id='l2' name='l2'>{l2_value}</textarea><button id='speech-l2' type='button' title='Record L2 preference' aria-label='Record L2 preference'>●</button></div><input id='speech-file-l2' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l2' class='hint'>The LLM selects one displayed HRRT route from this preference.</p>
+<button id='score-button' {'disabled' if not routes else ''}>Select route, score, and plot</button><p id='pipeline-status' class='hint'>Waiting for an HRRT route family.</p></form>
 <div class='card'><h2>Result</h2>{score_block}{message_block}<pre>{html.escape(result_json)}</pre></div>
-</section><section class='card'><h2>Trajectory and safety-tube view</h2>{plot}<p class='legend'>{html.escape(legend)}</p></section></div>{SPEECH_SCRIPT}</main></body></html>"""
+</section><section class='card'><h2>Trajectory and safety-tube view</h2><div id='plot-container'>{plot}</div><p id='plot-legend' class='legend'>{html.escape(legend)}</p></section></div>{SPEECH_SCRIPT}</main></body></html>"""
 
 
 def scene_preview(state, args):
@@ -331,6 +335,8 @@ def plot_scene(scene):
         points.append((float(scene["goal"]["x"]), float(scene["goal"]["y"])))
     for route in scene.get("routes", []):
         points.extend((float(p["x"]), float(p["y"])) for p in route["waypoints"])
+    for key in ("selected_waypoints", "predicted_waypoints"):
+        points.extend((float(p["x"]), float(p["y"])) for p in scene.get(key, []))
     for obstacle in obstacles:
         points.extend(((float(obstacle["min_corner"][0]), float(obstacle["min_corner"][1])), (float(obstacle["max_corner"][0]), float(obstacle["max_corner"][1]))))
     if not points:
@@ -362,6 +368,10 @@ def plot_scene(scene):
     )
     route_colors = ("#64748b", "#8b5cf6", "#0891b2", "#db2777", "#65a30d", "#ea580c", "#0f766e", "#7c3aed")
     route_lines = "".join(polyline(route["waypoints"], route_colors[i % len(route_colors)]) for i, route in enumerate(scene.get("routes", [])))
+    if scene.get("selected_waypoints"):
+        route_lines += polyline(scene["selected_waypoints"], "#16a34a", 6)
+    if scene.get("predicted_waypoints"):
+        route_lines += polyline(scene["predicted_waypoints"], "#2563eb", 6)
     start_x, start_y = xy((float(scene["start"]["x"]), float(scene["start"]["y"])))
     markers = f"<circle cx='{start_x:.1f}' cy='{start_y:.1f}' r='9' fill='#2563eb' stroke='#fff' stroke-width='2'/><text x='{start_x+12:.1f}' y='{start_y:.1f}' fill='#111827'>drone</text>"
     if scene.get("goal"):
@@ -427,12 +437,76 @@ def plot_svg(result):
     )
 
 
+def set_progress(state, stage, message, plot="", legend="", done=False, error=False):
+    payload = {"stage": stage, "message": message, "plot": plot, "legend": legend, "done": done, "error": error}
+    with state["lock"]:
+        state["progress"] = payload
+
+
+def run_scoring_job(state, args, form):
+    last_plot = ""
+    try:
+        row_number = int(form.get("row", state["row_number"]))
+        capture_id, rows = choose_capture(state["captures"], row_number)
+        gt, perceived, start, workspace = scene_setup(rows, args)
+        mode = form.get("mode", "env_uncertainty")
+        l1 = form.get("l1", "").strip()
+        l2 = form.get("l2", "").strip()
+        routes = state.get("route_data", [])
+        if not routes or row_number != state.get("row_number"):
+            raise ValueError("generate the HRRT route family for this row first")
+        if not l2:
+            raise ValueError("enter an L2 route preference")
+        goal = state["goal"]
+        preview = scene_preview(state, args)
+        last_plot = plot_scene(preview)
+        set_progress(state, "LLM route selection", f"Matching L2 against {len(routes)} displayed HRRT routes.", last_plot, "All HRRT candidates remain visible while the expert selector decides.")
+        cards = mission_route_cards(routes, args.route_nominal_speed_mps)
+        selection = state["route_selector"].select(l2, cards, [])
+        if selection.status != "SELECTED":
+            raise ValueError(selection.clarifying_question or selection.reason)
+        expert = next((route for route in routes if str(route["route_id"]) == str(selection.selected_route_id)), None)
+        if expert is None:
+            raise ValueError("the LLM selector returned a route outside the displayed HRRT family")
+        selected_scene = dict(preview, routes=[], selected_waypoints=expert["waypoints"])
+        last_plot = plot_scene(selected_scene)
+        set_progress(state, "Expert route selected", f"Selected {expert['route_id']}: {selection.reason}", last_plot, "Green: LLM-selected HRRT expert route.")
+        results = {}
+        for mode_name, mode_obstacles in (("env_uncertainty", perceived), ("planner_only", gt)):
+            set_progress(state, "LLM waypoint generation", f"Generating {mode_name} planner waypoints.", last_plot, "Green: selected HRRT expert route.")
+            predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args)
+            live_scene = dict(selected_scene, predicted_waypoints=predicted)
+            last_plot = plot_scene(live_scene)
+            set_progress(state, "Trajectory verification", f"Checking raw LLM waypoints for {mode_name}.", last_plot, "Green: HRRT expert · blue: raw LLM waypoints, shown even if verification fails.")
+            if not safe_path(predicted, mode_obstacles, workspace, args.clearance_m):
+                raise ValueError(f"LLM trajectory failed collision checking in {mode_name}")
+            set_progress(state, "QP optimization", f"Solving paired minimum-control trajectories for {mode_name}.", last_plot, "Verified HRRT and LLM waypoints are being optimized.")
+            scored = score_pair(expert["waypoints"], predicted, args)
+            item = public_result(capture_id, rows, mode_name, l1, l2, expert, predicted, scored, (gt, mode_obstacles), start, goal, perceived, workspace)
+            item.update({"expert_selector": "openai" if args.intent_provider == "openai" else "mock", "expert_model": args.expert_model if args.intent_provider == "openai" else "", "selection_reason": selection.reason})
+            results[mode_name] = item
+        with state["lock"]:
+            state.update({"result": results[mode], "results": results, "mode": mode, "l1": l1, "l2": l2, "selected_route_id": expert["route_id"], "selection_reason": selection.reason})
+        final_plot = plot_svg(results[mode])
+        set_progress(state, "Complete", f"Selected {expert['route_id']} and scored both uncertainty modes.", final_plot, "Final QP trajectories with safety-score tubes.", done=True)
+    except Exception as error:
+        set_progress(state, "Error", str(error), last_plot, "The last completed stage remains visible.", done=True, error=True)
+    finally:
+        with state["lock"]:
+            state["job_running"] = False
+
+
 class GatewayHandler(BaseHTTPRequestHandler):
     state = None
     args = None
     def do_GET(self):
         parsed = urlsplit(self.path)
         query = parse_qs(parsed.query)
+        if parsed.path == "/api/progress":
+            with self.state["lock"]:
+                body = compact(self.state.get("progress", {"stage": "Idle", "message": "", "plot": "", "legend": "", "done": True, "error": False})).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers(); self.wfile.write(body)
+            return
         if parsed.path == "/" and query.get("row"):
             try:
                 row_number = int(query["row"][-1])
@@ -445,6 +519,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
         body = html_page(self.state, self.args)
         self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers(); self.wfile.write(body.encode())
     def do_POST(self):
+        if self.path == "/api/score":
+            length = int(self.headers.get("Content-Length", "0"))
+            form = {key: values[-1] for key, values in parse_qs(self.rfile.read(length).decode()).items()}
+            with self.state["lock"]:
+                if self.state.get("job_running"):
+                    body = compact({"ok": False, "error": "a scoring job is already running"}).encode()
+                    status = 409
+                else:
+                    self.state["job_running"] = True
+                    self.state["progress"] = {"stage": "Starting", "message": "Preparing LLM route selection.", "plot": "", "legend": "", "done": False, "error": False}
+                    body = compact({"ok": True}).encode()
+                    status = 202
+            if status == 202:
+                threading.Thread(target=run_scoring_job, args=(self.state, self.args, form), daemon=True).start()
+            self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers(); self.wfile.write(body)
+            return
         if self.path == "/api/transcribe":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -477,6 +567,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", "0"))
         form = {key: values[-1] for key, values in parse_qs(self.rfile.read(length).decode()).items()}
+        if self.path == "/score":
+            with self.state["lock"]:
+                if self.state.get("job_running"):
+                    message = "Error: a scoring job is already running"
+                else:
+                    self.state["job_running"] = True
+                    message = ""
+            if not message:
+                run_scoring_job(self.state, self.args, form)
+                with self.state["lock"]:
+                    message = self.state["progress"]["message"]
+                    if self.state["progress"].get("error"):
+                        message = f"Error: {message}"
+            body = html_page(self.state, self.args, message)
+            self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers(); self.wfile.write(body.encode())
+            return
         try:
             row_number = int(form.get("row", self.state["row_number"]))
             capture_id, rows = choose_capture(self.state["captures"], row_number)
@@ -491,28 +597,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 family = plan_family(start, goal, gt, workspace, self.args)
                 self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "mode": mode, "l1": form.get("l1", ""), "l2": form.get("l2", ""), "intent": intent.model_dump(), "goal_relations": relations, "goal_relation_results": relation_results, "goal": goal, "start": start, "ground_truth_obstacles": gt, "perceived_obstacles": perceived, "routes": route_cards(family["routes"]), "route_data": family["routes"], "result": None, "results": {}})
                 message = f"Intent parser selected goal ({goal['x']:.2f}, {goal['y']:.2f}); generated {len(family['routes'])} HRRT routes for capture {capture_id}."
-            elif self.path == "/score":
-                if not self.state.get("route_data"):
-                    raise ValueError("generate the HRRT route family first")
-                goal = self.state["goal"]
-                expert = next(route for route in self.state["route_data"] if route["route_id"] == form["route"])
-                results = {}
-                for mode_name, mode_obstacles in (("env_uncertainty", perceived), ("planner_only", gt)):
-                    predicted = planner_waypoints(start, goal, mode_obstacles, workspace, form.get("l1", ""), self.args)
-                    if not safe_path(
-                        predicted,
-                        mode_obstacles,
-                        workspace,
-                        self.args.clearance_m,
-                    ):
-                        raise ValueError(f"LLM trajectory failed collision checking in {mode_name}")
-                    scored = score_pair(expert["waypoints"], predicted, self.args)
-                    results[mode_name] = public_result(
-                        capture_id, rows, mode_name, form.get("l1", ""), form.get("l2", ""),
-                        expert, predicted, scored, (gt, mode_obstacles), start, goal, perceived, workspace
-                    )
-                self.state.update({"result": results[mode], "results": results, "mode": mode, "l1": form.get("l1", ""), "l2": form.get("l2", "")})
-                message = f"Scored both modes against HRRT route {expert['route_id']} using ideal double-integrator residual."
             else:
                 raise ValueError("unknown action")
         except Exception as exc:
@@ -541,6 +625,8 @@ def build_parser():
     parser.add_argument("--planner-provider", choices=("mock", "vllm"), default="mock")
     parser.add_argument("--intent-provider", choices=("openai", "mock"), default="openai")
     parser.add_argument("--intent-model", default="gpt-5.4-nano")
+    parser.add_argument("--expert-model", default="gpt-6.1-sol")
+    parser.add_argument("--route-nominal-speed-mps", type=float, default=0.5)
     parser.add_argument("--vllm-base-url", default="http://127.0.0.1:8000/v1")
     parser.add_argument("--vllm-api-key", default="EMPTY")
     parser.add_argument("--llama-model", default="hrrt_planner")
@@ -564,7 +650,8 @@ def main():
     captures = load_captures(args.dataset)
     choose_capture(captures, args.row)
     intent_parser = MockIntentParser() if args.intent_provider == "mock" else OpenAIIntentParser(args.intent_model)
-    state = {"captures": captures, "row_number": args.row, "routes": [], "route_data": [], "result": None, "results": {}, "intent_parser": intent_parser}
+    route_selector = MockRouteSelector() if args.intent_provider == "mock" else OpenAIRouteSelector(args.expert_model)
+    state = {"captures": captures, "row_number": args.row, "routes": [], "route_data": [], "result": None, "results": {}, "intent_parser": intent_parser, "route_selector": route_selector, "lock": threading.Lock(), "job_running": False, "progress": {"stage": "Idle", "message": "Generate an HRRT route family first.", "plot": "", "legend": "", "done": True, "error": False}}
     GatewayHandler.state = state; GatewayHandler.args = args
     server = ThreadingHTTPServer((args.host, args.port), GatewayHandler)
     print(f"Calibration verifier listening at http://{args.host}:{args.port}")

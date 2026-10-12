@@ -478,8 +478,10 @@ The launch alias overrides the planner model for the fixed and interactive flows
 
 ## 12. Interactive calibration verifier (E versus E-hat)
 
-The offline verifier reads one refined calibration capture, parses L1/L2, creates
-HRRT routes, accepts a human route choice, and scores both modes:
+The offline verifier parses L1, creates and plots an HRRT family, then takes L2
+and asks the OpenAI expert selector to choose one displayed route before scoring
+both modes. It reports live stages for selection, raw LLM waypoints, verification,
+QP optimization, and final safety tubes:
 
 - `env_uncertainty`: HRRT uses ground-truth `E`; the LLM planner uses perceived
   `E-hat`.
@@ -507,9 +509,10 @@ python3 fine_tuning/scripts/calibration_verifier_gateway.py \
   --port 8091
 ```
 
-Open [http://127.0.0.1:8091](http://127.0.0.1:8091), enter object-relative L1
-and L2, generate routes, choose an HRRT route, and score. The page overlays both
-paths, both obstacle geometries, and score-radius tubes.
+Open [http://127.0.0.1:8091](http://127.0.0.1:8091), enter L1 and generate the
+route family. Review the plotted candidates, enter L2, then let the selector
+choose the expert route and score. Raw LLM waypoints remain visible at verification,
+including an invalid trajectory, before the final QP/tube plot replaces them.
 
 To use the served refined Llama adapter instead of the mock planner:
 
@@ -520,6 +523,7 @@ python3 fine_tuning/scripts/calibration_verifier_gateway.py \
   --row 2 \
   --intent-provider openai \
   --intent-model gpt-5.4-nano \
+  --expert-model gpt-6.1-sol \
   --planner-provider vllm \
   --vllm-base-url http://$GPU_IP:8000/v1 \
   --llama-model hrrt_planner \

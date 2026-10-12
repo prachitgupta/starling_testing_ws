@@ -286,6 +286,7 @@ main{max-width:1400px;margin:auto}.grid{display:grid;grid-template-columns:360px
 .card{background:#102437;border:1px solid #29445b;border-radius:14px;padding:16px;margin-bottom:14px}
 label{display:block;color:#a9c3d6;font-size:12px;margin:10px 0 4px}input,select,textarea,button{width:100%;box-sizing:border-box;padding:9px;border-radius:8px;border:1px solid #41617a;background:#081725;color:#eef8ff}textarea{min-height:62px}button{background:#2788c7;font-weight:700;cursor:pointer;margin-top:12px}.secondary{background:#21445b}
 pre{white-space:pre-wrap;overflow:auto}.metric{font-size:19px;color:#59e0aa;font-weight:800}.hint{color:#a9c3d6;font-size:12px;line-height:1.4}
+.pipeline-log{max-height:190px;overflow:auto;padding-left:22px;font-size:12px;color:#cbd5e1}.pipeline-log li{margin:5px 0}.pipeline-log li:last-child{color:#59e0aa;font-weight:700}
 .error{color:#fecaca;background:#7f1d1d55;border:1px solid #ef4444;border-radius:8px;padding:10px;font-weight:700}
 svg{width:100%;height:auto;background:#eff7fb;border-radius:10px}.legend{font-size:12px;color:#b9d0e0}
 .plot-key{display:flex;flex-wrap:wrap;gap:8px 14px;margin:10px 0;padding:10px;background:#081725;border-radius:8px;font-size:12px}.key-item{display:flex;align-items:center;gap:6px}.key-line{width:30px;border-top:4px solid}.key-dashed{border-top-style:dashed}.score-lock{border:2px solid #59e0aa;background:#0b2b2b;padding:12px;border-radius:10px;margin-bottom:10px}
@@ -305,7 +306,8 @@ if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)button.onclick=(
 setupSpeech('speech-l1','speech-file-l1','l1','speech-status-l1');setupSpeech('speech-l2','speech-file-l2','l2','speech-status-l2');
 const scoreForm=document.getElementById('score-form'),scoreButton=document.getElementById('score-button'),pipelineStatus=document.getElementById('pipeline-status'),plotContainer=document.getElementById('plot-container'),plotLegend=document.getElementById('plot-legend'),scoreResults=document.getElementById('score-results'),resultJson=document.getElementById('result-json');
 function showScores(progress){scoreResults.replaceChildren();const box=document.createElement('div');box.className='score-lock';const title=document.createElement('div');title.className='metric';title.textContent=`Final scores — ${progress.selected_mode} displayed`;box.appendChild(title);for(const [name,item] of Object.entries(progress.scores||{})){const line=document.createElement('p');line.textContent=`${name}: score = ${Number(item.score).toFixed(5)} m · tube q = ${Number(item.tube_quantile).toFixed(5)} m · max residual at ${Number(item.max_time_s).toFixed(2)} s`;box.appendChild(line)}scoreResults.appendChild(box);if(progress.result)resultJson.textContent=JSON.stringify(progress.result,null,2)}
-async function pollPipeline(){const response=await fetch('/api/progress',{cache:'no-store'}),progress=await response.json();pipelineStatus.textContent=`${progress.stage}: ${progress.message}`;if(progress.plot)plotContainer.innerHTML=progress.plot;if(progress.legend)plotLegend.textContent=progress.legend;if(progress.done){if(progress.error){pipelineStatus.classList.add('error');scoreButton.disabled=false}else{showScores(progress);scoreButton.disabled=true;scoreButton.textContent='Final result locked — change row to run again'}return}setTimeout(pollPipeline,350)}
+function showHistory(history){const log=document.getElementById('pipeline-log');log.replaceChildren();for(const event of history||[]){const item=document.createElement('li');item.textContent=`${event.stage}: ${event.message}`;log.appendChild(item)}log.scrollTop=log.scrollHeight}
+async function pollPipeline(){const response=await fetch('/api/progress',{cache:'no-store'}),progress=await response.json();pipelineStatus.textContent=`${progress.stage}: ${progress.message}`;showHistory(progress.history);if(progress.plot)plotContainer.innerHTML=progress.plot;if(progress.legend)plotLegend.textContent=progress.legend;if(progress.done){if(progress.error){pipelineStatus.classList.add('error');scoreButton.disabled=false}else{showScores(progress);scoreButton.disabled=true;scoreButton.textContent='Final result locked — change row to run again'}return}setTimeout(pollPipeline,350)}
 scoreForm.addEventListener('submit',async event=>{event.preventDefault();scoreButton.disabled=true;scoreResults.replaceChildren();resultJson.textContent='';pipelineStatus.classList.remove('error');pipelineStatus.textContent='Starting LLM route selection…';const response=await fetch('/api/score',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(scoreForm))});const payload=await response.json();if(!response.ok){pipelineStatus.textContent=payload.error||'Unable to start scoring';pipelineStatus.classList.add('error');scoreButton.disabled=false;return}pollPipeline()});
 </script>
 """
@@ -365,7 +367,7 @@ def html_page(state, args, message=""):
 <form id='score-form' class='card' method='post' action='/score'><h2>3. LLM expert selection and scoring</h2>
 <input type='hidden' name='row' value='{selected}'><input type='hidden' name='mode' value='{html.escape(state.get('mode','env_uncertainty'))}'><input type='hidden' name='l1' value='{html.escape(state.get('l1',''))}'>
 <label>L2 — route preference for the OpenAI selector</label><div class='speech-row'><textarea id='l2' name='l2'>{l2_value}</textarea><button id='speech-l2' type='button' title='Record L2 preference' aria-label='Record L2 preference'>●</button></div><input id='speech-file-l2' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l2' class='hint'>The LLM selects one displayed HRRT route from this preference.</p>
-<button id='score-button' {'disabled' if not routes else ''}>Select route, score, and plot</button><p id='pipeline-status' class='hint'>{'HRRT family ready; enter L2 for LLM route selection.' if routes else 'Waiting for an accepted goal and HRRT route family.'}</p></form>
+<button id='score-button' {'disabled' if not routes else ''}>Select route, score, and plot</button><p id='pipeline-status' class='hint'>{'HRRT family ready; enter L2 for LLM route selection.' if routes else 'Waiting for an accepted goal and HRRT route family.'}</p><ol id='pipeline-log' class='pipeline-log'></ol></form>
 <div class='card'><h2>Result</h2><div id='score-results'>{score_block}</div>{message_block}<pre id='result-json'>{html.escape(result_json)}</pre></div>
 </section><section class='card'><h2>Trajectory and safety-tube view</h2><div class='plot-key'><span class='key-item'><i class='key-line' style='border-color:#16a34a'></i>HRRT expert</span><span class='key-item'><i class='key-line key-dashed' style='border-color:#f97316'></i>Raw LLM</span><span class='key-item'><i class='key-line' style='border-color:#2563eb'></i>Refined LLM</span><span class='key-item'><i class='key-line' style='border-color:#b91c1c'></i>Ground truth obstacle</span><span class='key-item'><i class='key-line key-dashed' style='border-color:#d97706'></i>Perceived obstacle</span><span class='key-item'>Translucent green/blue = safety tubes</span></div><div id='plot-container'>{plot}</div><p id='plot-legend' class='legend'>{html.escape(legend)}</p></section></div>{SPEECH_SCRIPT}</main></body></html>"""
 
@@ -520,6 +522,10 @@ def set_progress(state, stage, message, plot="", legend="", done=False, error=Fa
     if scores is not None:
         payload.update({"scores": scores, "result": result, "selected_mode": selected_mode})
     with state["lock"]:
+        history = state.setdefault("progress_history", [])
+        history.append({"stage": stage, "message": message})
+        del history[:-30]
+        payload["history"] = list(history)
         state["progress"] = payload
 
 
@@ -574,17 +580,21 @@ def run_scoring_job(state, args, form):
         set_progress(state, "HRRT verification", f"Selected {expert['route_id']} passed sanity verification ({expert_reason}).", last_plot, "Green: verified LLM-selected HRRT expert route.")
         results = {}
         for mode_name, mode_obstacles in (("env_uncertainty", perceived), ("planner_only", gt)):
-            set_progress(state, "LLM waypoint generation", f"Generating {mode_name} planner waypoints.", last_plot, "Green: selected HRRT expert route.")
+            set_progress(state, "Trial 1/2 · LLM generation", f"Generating the first {mode_name} LLM prediction.", last_plot, "Green: selected HRRT expert route. Trial 1 prediction will appear in orange.")
             base_prompt = planner_prompt(start, goal, mode_obstacles, workspace, args.clearance_m, l1=l1)
             raw_predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args, prompt_text=base_prompt)
             live_scene = dict(selected_scene, raw_predicted_waypoints=raw_predicted)
             last_plot = plot_scene(live_scene)
+            set_progress(state, "Trial 1/2 · refinement", f"First {mode_name} LLM prediction received; running PathRefinement.", last_plot, "Orange dashed: Trial 1 raw LLM prediction · green: HRRT expert.")
             refined_candidate = refine_waypoints(raw_predicted, workspace, mode_obstacles, args.clearance_m, args.fixed_z)
+            live_scene["predicted_waypoints"] = refined_candidate
+            last_plot = plot_scene(live_scene)
             raw_ok, raw_reason, raw_metrics = verify_waypoints(refined_candidate, start, goal, mode_obstacles, workspace, args.clearance_m)
-            set_progress(state, "Trajectory verification", f"Raw LLM waypoints for {mode_name}: {raw_reason}.", last_plot, "Green: verified HRRT · orange dashed: raw LLM waypoints (always retained).")
-            predicted = raw_predicted
-            refinement = "not needed"
+            trial_records = [{"trial": 1, "passed": raw_ok, "reason": raw_reason, "metrics": raw_metrics}]
+            predicted = refined_candidate
+            refinement = "trial 1 passed"
             if not raw_ok:
+                set_progress(state, "Trial 1/2 · verification failed", f"First {mode_name} prediction failed: {raw_reason}. Generating Trial 2/2 with verifier feedback.", last_plot, "Orange dashed: Trial 1 raw prediction · blue: Trial 1 refined prediction (failed verification).")
                 feedback = (
                     "Previous plan failed verification. Regenerate a sparse waypoint plan that fixes the failed "
                     "metrics while keeping the same start, goal, workspace, and obstacle snapshot.\n"
@@ -592,23 +602,27 @@ def run_scoring_job(state, args, form):
                     f"{raw_metrics['feedback_table']}\n"
                     "Prefer a route with larger obstacle clearance, monotonic goal progress, and smoother segment changes."
                 )
-                set_progress(state, "Refinement feedback (1/1)", f"Sending one verification feedback retry for {mode_name}: {raw_reason}.", last_plot, "Orange dashed: failed raw LLM path · blue: one refined retry when available.")
-                predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args, feedback=feedback, prompt_text=planner_prompt(start, goal, mode_obstacles, workspace, args.clearance_m, l1=l1, feedback=feedback))
-                predicted = refine_waypoints(predicted, workspace, mode_obstacles, args.clearance_m, args.fixed_z)
-                refined_scene = dict(selected_scene, raw_predicted_waypoints=raw_predicted, predicted_waypoints=predicted)
+                raw_predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args, feedback=feedback, prompt_text=planner_prompt(start, goal, mode_obstacles, workspace, args.clearance_m, l1=l1, feedback=feedback))
+                retry_scene = dict(selected_scene, raw_predicted_waypoints=raw_predicted)
+                last_plot = plot_scene(retry_scene)
+                set_progress(state, "Trial 2/2 · LLM generation", f"Second {mode_name} LLM prediction received from the feedback prompt.", last_plot, "Orange dashed now shows Trial 2 raw prediction; the failed Trial 1 display has been replaced.")
+                predicted = refine_waypoints(raw_predicted, workspace, mode_obstacles, args.clearance_m, args.fixed_z)
+                refined_scene = dict(retry_scene, predicted_waypoints=predicted)
                 last_plot = plot_scene(refined_scene)
+                set_progress(state, "Trial 2/2 · refinement", f"Trial 2 {mode_name} prediction refined; running the final PathVerifier check.", last_plot, "Orange dashed: Trial 2 raw prediction · blue: Trial 2 refined prediction.")
                 refined_ok, refined_reason, refined_metrics = verify_waypoints(predicted, start, goal, mode_obstacles, workspace, args.clearance_m)
+                trial_records.append({"trial": 2, "passed": refined_ok, "reason": refined_reason, "metrics": refined_metrics})
                 if not refined_ok:
-                    raise ValueError(f"LLM trajectory failed refinement verification in {mode_name}: {refined_reason}")
-                refinement = f"refined once after: {raw_reason}"
+                    set_progress(state, "Trial 2/2 · verification failed", f"Second {mode_name} prediction also failed: {refined_reason}. No QP trajectory or score will be produced.", last_plot, "Final failed view: orange dashed is Trial 2 raw; blue is Trial 2 refined.")
+                    raise ValueError(f"No safe LLM plan after 2/2 trials in {mode_name}; Trial 2 failed: {refined_reason}")
+                set_progress(state, "Trial 2/2 · verification passed", f"Second {mode_name} prediction passed after one feedback retry.", last_plot, "Orange dashed: Trial 2 raw · blue: verified Trial 2 refined · green: verified HRRT.")
+                refinement = f"trial 2 passed after trial 1 failed: {raw_reason}"
             else:
-                predicted = refined_candidate
-                live_scene["predicted_waypoints"] = predicted
-                last_plot = plot_scene(live_scene)
+                set_progress(state, "Trial 1/2 · verification passed", f"First {mode_name} prediction passed; Trial 2 is not needed.", last_plot, "Orange dashed: Trial 1 raw · blue: verified Trial 1 refined · green: verified HRRT.")
             set_progress(state, "QP optimization", f"Solving paired minimum-control trajectories for {mode_name}.", last_plot, "Verified HRRT and LLM waypoints are being optimized.")
             scored = score_pair(expert_waypoints, predicted, args)
             result_expert = dict(expert, waypoints=expert_waypoints)
-            item = public_result(capture_id, rows, mode_name, l1, l2, result_expert, raw_predicted, predicted, scored, (gt, mode_obstacles), start, goal, perceived, workspace, {"hrrt": expert_reason, "hrrt_metrics": expert_metrics, "raw_llm": raw_reason, "llm_refinement": refinement})
+            item = public_result(capture_id, rows, mode_name, l1, l2, result_expert, raw_predicted, predicted, scored, (gt, mode_obstacles), start, goal, perceived, workspace, {"hrrt": expert_reason, "hrrt_metrics": expert_metrics, "llm_trials": trial_records, "llm_refinement": refinement})
             item.update({"expert_selector": "openai" if args.intent_provider == "openai" else "mock", "expert_model": args.expert_model if args.intent_provider == "openai" else "", "selection_reason": selection.reason})
             results[mode_name] = item
         with state["lock"]:
@@ -655,7 +669,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             try:
                 row_number = int(query["row"][-1])
                 capture_id, rows = choose_capture(self.state["captures"], row_number)
-                self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "routes": [], "route_data": [], "result": None, "results": {}})
+                self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "routes": [], "route_data": [], "result": None, "results": {}, "progress_history": []})
                 for key in ("goal", "start", "ground_truth_obstacles", "perceived_obstacles", "intent", "goal_relations", "goal_relation_results"):
                     self.state.pop(key, None)
             except (TypeError, ValueError) as error:
@@ -672,7 +686,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     status = 409
                 else:
                     self.state["job_running"] = True
-                    self.state["progress"] = {"stage": "Starting", "message": "Preparing LLM route selection.", "plot": "", "legend": "", "done": False, "error": False}
+                    self.state["progress_history"] = [{"stage": "Starting", "message": "Preparing LLM route selection."}]
+                    self.state["progress"] = {"stage": "Starting", "message": "Preparing LLM route selection.", "plot": "", "legend": "", "done": False, "error": False, "history": list(self.state["progress_history"])}
                     body = compact({"ok": True}).encode()
                     status = 202
             if status == 202:
@@ -724,6 +739,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     message = "Error: a scoring job is already running"
                 else:
                     self.state["job_running"] = True
+                    self.state["progress_history"] = []
                     message = ""
             if not message:
                 run_scoring_job(self.state, self.args, form)

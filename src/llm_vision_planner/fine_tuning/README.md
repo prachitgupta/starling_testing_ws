@@ -525,6 +525,10 @@ raw/refined waypoints and verification metrics.
 The color key remains visible during every live stage. Completion stops polling
 without reloading: both mode scores are printed, the selected score is stamped
 on the plot, and the final frame stays locked until the dataset row changes.
+The persistent status history labels Trial 1/2 generation, refinement, and
+verification. A failed first trial triggers Trial 2/2 with the full verifier
+feedback table; the raw and refined plot updates to Trial 2 before its final
+pass/fail result. Two failures leave the Trial 2 plot visible and skip QP/score.
 
 To use the served refined Llama adapter instead of the mock planner:
 

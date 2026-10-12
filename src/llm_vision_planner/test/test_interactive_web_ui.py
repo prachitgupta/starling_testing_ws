@@ -43,6 +43,14 @@ class InteractiveWebUiTest(unittest.TestCase):
         self.assertIn("AWAITING_TRAJECTORY_SELECTION", html)
         self.assertIn("HRRT-star route family", html)
 
+    def test_ui_distinguishes_perceived_and_vicon_obstacles(self):
+        html = (ROOT / "web" / "interactive.html").read_text(encoding="utf-8")
+        self.assertIn("Perceived obstacle", html)
+        self.assertIn("Vicon ground truth", html)
+        self.assertIn("ground_truth_obstacles", html)
+        self.assertIn("P: ", html)
+        self.assertIn("GT: ", html)
+
     def test_audio_file_metadata_accepts_browser_recording_types(self):
         self.assertEqual(audio_file_metadata("audio/webm;codecs=opus"), ("audio/webm", "webm"))
         self.assertEqual(audio_file_metadata("audio/ogg; codecs=opus"), ("audio/ogg", "ogg"))

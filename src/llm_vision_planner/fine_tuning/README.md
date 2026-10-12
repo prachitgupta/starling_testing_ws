@@ -439,14 +439,19 @@ Run with the deterministic mock planner first:
 cd ~/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
 python fine_tuning/scripts/calibration_verifier_gateway.py \
   --dataset fine_tuning/datasets/calibration_residual_raw_person.csv \
-  --row 1 \
+  --row 2 \
+  --intent-provider mock \
   --planner-provider mock \
   --host 127.0.0.1 \
   --port 8091
 ```
 
-Open [http://127.0.0.1:8091](http://127.0.0.1:8091), enter L1/L2, generate
-routes, choose the final HRRT route, and click **Score and plot trajectories**.
+Open [http://127.0.0.1:8091](http://127.0.0.1:8091), enter an object-relative
+L1 instruction such as `Go near the person` and an L2 route preference. The
+gateway runs the same intent parser, relation normalization, and constrained
+goal solver as the live interactive mission gateway; no goal coordinates are
+entered manually. Generate routes, choose the final HRRT route, and click
+**Score and plot trajectories**.
 The page reports both scores and overlays the LLM and expert paths, ground-truth
 obstacles, perceived obstacles, and score-radius tubes.
 
@@ -455,7 +460,9 @@ To use the served refined Llama adapter instead of the mock planner:
 ```bash
 python fine_tuning/scripts/calibration_verifier_gateway.py \
   --dataset fine_tuning/datasets/calibration_residual_raw_person.csv \
-  --row 1 \
+  --row 2 \
+  --intent-provider openai \
+  --intent-model gpt-5.4-nano \
   --planner-provider vllm \
   --vllm-base-url http://127.0.0.1:8000/v1 \
   --llama-model hrrt_planner \

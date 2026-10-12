@@ -591,6 +591,7 @@ class ContractionVisualizer(Node):
         scene_obstacles = display_scene.get("obstacles", []) if display_scene else []
         planning_obstacles = geometry_payload.get("obstacles", [])
         nominal_obstacles = geometry_payload.get("nominal_obstacles", [])
+        ground_truth_obstacles = geometry_payload.get("ground_truth_obstacles", [])
         observed_obstacles = (
             scene_obstacles
             or (active_path.get("observed_obstacles", []) if active_path else [])
@@ -607,22 +608,31 @@ class ContractionVisualizer(Node):
                 linestyle="--",
                 annotate=False,
             )
-        if nominal_obstacles:
+        if observed_obstacles:
+            self.draw_obstacles(
+                axis,
+                observed_obstacles,
+                facecolor="#fbbf24",
+                edgecolor="#b45309",
+                alpha=0.30,
+                annotate=True,
+            )
+        elif nominal_obstacles:
             self.draw_obstacles(
                 axis,
                 nominal_obstacles,
                 facecolor="#fbbf24",
                 edgecolor="#b45309",
-                alpha=0.38,
+                alpha=0.30,
                 annotate=True,
             )
-        else:
+        if ground_truth_obstacles:
             self.draw_obstacles(
                 axis,
-                observed_obstacles,
+                ground_truth_obstacles,
                 facecolor="#ef4444",
                 edgecolor="#991b1b",
-                alpha=0.42,
+                alpha=0.34,
                 annotate=True,
             )
 
@@ -724,6 +734,18 @@ class ContractionVisualizer(Node):
         )
         if self.plan is not None:
             legend_handles = [
+                Patch(
+                    facecolor="#fbbf24",
+                    edgecolor="#b45309",
+                    alpha=0.30,
+                    label="Perceived obstacle",
+                ),
+                Patch(
+                    facecolor="#ef4444",
+                    edgecolor="#991b1b",
+                    alpha=0.34,
+                    label="Vicon ground-truth obstacle",
+                ),
                 Patch(
                     facecolor="#60a5fa",
                     edgecolor="none",

@@ -61,6 +61,7 @@ class WebUiBridge(Node):
         self.declare_parameter("environment", "real")
         self.declare_parameter("semantic_obstacle_topic", "/llm_vision/semantic_obstacles")
         self.declare_parameter("sim_obstacle_topic", "/llm_vision/sim_obstacles")
+        self.declare_parameter("ground_truth_obstacle_topic", "/llm_vision/ground_truth_obstacles")
         self.declare_parameter("raw_plan_topic", "/llm_vision/plan_raw")
         self.declare_parameter("refined_plan_topic", "/llm_vision/plan_refined")
         self.declare_parameter("verified_plan_topic", "/llm_vision/plan_candidate_verified")
@@ -104,6 +105,12 @@ class WebUiBridge(Node):
             else str(self.get_parameter("semantic_obstacle_topic").value)
         )
         self.create_subscription(String, obstacle_topic, self.scene_callback, 10)
+        self.create_subscription(
+            String,
+            str(self.get_parameter("ground_truth_obstacle_topic").value),
+            self.ground_truth_callback,
+            10,
+        )
         self.create_subscription(
             String,
             str(self.get_parameter("route_candidates_topic").value),
@@ -151,6 +158,7 @@ class WebUiBridge(Node):
         self.latest_proposal = {}
         self.latest_launch_proposal = {}
         self.latest_scene = {}
+        self.latest_ground_truth = {}
         self.latest_route_candidates = {}
         self.latest_raw_plan = {}
         self.latest_refined_plan = {}
@@ -220,6 +228,10 @@ class WebUiBridge(Node):
         with self.lock:
             self.latest_route_candidates = self.decode_payload(msg)
 
+    def ground_truth_callback(self, msg):
+        with self.lock:
+            self.latest_ground_truth = self.decode_payload(msg)
+
     def raw_plan_callback(self, msg):
         with self.lock:
             self.latest_raw_plan = self.decode_payload(msg)
@@ -253,6 +265,7 @@ class WebUiBridge(Node):
                 "proposal": self.latest_proposal,
                 "launch_proposal": self.latest_launch_proposal,
                 "scene": self.latest_scene,
+                "ground_truth": self.latest_ground_truth,
                 "route_candidates": self.latest_route_candidates,
                 "raw_plan": self.latest_raw_plan,
                 "refined_plan": self.latest_refined_plan,

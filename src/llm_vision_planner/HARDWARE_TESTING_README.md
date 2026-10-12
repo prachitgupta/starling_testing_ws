@@ -1075,6 +1075,30 @@ read -rsp "OpenAI API key: " OPENAI_API_KEY
 export OPENAI_API_KEY
 LLAMA_MODEL_NAME=hrrt_planner_dss
 
+# Required for Adaptive conformal mode in a real environment.
+read -rp "Chair X width in metres: " CHAIR_WIDTH_M
+read -rp "Chair Y depth in metres: " CHAIR_DEPTH_M
+read -rp "Person X width in metres: " PERSON_WIDTH_M
+read -rp "Person Y depth in metres: " PERSON_DEPTH_M
+read -rp "Stop-sign X width in metres: " STOPSIGN_WIDTH_M
+read -rp "Stop-sign Y depth in metres: " STOPSIGN_DEPTH_M
+export CHAIR_WIDTH_M CHAIR_DEPTH_M PERSON_WIDTH_M PERSON_DEPTH_M \
+  STOPSIGN_WIDTH_M STOPSIGN_DEPTH_M
+VICON_OBJECTS_JSON="$(python3 - <<'PY'
+import json
+import os
+
+print(json.dumps([
+    {"object_id": "chair-1", "label": "chair", "topic": "/vicon/chair1/chair1",
+     "dimensions_m": [float(os.environ["CHAIR_WIDTH_M"]), float(os.environ["CHAIR_DEPTH_M"])]},
+    {"object_id": "person-1", "label": "person", "topic": "/vicon/person/person",
+     "dimensions_m": [float(os.environ["PERSON_WIDTH_M"]), float(os.environ["PERSON_DEPTH_M"])]},
+    {"object_id": "stop-sign-1", "label": "stop sign", "topic": "/vicon/stopsign/stopsign",
+     "dimensions_m": [float(os.environ["STOPSIGN_WIDTH_M"]), float(os.environ["STOPSIGN_DEPTH_M"])]},
+]))
+PY
+)"
+
 ros2 launch llm_vision_planner full_plot.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
   environment:=real \
@@ -1082,11 +1106,19 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   intent_provider:=openai \
   llm_provider:=llama \
   llama_model_name:="$LLAMA_MODEL_NAME" \
+  vicon_objects_json:="$VICON_OBJECTS_JSON" \
   visualizer:=contraction \
   web_ui_host:=0.0.0.0
 ```
 
 Use the RC kill switch or change PX4/QGroundControl mode to abort.
+
+In real Adaptive conformal mode, HRRT uses the Vicon boxes from this catalog
+and Llama uses the perceived obstacle snapshot. The web and contraction views
+show Vicon ground truth in red and perceived geometry in orange. Enter measured
+dimensions above and omit objects that are not present.
+The vehicle alignment topic is `/vicon/Starling2/Starling2`. `environment:=sim`
+does not use these Vicon inputs and retains the existing simulation behavior.
 
 From another device on the same network, open
 `http://<ground-station-lan-ip>:8080` once `/llm_vision/mission_state` reports

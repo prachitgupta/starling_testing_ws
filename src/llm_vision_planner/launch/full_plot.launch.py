@@ -107,6 +107,11 @@ def generate_launch_description():
         default_value="0.10",
         description="Miscoverage level for the obstacle containment certificate.",
     )
+    vicon_objects_json_arg = DeclareLaunchArgument(
+        "vicon_objects_json",
+        default_value="[]",
+        description="Real-ACP Vicon object catalog JSON with object_id, label, topic, and dimensions_m.",
+    )
     params_file = LaunchConfiguration("params_file")
     fixed_goal = {
         "goal_x": ParameterValue(LaunchConfiguration("goal_x"), value_type=float),
@@ -184,6 +189,7 @@ def generate_launch_description():
                 "vision_error_delta": ParameterValue(
                     LaunchConfiguration("vision_error_delta"), value_type=float
                 ),
+                "vicon_objects_json": LaunchConfiguration("vicon_objects_json"),
             },
         ],
         condition=use_interactive_prompt,
@@ -309,6 +315,7 @@ def generate_launch_description():
             obs_safety_bracket_arg,
             vision_error_calibration_csv_arg,
             vision_error_delta_arg,
+            vicon_objects_json_arg,
             semantic_perception,
             dataset_scene,
             llm_planner,

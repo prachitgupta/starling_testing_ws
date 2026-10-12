@@ -146,6 +146,15 @@ interactive_mission_gateway:
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
     sim_obstacle_topic: /llm_vision/sim_obstacles
     nominal_obstacle_topic: /llm_vision/nominal_obstacles
+    ground_truth_obstacle_topic: /llm_vision/ground_truth_obstacles
+    # Real ACP mode requires this JSON to be overridden with measured object
+    # dimensions; use the exact Vicon topics documented in HARDWARE_TESTING_README.md.
+    vicon_objects_json: "[]"
+    vicon_vehicle_topic: /vicon/Starling2/Starling2
+    vicon_vehicle_frame_convention: flu
+    vicon_frame_calibration_samples: 20
+    vicon_frame_sync_tolerance_s: 0.10
+    vicon_fresh_data_timeout_s: 0.25
     mission_state_topic: /llm_vision/mission_state
     pose_topic: /fmu/out/vehicle_odometry
     prompt_topic: /llm_vision/prompt
@@ -195,6 +204,7 @@ interactive_web_ui:
     route_candidates_topic: /llm_vision/hrrt_route_candidates
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
     sim_obstacle_topic: /llm_vision/sim_obstacles
+    ground_truth_obstacle_topic: /llm_vision/ground_truth_obstacles
     raw_plan_topic: /llm_vision/plan_raw
     refined_plan_topic: /llm_vision/plan_refined
     verified_plan_topic: /llm_vision/plan_candidate_verified
@@ -251,16 +261,20 @@ residual_calibration_recorder:
 calibration_verifier_gateway:
   ros__parameters:
     dataset: fine_tuning/datasets/calibration_residual_raw_person.csv
-    row: 1
+    row: 2
     host: 127.0.0.1
     port: 8091
     planner_provider: mock
+    intent_provider: openai
+    intent_model: gpt-5.4-nano
     vllm_base_url: http://127.0.0.1:8000/v1
     llama_model: hrrt_planner
-    goal_x: 0.0
-    goal_y: 1.5
     fixed_z: -0.5
     clearance_m: 0.40
+    default_standoff_m: 0.60
+    goal_sample_resolution_m: 0.10
+    default_goal_range_half_width_m: 0.15
+    exact_goal_distance_tolerance_m: 0.10
     hrrt_iterations: 300
     max_candidates: 8
     max_waypoints: 8

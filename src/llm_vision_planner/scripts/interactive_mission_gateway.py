@@ -12,6 +12,7 @@ import re
 import sys
 import time
 import uuid
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal, Optional
@@ -19,6 +20,7 @@ from typing import Literal, Optional
 import rclpy
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
+from geometry_msgs.msg import TransformStamped
 from px4_msgs.msg import VehicleOdometry
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
@@ -29,6 +31,26 @@ try:
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
     from hrrt_star import plan_hrrt_star
+
+try:
+    from residual_calibration_recorder import (
+        average_transforms,
+        ground_truth_aabb,
+        parse_objects,
+        px4_pose,
+        transform_pose,
+        world_to_ned_candidate,
+    )
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
+    from residual_calibration_recorder import (
+        average_transforms,
+        ground_truth_aabb,
+        parse_objects,
+        px4_pose,
+        transform_pose,
+        world_to_ned_candidate,
+    )
 
 
 INSTRUCTIONS = (
@@ -1071,6 +1093,13 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("semantic_obstacle_topic", "/llm_vision/semantic_obstacles")
         self.declare_parameter("sim_obstacle_topic", "/llm_vision/sim_obstacles")
         self.declare_parameter("nominal_obstacle_topic", "/llm_vision/nominal_obstacles")
+        self.declare_parameter("ground_truth_obstacle_topic", "/llm_vision/ground_truth_obstacles")
+        self.declare_parameter("vicon_objects_json", "[]")
+        self.declare_parameter("vicon_vehicle_topic", "/vicon/Starling2/Starling2")
+        self.declare_parameter("vicon_vehicle_frame_convention", "flu")
+        self.declare_parameter("vicon_frame_calibration_samples", 20)
+        self.declare_parameter("vicon_frame_sync_tolerance_s", 0.10)
+        self.declare_parameter("vicon_fresh_data_timeout_s", 0.25)
         self.declare_parameter("mission_state_topic", "/llm_vision/mission_state")
         self.declare_parameter("pose_topic", "/fmu/out/vehicle_odometry")
         self.declare_parameter("prompt_topic", "/llm_vision/prompt")
@@ -1168,6 +1197,15 @@ class InteractiveMissionGateway(Node):
         self.latest_mission_state = None
         self.latest_mission_state_received_s = None
         self.current_pose = None
+        self.latest_vicon_ground_truth = None
+        self.latest_vicon_ground_truth_received_s = None
+        self.vicon_world_to_ned = None
+        self.vicon_vehicle_samples = deque(maxlen=100)
+        self.vicon_px4_samples = deque(maxlen=100)
+        self.vicon_frame_candidates = deque(maxlen=100)
+        self.vicon_used_frame_pairs = set()
+        self.vicon_object_poses = {}
+        self.vicon_objects = []
         self.conversation = []
         self.active_mission = None
         self.active_plan_id = None
@@ -1205,6 +1243,12 @@ class InteractiveMissionGateway(Node):
         self.route_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="route_planner")
         self.route_selector = self.create_route_selector()
 
+        if self.environment == "real":
+            configured_vicon = str(self.get_parameter("vicon_objects_json").value)
+            if json.loads(configured_vicon):
+                self.vicon_objects = parse_objects(configured_vicon)
+                self.vicon_object_poses = {item["topic"]: None for item in self.vicon_objects}
+
         obstacle_topic = (
             str(self.get_parameter("sim_obstacle_topic").value)
             if self.environment == "sim"
@@ -1223,6 +1267,30 @@ class InteractiveMissionGateway(Node):
             self.pose_callback,
             ODOM_QOS,
         )
+        self.ground_truth_obstacle_pub = self.create_publisher(
+            String,
+            str(self.get_parameter("ground_truth_obstacle_topic").value),
+            LATCHED_QOS,
+        )
+        self.vicon_subscriptions = []
+        if self.environment == "real" and self.vicon_objects:
+            self.vicon_subscriptions.append(
+                self.create_subscription(
+                    TransformStamped,
+                    str(self.get_parameter("vicon_vehicle_topic").value),
+                    self.vicon_vehicle_callback,
+                    20,
+                )
+            )
+            self.vicon_subscriptions.extend(
+                self.create_subscription(
+                    TransformStamped,
+                    item["topic"],
+                    lambda message, configured=item: self.vicon_object_callback(configured, message),
+                    20,
+                )
+                for item in self.vicon_objects
+            )
         self.create_subscription(
             String,
             str(self.get_parameter("operator_command_topic").value),
@@ -1426,6 +1494,93 @@ class InteractiveMissionGateway(Node):
             "z": float(msg.position[2]),
             "received_s": time.time(),
         }
+        if self.environment == "real" and self.vicon_objects:
+            try:
+                self.vicon_px4_samples.append((time.monotonic(), px4_pose(msg)))
+            except ValueError:
+                return
+            self.try_align_vicon_frame()
+
+    def vicon_vehicle_callback(self, msg):
+        try:
+            self.vicon_vehicle_samples.append((time.monotonic(), transform_pose(msg)))
+        except ValueError:
+            return
+        self.try_align_vicon_frame()
+
+    def try_align_vicon_frame(self):
+        if self.vicon_world_to_ned is not None or not self.vicon_vehicle_samples or not self.vicon_px4_samples:
+            return
+        vicon_time, vicon_pose = self.vicon_vehicle_samples[-1]
+        px4_time, ned_pose = min(self.vicon_px4_samples, key=lambda item: abs(item[0] - vicon_time))
+        if abs(px4_time - vicon_time) > float(self.get_parameter("vicon_frame_sync_tolerance_s").value):
+            return
+        pair = (vicon_time, px4_time)
+        if pair in self.vicon_used_frame_pairs:
+            return
+        self.vicon_used_frame_pairs.add(pair)
+        self.vicon_frame_candidates.append(
+            world_to_ned_candidate(
+                vicon_pose,
+                ned_pose,
+                str(self.get_parameter("vicon_vehicle_frame_convention").value),
+            )
+        )
+        required = int(self.get_parameter("vicon_frame_calibration_samples").value)
+        if len(self.vicon_frame_candidates) < required:
+            return
+        transform, translation_error, rotation_error = average_transforms(
+            list(self.vicon_frame_candidates)[-required:]
+        )
+        if translation_error <= 0.15 and rotation_error <= 5.0:
+            self.vicon_world_to_ned = transform
+            self.get_logger().info(
+                f"Vicon ground-truth frame aligned: translation_error={translation_error:.3f} m, "
+                f"rotation_error={rotation_error:.2f} deg"
+            )
+
+    def vicon_object_callback(self, configured, msg):
+        try:
+            pose = transform_pose(msg)
+        except ValueError:
+            return
+        self.vicon_object_poses[configured["topic"]] = (time.time(), pose)
+        self.publish_vicon_ground_truth()
+
+    def publish_vicon_ground_truth(self):
+        if self.vicon_world_to_ned is None or not self.vicon_objects:
+            return
+        now = time.time()
+        timeout = float(self.get_parameter("vicon_fresh_data_timeout_s").value)
+        obstacles = []
+        for configured in self.vicon_objects:
+            sample = self.vicon_object_poses.get(configured["topic"])
+            if sample is None or now - sample[0] > timeout:
+                return
+            geometry = ground_truth_aabb(configured, sample[1], self.vicon_world_to_ned)
+            dimensions = configured["dimensions"]
+            half_height = 0.5 * float(dimensions[2]) if len(dimensions) == 3 else 0.5
+            obstacles.append(
+                {
+                    "object_id": configured["object_id"],
+                    "label": configured["label"],
+                    "min_corner": [geometry["min_corner"][0], geometry["min_corner"][1], self.fixed_z - half_height],
+                    "max_corner": [geometry["max_corner"][0], geometry["max_corner"][1], self.fixed_z + half_height],
+                    "footprint_corners_xy": geometry["corners"],
+                    "yaw_rad": geometry["yaw"],
+                    "source": "vicon_ground_truth",
+                }
+            )
+        payload = {
+            "healthy": True,
+            "frame": "local_ned",
+            "source": "vicon_ground_truth",
+            "obstacles": obstacles,
+            "timestamp": now,
+        }
+        self.latest_vicon_ground_truth = payload
+        self.latest_vicon_ground_truth_received_s = now
+        self.ground_truth_obstacle_pub.publish(String(data=json.dumps(payload)))
 
     def command_callback(self, msg):
         operator_text = self.command_text(msg.data)
@@ -1583,7 +1738,7 @@ class InteractiveMissionGateway(Node):
             plan_hrrt_star,
             copy.deepcopy(mission["start"]),
             copy.deepcopy(mission["goal"]),
-            copy.deepcopy(mission["nominal_obstacles"]),
+            copy.deepcopy(mission["expert_obstacles"]),
             copy.deepcopy(mission["workspace"]),
             clearance_m=self.clearance_m,
             seed=int(self.get_parameter("hrrt_seed").value),
@@ -1662,6 +1817,8 @@ class InteractiveMissionGateway(Node):
                             result.get("routes", []),
                             float(self.get_parameter("route_nominal_speed_mps").value),
                         ),
+                        "observed_obstacles": copy.deepcopy(self.active_mission["observed_obstacles"]),
+                        "ground_truth_obstacles": copy.deepcopy(self.active_mission["expert_obstacles"]),
                     }
                 )
                 self.latest_route_family = result
@@ -1755,6 +1912,11 @@ class InteractiveMissionGateway(Node):
         if error:
             self.publish_response("NOT_READY", error)
             return
+        if self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION" and self.environment == "real":
+            error = self.vicon_ground_truth_context_error()
+            if error:
+                self.publish_response("GROUND_TRUTH_NOT_READY", error)
+                return
         start = self.current_start()
         try:
             nominal_obstacles, planning_obstacles = self.environment_obstacles(scene, intent)
@@ -1762,19 +1924,36 @@ class InteractiveMissionGateway(Node):
             self.publish_response("ENVIRONMENT_UNCERTAIN", f"No mission was released: {exc}")
             return
         try:
+            goal_obstacles = (
+                self.latest_vicon_ground_truth["obstacles"]
+                if self.environment == "real"
+                and self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                else nominal_obstacles
+            )
+            goal_collision_obstacles = (
+                goal_obstacles
+                if self.environment == "real"
+                and self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                else planning_obstacles
+            )
             goal_relations = normalize_goal_relations(
                 intent.relations,
-                nominal_obstacles,
+                goal_obstacles,
                 default_standoff=self.default_standoff_m,
                 clearance=self.clearance_m,
-                guard_band=self.scene_guard_band_m,
+                guard_band=(
+                    0.0
+                    if self.environment == "real"
+                    and self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                    else self.scene_guard_band_m
+                ),
                 default_range_half_width=self.default_goal_range_half_width_m,
                 exact_distance_tolerance=self.exact_goal_distance_tolerance_m,
             )
             goal, goal_relation_results = range_constrained_goal(
                 start,
                 goal_relations,
-                planning_obstacles,
+                goal_collision_obstacles,
                 self.workspace,
                 self.fixed_z,
                 self.clearance_m,
@@ -1787,7 +1966,7 @@ class InteractiveMissionGateway(Node):
             return
 
         target_id = next(item["object_id"] for item in goal_relations if item["relation"] == "NEAR")
-        target = next(item for item in nominal_obstacles if item["object_id"] == target_id)
+        target = next(item for item in goal_obstacles if item["object_id"] == target_id)
 
         created_at = time.time()
         mission_id = f"M-{int(created_at * 1000)}-{uuid.uuid4().hex[:6]}"
@@ -1812,6 +1991,11 @@ class InteractiveMissionGateway(Node):
             "workspace": copy.deepcopy(self.workspace),
             "observed_obstacles": copy.deepcopy(scene["obstacles"]),
             "nominal_obstacles": copy.deepcopy(nominal_obstacles),
+            "expert_obstacles": copy.deepcopy(
+                self.latest_vicon_ground_truth["obstacles"]
+                if self.environment == "real" and self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                else nominal_obstacles
+            ),
             "obstacles": planning_obstacles,
             "obstacle_safety": self.obstacle_safety_metadata(),
             "created_at": created_at,
@@ -1992,6 +2176,7 @@ class InteractiveMissionGateway(Node):
             "obstacle_ids": [item["object_id"] for item in mission["obstacles"]],
             "created_at": mission["created_at"],
             "observed_obstacles": copy.deepcopy(mission["observed_obstacles"]),
+            "ground_truth_obstacles": copy.deepcopy(mission["expert_obstacles"]),
             "environment_frozen": bool(mission.get("environment_frozen", False)),
             "environment_frozen_at": mission.get("environment_frozen_at"),
             **copy.deepcopy(mission["obstacle_safety"]),
@@ -2098,6 +2283,8 @@ class InteractiveMissionGateway(Node):
             "goal": mission["goal"],
             "goal_relations": mission["goal_relations"],
             "workspace": mission["workspace"],
+            "observed_obstacles": mission["observed_obstacles"],
+            "ground_truth_obstacles": mission["expert_obstacles"],
             "nominal_obstacles": mission["nominal_obstacles"],
             "obstacles": mission["obstacles"],
             "obstacle_safety": mission["obstacle_safety"],
@@ -2452,6 +2639,21 @@ class InteractiveMissionGateway(Node):
             return "The obstacle snapshot is stale."
         if self.latest_scene.get("healthy") is False:
             return "Perception reports an unhealthy obstacle snapshot."
+        return None
+
+    def vicon_ground_truth_context_error(self):
+        if not self.vicon_objects:
+            return (
+                "Real ACP mode requires vicon_objects_json with measured dimensions and the "
+                "hardware-guide topics before HRRT expert generation."
+            )
+        if self.vicon_world_to_ned is None:
+            return "Vicon-to-local-NED alignment is not ready; keep the vehicle still."
+        if self.latest_vicon_ground_truth is None or self.latest_vicon_ground_truth_received_s is None:
+            return "No complete Vicon ground-truth obstacle snapshot is available."
+        timeout = float(self.get_parameter("vicon_fresh_data_timeout_s").value)
+        if time.time() - self.latest_vicon_ground_truth_received_s > timeout:
+            return "The Vicon ground-truth obstacle snapshot is stale."
         return None
 
     def current_start(self):

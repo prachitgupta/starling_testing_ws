@@ -24,6 +24,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+MISSION_SCRIPT_DIR = SCRIPT_DIR.parents[1] / "scripts"
+if str(MISSION_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(MISSION_SCRIPT_DIR))
 
 from hrrt_star import normalize_obstacles, plan_hrrt_star  # noqa: E402
 from min_control_qp import generate_shared_pair  # noqa: E402
@@ -32,6 +35,13 @@ from postprocess_residual_calibration import (  # noqa: E402
     residual_score,
     safe_path,
     vllm_predicted_waypoints,
+)
+from interactive_mission_gateway import (  # noqa: E402
+    MockIntentParser,
+    OpenAIIntentParser,
+    normalize_goal_relations,
+    obstacle_catalog,
+    range_constrained_goal,
 )
 
 
@@ -64,13 +74,39 @@ def scene_setup(rows, args):
         "y": float(first.get("observer_y") or args.start_y),
         "z": float(first.get("observer_z") or args.fixed_z),
     }
-    goal = {"x": args.goal_x, "y": args.goal_y, "z": args.fixed_z}
     workspace = {
         "x": [args.workspace_x_min, args.workspace_x_max],
         "y": [args.workspace_y_min, args.workspace_y_max],
         "z": args.fixed_z,
     }
-    return ground_truth, perceived, start, goal, workspace
+    return ground_truth, perceived, start, workspace
+
+
+def derive_goal(l1, perceived, goal_obstacles, start, workspace, intent_parser, args):
+    intent = intent_parser.parse(l1, obstacle_catalog(perceived), [])
+    if intent.status != "READY":
+        raise ValueError(intent.clarifying_question or f"intent parser returned {intent.status}")
+    if intent.intent_type != "NAVIGATION" or intent.navigation_action not in ("HOVER", "GO_TO"):
+        raise ValueError("L1 must describe object-relative HOVER or GO_TO navigation")
+    relations = normalize_goal_relations(
+        intent.relations,
+        goal_obstacles,
+        default_standoff=args.default_standoff_m,
+        clearance=args.clearance_m,
+        guard_band=0.0,
+        default_range_half_width=args.default_goal_range_half_width_m,
+        exact_distance_tolerance=args.exact_goal_distance_tolerance_m,
+    )
+    goal, relation_results = range_constrained_goal(
+        start,
+        relations,
+        goal_obstacles,
+        workspace,
+        args.fixed_z,
+        args.clearance_m,
+        args.goal_sample_resolution_m,
+    )
+    return intent, relations, relation_results, goal
 
 
 def route_cards(routes):
@@ -208,7 +244,7 @@ def html_page(state, args, message=""):
 <form class='card' method='post' action='/prepare'><h2>1. Environment and language</h2>
 <label>Refined calibration row</label><select name='row'>{capture_options}</select>
 <label>Mode</label><select name='mode'><option value='env_uncertainty'>With environment uncertainty (LLM uses perceived E-hat)</option><option value='planner_only'>Planner uncertainty only (both use ground-truth E)</option></select>
-<label>L1 — goal instruction</label><textarea name='l1'>Go to the goal while avoiding all obstacles.</textarea>
+<label>L1 — object-relative goal instruction</label><textarea name='l1'>Go near the person.</textarea>
 <label>L2 — expert preference</label><textarea name='l2'>Prefer the route with the largest clearance.</textarea>
 <button>Generate HRRT route family</button></form>
 <form class='card' method='post' action='/score'><h2>2. Human expert selection</h2>
@@ -276,16 +312,21 @@ class GatewayHandler(BaseHTTPRequestHandler):
         try:
             row_number = int(form.get("row", self.state["row_number"]))
             capture_id, rows = choose_capture(self.state["captures"], row_number)
-            gt, perceived, start, goal, workspace = scene_setup(rows, self.args)
+            gt, perceived, start, workspace = scene_setup(rows, self.args)
             mode = form.get("mode", "env_uncertainty")
             planning = perceived if mode == "env_uncertainty" else gt
             if self.path == "/prepare":
+                intent, relations, relation_results, goal = derive_goal(
+                    form.get("l1", ""), perceived, gt, start, workspace,
+                    self.state["intent_parser"], self.args,
+                )
                 family = plan_family(start, goal, gt, workspace, self.args)
-                self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "mode": mode, "l1": form.get("l1", ""), "l2": form.get("l2", ""), "routes": route_cards(family["routes"]), "route_data": family["routes"], "result": None, "results": {}})
-                message = f"Generated {len(family['routes'])} HRRT routes for capture {capture_id}."
+                self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "mode": mode, "l1": form.get("l1", ""), "l2": form.get("l2", ""), "intent": intent.model_dump(), "goal_relations": relations, "goal_relation_results": relation_results, "goal": goal, "routes": route_cards(family["routes"]), "route_data": family["routes"], "result": None, "results": {}})
+                message = f"Intent parser selected goal ({goal['x']:.2f}, {goal['y']:.2f}); generated {len(family['routes'])} HRRT routes for capture {capture_id}."
             elif self.path == "/score":
                 if not self.state.get("route_data"):
                     raise ValueError("generate the HRRT route family first")
+                goal = self.state["goal"]
                 expert = next(route for route in self.state["route_data"] if route["route_id"] == form["route"])
                 results = {}
                 for mode_name, mode_obstacles in (("env_uncertainty", perceived), ("planner_only", gt)):
@@ -321,15 +362,20 @@ def build_parser():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8091)
     parser.add_argument("--planner-provider", choices=("mock", "vllm"), default="mock")
+    parser.add_argument("--intent-provider", choices=("openai", "mock"), default="openai")
+    parser.add_argument("--intent-model", default="gpt-5.4-nano")
     parser.add_argument("--vllm-base-url", default="http://127.0.0.1:8000/v1")
     parser.add_argument("--vllm-api-key", default="EMPTY")
     parser.add_argument("--llama-model", default="hrrt_planner")
-    parser.add_argument("--goal-x", type=float, default=0.0); parser.add_argument("--goal-y", type=float, default=1.5)
     parser.add_argument("--start-x", type=float, default=-3.5); parser.add_argument("--start-y", type=float, default=0.0)
     parser.add_argument("--fixed-z", type=float, default=-0.5)
     parser.add_argument("--workspace-x-min", type=float, default=-3.0); parser.add_argument("--workspace-x-max", type=float, default=3.0)
     parser.add_argument("--workspace-y-min", type=float, default=-3.0); parser.add_argument("--workspace-y-max", type=float, default=3.0)
     parser.add_argument("--clearance-m", type=float, default=0.40); parser.add_argument("--dt", type=float, default=0.1)
+    parser.add_argument("--default-standoff-m", type=float, default=0.60)
+    parser.add_argument("--goal-sample-resolution-m", type=float, default=0.10)
+    parser.add_argument("--default-goal-range-half-width-m", type=float, default=0.15)
+    parser.add_argument("--exact-goal-distance-tolerance-m", type=float, default=0.10)
     parser.add_argument("--seed", type=int, default=17); parser.add_argument("--hrrt-iterations", type=int, default=300)
     parser.add_argument("--max-candidates", type=int, default=8); parser.add_argument("--max-waypoints", type=int, default=8)
     return parser
@@ -339,7 +385,8 @@ def main():
     args = build_parser().parse_args()
     captures = load_captures(args.dataset)
     choose_capture(captures, args.row)
-    state = {"captures": captures, "row_number": args.row, "routes": [], "route_data": [], "result": None, "results": {}}
+    intent_parser = MockIntentParser() if args.intent_provider == "mock" else OpenAIIntentParser(args.intent_model)
+    state = {"captures": captures, "row_number": args.row, "routes": [], "route_data": [], "result": None, "results": {}, "intent_parser": intent_parser}
     GatewayHandler.state = state; GatewayHandler.args = args
     server = ThreadingHTTPServer((args.host, args.port), GatewayHandler)
     print(f"Calibration verifier listening at http://{args.host}:{args.port}")

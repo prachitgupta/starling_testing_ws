@@ -326,7 +326,7 @@ GPU clone is elsewhere, use its actual absolute adapter path.
 On the ground station, check the server (replace the lab address for your host):
 
 ```bash
-GPU_IP=<gpu-server-ip-or-hostname>
+GPU_IP=172.22.224.93
 export VLLM_BASE_URL=http://$GPU_IP:8000/v1
 curl --fail --silent --show-error "$VLLM_BASE_URL/models"
 ```
@@ -1478,7 +1478,7 @@ source install/setup.bash
 
 RAW_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw.csv"
 CALIBRATION_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_scored.csv"
-GPU_IP=<gpu-server-ip-or-hostname>
+GPU_IP=172.22.224.93
 export VLLM_BASE_URL=http://$GPU_IP:8000/v1
 read -rsp "OpenAI API key: " OPENAI_API_KEY
 export OPENAI_API_KEY

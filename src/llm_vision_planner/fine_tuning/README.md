@@ -378,7 +378,7 @@ exit
 From the local workstation, SSH into the GPU server first:
 
 ```bash
-GPU_IP=<gpu-server-ip-or-hostname>
+GPU_IP=172.22.224.93
 ssh prachit2@"$GPU_IP"
 ```
 
@@ -450,7 +450,7 @@ On the ROS machine, set `llm_planner.ros__parameters.vllm_base_url` to the GPU
 URL and use the same model alias:
 
 ```bash
-GPU_IP=<gpu-server-ip-or-hostname>
+GPU_IP=172.22.224.93
 DISTILLATION_MODE=dss
 MODEL_ALIAS="hrrt_planner_$DISTILLATION_MODE"
 VLLM_BASE_URL="http://$GPU_IP:8000/v1"
@@ -509,7 +509,7 @@ paths, both obstacle geometries, and score-radius tubes.
 To use the served refined Llama adapter instead of the mock planner:
 
 ```bash
-GPU_IP=<gpu-server-ip-or-hostname>
+GPU_IP=172.22.224.93
 python fine_tuning/scripts/calibration_verifier_gateway.py \
   --dataset fine_tuning/datasets/calibration_residual_raw_person.csv \
   --row 2 \

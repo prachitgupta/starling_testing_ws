@@ -233,6 +233,7 @@ pre{white-space:pre-wrap;overflow:auto}.metric{font-size:19px;color:#59e0aa;font
 .error{color:#fecaca;background:#7f1d1d55;border:1px solid #ef4444;border-radius:8px;padding:10px;font-weight:700}
 svg{width:100%;height:auto;background:#eff7fb;border-radius:10px}.legend{font-size:12px;color:#b9d0e0}
 .speech-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}.speech-row button{width:48px;margin-top:0}.listening{background:#b91c1c}
+.manual-goal{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 @media(max-width:850px){.grid{grid-template-columns:1fr}body{padding:8px}}
 """
 
@@ -289,18 +290,24 @@ def html_page(state, args, message=""):
     stage_hint = "" if view_error else ("Final view: selected HRRT and LLM trajectories with QP-optimized samples and score tubes." if result else ("Select an HRRT route above; all generated candidates are shown in the plot." if routes else "Dataset scene loaded: red is ground truth, orange is perceived, and the blue marker is the drone pose."))
     legend = "" if view_error else f"{stage_hint} Red: ground-truth obstacle · orange dashed: perceived obstacle · blue marker: drone pose · gold marker: proposed goal."
     message_block = f"<p class='error'>{html.escape(message)}</p>" if message.startswith("Error:") else f"<p class='hint'>{html.escape(message)}</p>"
+    goal = state.get("goal")
+    if goal:
+        goal_card = f"""<div class='card'><h2>2. Goal approval</h2><p>Proposed goal: <b>({goal['x']:.2f}, {goal['y']:.2f}, {goal['z']:.2f})</b></p><form method='post' action='/generate'><input type='hidden' name='row' value='{selected}'><input type='hidden' name='mode' value='{html.escape(state.get('mode','env_uncertainty'))}'><input type='hidden' name='l1' value='{html.escape(state.get('l1',''))}'><button name='decision' value='accept'>Accept proposed goal and generate HRRT</button><button class='secondary' formaction='/reject'>Reject proposed goal</button><label>Manual goal (x, y, z)</label><div class='manual-goal'><input name='goal_x' value='{goal['x']:.2f}'><input name='goal_y' value='{goal['y']:.2f}'><input name='goal_z' value='{goal['z']:.2f}'></div><button name='decision' value='manual'>Use manual goal and generate HRRT</button></form></div>"""
+    else:
+        goal_card = "<div class='card'><h2>2. Goal approval</h2><p class='hint'>Generate a goal proposal first. HRRT generation is disabled until the proposed goal is accepted or replaced manually.</p></div>"
     return f"""<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Calibration verifier</title><style>{STYLE}</style></head><body><main>
 <h1>Calibration trajectory verifier</h1><p class='hint'>Offline replacement for live mission-gateway perception. Select a refined calibration capture, compare LLM and HRRT trajectories, and inspect the residual tube.</p>
 <div class='grid'><section>
-<form class='card' method='post' action='/prepare'><h2>1. Environment and language</h2>
+<form class='card' method='post' action='/propose'><h2>1. Environment and language</h2>
 <label>Refined calibration row</label><select name='row' onchange="window.location='/?row='+this.value">{capture_options}</select>
 <label>Mode</label><select name='mode'><option value='env_uncertainty'>With environment uncertainty (LLM uses perceived E-hat)</option><option value='planner_only'>Planner uncertainty only (both use ground-truth E)</option></select>
-<label>L1 — object-relative goal instruction</label><div class='speech-row'><textarea id='l1' name='l1'>{l1_value}</textarea><button id='speech-l1' type='button' title='Record L1 prompt' aria-label='Record L1 prompt'>●</button></div><input id='speech-file-l1' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l1' class='hint'>Speak or type L1, then generate the HRRT family.</p>
-<button>Generate HRRT route family</button></form>
-<form id='score-form' class='card' method='post' action='/score'><h2>2. LLM expert selection and scoring</h2>
+<label>L1 — object-relative goal instruction</label><div class='speech-row'><textarea id='l1' name='l1'>{l1_value}</textarea><button id='speech-l1' type='button' title='Record L1 prompt' aria-label='Record L1 prompt'>●</button></div><input id='speech-file-l1' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l1' class='hint'>Speak or type L1, then propose a goal.</p>
+<button>Propose goal</button></form>
+{goal_card}
+<form id='score-form' class='card' method='post' action='/score'><h2>3. LLM expert selection and scoring</h2>
 <input type='hidden' name='row' value='{selected}'><input type='hidden' name='mode' value='{html.escape(state.get('mode','env_uncertainty'))}'><input type='hidden' name='l1' value='{html.escape(state.get('l1',''))}'>
 <label>L2 — route preference for the OpenAI selector</label><div class='speech-row'><textarea id='l2' name='l2'>{l2_value}</textarea><button id='speech-l2' type='button' title='Record L2 preference' aria-label='Record L2 preference'>●</button></div><input id='speech-file-l2' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l2' class='hint'>The LLM selects one displayed HRRT route from this preference.</p>
-<button id='score-button' {'disabled' if not routes else ''}>Select route, score, and plot</button><p id='pipeline-status' class='hint'>Waiting for an HRRT route family.</p></form>
+<button id='score-button' {'disabled' if not routes else ''}>Select route, score, and plot</button><p id='pipeline-status' class='hint'>{'HRRT family ready; enter L2 for LLM route selection.' if routes else 'Waiting for an accepted goal and HRRT route family.'}</p></form>
 <div class='card'><h2>Result</h2>{score_block}{message_block}<pre>{html.escape(result_json)}</pre></div>
 </section><section class='card'><h2>Trajectory and safety-tube view</h2><div id='plot-container'>{plot}</div><p id='plot-legend' class='legend'>{html.escape(legend)}</p></section></div>{SPEECH_SCRIPT}</main></body></html>"""
 
@@ -567,6 +574,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", "0"))
         form = {key: values[-1] for key, values in parse_qs(self.rfile.read(length).decode()).items()}
+        if self.path == "/reject":
+            self.state.update({"routes": [], "route_data": [], "result": None, "results": {}})
+            for key in ("goal", "goal_accepted", "goal_relations", "goal_relation_results", "intent"):
+                self.state.pop(key, None)
+            body = html_page(self.state, self.args, "Proposed goal rejected. Enter a new L1 instruction to propose another goal.")
+            self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers(); self.wfile.write(body.encode())
+            return
         if self.path == "/score":
             with self.state["lock"]:
                 if self.state.get("job_running"):
@@ -589,14 +603,24 @@ class GatewayHandler(BaseHTTPRequestHandler):
             gt, perceived, start, workspace = scene_setup(rows, self.args)
             mode = form.get("mode", "env_uncertainty")
             planning = perceived if mode == "env_uncertainty" else gt
-            if self.path == "/prepare":
+            if self.path in ("/propose", "/prepare"):
                 intent, relations, relation_results, goal = derive_goal(
                     form.get("l1", ""), perceived, gt, start, workspace,
                     self.state["intent_parser"], self.args,
                 )
+                self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "mode": mode, "l1": form.get("l1", ""), "intent": intent.model_dump(), "goal_relations": relations, "goal_relation_results": relation_results, "goal": goal, "goal_accepted": False, "start": start, "ground_truth_obstacles": gt, "perceived_obstacles": perceived, "routes": [], "route_data": [], "result": None, "results": {}})
+                message = f"Goal proposed at ({goal['x']:.2f}, {goal['y']:.2f}, {goal['z']:.2f}). Accept it or enter a manual goal before generating HRRT routes."
+            elif self.path == "/generate":
+                if not self.state.get("goal"):
+                    raise ValueError("propose a goal first")
+                goal = dict(self.state["goal"])
+                if form.get("decision") == "manual":
+                    goal = {"x": float(form["goal_x"]), "y": float(form["goal_y"]), "z": float(form.get("goal_z", self.args.fixed_z))}
+                if not (workspace["x"][0] <= goal["x"] <= workspace["x"][1] and workspace["y"][0] <= goal["y"] <= workspace["y"][1]):
+                    raise ValueError("manual goal is outside the planning workspace")
                 family = plan_family(start, goal, gt, workspace, self.args)
-                self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "mode": mode, "l1": form.get("l1", ""), "l2": form.get("l2", ""), "intent": intent.model_dump(), "goal_relations": relations, "goal_relation_results": relation_results, "goal": goal, "start": start, "ground_truth_obstacles": gt, "perceived_obstacles": perceived, "routes": route_cards(family["routes"]), "route_data": family["routes"], "result": None, "results": {}})
-                message = f"Intent parser selected goal ({goal['x']:.2f}, {goal['y']:.2f}); generated {len(family['routes'])} HRRT routes for capture {capture_id}."
+                self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "mode": mode, "goal": goal, "goal_accepted": True, "start": start, "ground_truth_obstacles": gt, "perceived_obstacles": perceived, "routes": route_cards(family["routes"]), "route_data": family["routes"], "result": None, "results": {}})
+                message = f"Goal accepted at ({goal['x']:.2f}, {goal['y']:.2f}, {goal['z']:.2f}); generated {len(family['routes'])} HRRT routes. Enter L2 for LLM route selection."
             else:
                 raise ValueError("unknown action")
         except Exception as exc:

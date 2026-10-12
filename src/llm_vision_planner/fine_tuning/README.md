@@ -478,10 +478,11 @@ The launch alias overrides the planner model for the fixed and interactive flows
 
 ## 12. Interactive calibration verifier (E versus E-hat)
 
-The offline verifier parses L1, creates and plots an HRRT family, then takes L2
-and asks the OpenAI expert selector to choose one displayed route before scoring
-both modes. It reports live stages for selection, raw LLM waypoints, verification,
-QP optimization, and final safety tubes:
+The offline verifier parses L1 and displays a proposed goal first. The reviewer
+must accept it, reject it, or enter a manual goal before HRRT routes are created
+and plotted. L2 then goes to the OpenAI expert selector, which chooses one
+displayed route before scoring both modes. Live stages show selection, raw LLM
+waypoints, verification, QP optimization, and final safety tubes:
 
 - `env_uncertainty`: HRRT uses ground-truth `E`; the LLM planner uses perceived
   `E-hat`.
@@ -509,10 +510,11 @@ python3 fine_tuning/scripts/calibration_verifier_gateway.py \
   --port 8091
 ```
 
-Open [http://127.0.0.1:8091](http://127.0.0.1:8091), enter L1 and generate the
-route family. Review the plotted candidates, enter L2, then let the selector
-choose the expert route and score. Raw LLM waypoints remain visible at verification,
-including an invalid trajectory, before the final QP/tube plot replaces them.
+Open [http://127.0.0.1:8091](http://127.0.0.1:8091), enter L1 and propose a goal.
+Accept, reject, or replace it manually; only then is HRRT generation enabled.
+Review the plotted candidates, enter L2, then let the selector choose the expert
+route and score. Raw LLM waypoints remain visible at verification, including an
+invalid trajectory, before the final QP/tube plot replaces them.
 
 To use the served refined Llama adapter instead of the mock planner:
 

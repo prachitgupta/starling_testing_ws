@@ -406,33 +406,27 @@ tar -C "$(dirname "$ADAPTER_DIR")" -czf "$ADAPTER_DIR.tar.gz" "$ADAPTER_NAME"
 exit
 ```
 
-On the local workstation, define the destination GPU address and transfer the
-archive from NCSA to the `prachit2` account. `scp -3` routes the transfer through
-the local workstation, so the NCSA login node does not need direct access to the
-GPU server:
+From the local workstation, SSH into the GPU server first:
 
 ```bash
 GPU_IP=<gpu-server-ip-or-hostname>
+ssh prachit2@"$GPU_IP"
+```
+
+Run the following commands at the GPU server prompt. This is intentionally a
+normal one-sided `scp`: the GPU server pulls from NCSA, so you authenticate only
+to NCSA (including Duo) and do not ask the local workstation to authenticate to
+the GPU server a second time:
+
+```bash
 DISTILLATION_MODE=dss
 ADAPTER_NAME="llama31_8b_hrrt_lora_$DISTILLATION_MODE"
 NCSA_ARCHIVE="/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/$ADAPTER_NAME.tar.gz"
 GPU_OUTPUTS="/home/prachit2/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs"
 
-ssh prachit2@"$GPU_IP" "mkdir -p '$GPU_OUTPUTS'"
-scp -3 \
-  pgupta12@dtai-login.delta.ncsa.illinois.edu:"$NCSA_ARCHIVE" \
-  prachit2@"$GPU_IP":"$GPU_OUTPUTS/"
-```
-
-Log in to the GPU server, unpack and verify the adapter, then start vLLM. The
-adapter alias supplied to `--lora-modules`, `--served-model-name`, and the ROS
-launch must be identical:
-
-```bash
-ssh prachit2@"$GPU_IP"
-cd /home/prachit2/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs
-DISTILLATION_MODE=dss
-ADAPTER_NAME="llama31_8b_hrrt_lora_$DISTILLATION_MODE"
+mkdir -p "$GPU_OUTPUTS"
+scp pgupta12@dtai-login.delta.ncsa.illinois.edu:"$NCSA_ARCHIVE" "$GPU_OUTPUTS/"
+cd "$GPU_OUTPUTS"
 tar -xzf "$ADAPTER_NAME.tar.gz"
 
 ADAPTER="/home/prachit2/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs/$ADAPTER_NAME"

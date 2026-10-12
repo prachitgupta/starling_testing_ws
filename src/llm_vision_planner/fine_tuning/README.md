@@ -489,6 +489,11 @@ HRRT routes, accepts a human route choice, and scores both modes:
 The displayed tube quantile is `q = S`. `--row` is one-based over sorted
 `capture_id` groups.
 
+The L1 field supports microphone recording or an audio-file fallback. The
+verifier sends the audio to the configured OpenAI transcription model and puts
+the transcript into L1 for review; keep `OPENAI_API_KEY` exported and use
+`--transcription-model` to override the default `gpt-4o-mini-transcribe`.
+
 Run with the deterministic mock planner first:
 
 ```bash

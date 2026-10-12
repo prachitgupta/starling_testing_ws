@@ -21,6 +21,21 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+MAX_AUDIO_BYTES = 10 * 1024 * 1024
+AUDIO_EXTENSIONS = {
+    "audio/flac": "flac", "audio/m4a": "m4a", "audio/mp4": "mp4",
+    "audio/mpeg": "mp3", "audio/ogg": "ogg", "audio/wav": "wav",
+    "audio/webm": "webm", "audio/x-m4a": "m4a", "audio/x-wav": "wav",
+}
+
+
+def audio_file_metadata(content_type):
+    mime_type = str(content_type).split(";", 1)[0].strip().lower()
+    extension = AUDIO_EXTENSIONS.get(mime_type)
+    if extension is None:
+        raise ValueError(f"unsupported audio type: {mime_type or 'missing'}")
+    return mime_type, extension
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -208,7 +223,18 @@ main{max-width:1400px;margin:auto}.grid{display:grid;grid-template-columns:360px
 label{display:block;color:#a9c3d6;font-size:12px;margin:10px 0 4px}input,select,textarea,button{width:100%;box-sizing:border-box;padding:9px;border-radius:8px;border:1px solid #41617a;background:#081725;color:#eef8ff}textarea{min-height:62px}button{background:#2788c7;font-weight:700;cursor:pointer;margin-top:12px}.secondary{background:#21445b}
 pre{white-space:pre-wrap;overflow:auto}.metric{font-size:19px;color:#59e0aa;font-weight:800}.hint{color:#a9c3d6;font-size:12px;line-height:1.4}
 svg{width:100%;height:auto;background:#eff7fb;border-radius:10px}.legend{font-size:12px;color:#b9d0e0}
+.speech-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}.speech-row button{width:48px;margin-top:0}.listening{background:#b91c1c}
 @media(max-width:850px){.grid{grid-template-columns:1fr}body{padding:8px}}
+"""
+
+SPEECH_SCRIPT = """
+<script>
+const speechButton=document.getElementById('speech'),speechFile=document.getElementById('speech-file'),l1=document.getElementById('l1'),speechStatus=document.getElementById('speech-status');let recorder=null,stream=null,timer=null;const types=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'],audioType=window.MediaRecorder?types.find(t=>MediaRecorder.isTypeSupported(t))||'':'';
+async function transcribe(audio,type){if(!audio.size)return;speechButton.disabled=true;speechStatus.textContent='Transcribing…';try{const response=await fetch('/api/transcribe',{method:'POST',headers:{'Content-Type':type,'X-Speech-Language':navigator.language||'en-US'},body:audio}),result=await response.json();if(!response.ok)throw new Error(result.error||'transcription failed');l1.value=result.text.trim();l1.focus();speechStatus.textContent='Transcript ready. Review it before generating routes.'}catch(error){speechStatus.textContent=`Speech transcription failed: ${error.message}`}finally{speechButton.disabled=false}}
+function stopRecording(){if(timer)clearTimeout(timer);if(stream)stream.getTracks().forEach(track=>track.stop());stream=null;speechButton.classList.remove('listening');speechButton.textContent='●'}
+speechFile.onchange=async()=>{const file=speechFile.files[0];if(file)await transcribe(file,file.type);speechFile.value=''};
+if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)speechButton.onclick=()=>speechFile.click();else speechButton.onclick=async()=>{if(recorder?.state==='recording'){recorder.stop();return}try{stream=await navigator.mediaDevices.getUserMedia({audio:true});const chunks=[];recorder=new MediaRecorder(stream,audioType?{mimeType:audioType}:undefined);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onstop=async()=>{const type=recorder.mimeType||audioType;stopRecording();await transcribe(new Blob(chunks,{type}),type)};recorder.start();speechButton.classList.add('listening');speechButton.textContent='■';speechStatus.textContent='Listening…';timer=setTimeout(()=>{if(recorder?.state==='recording')recorder.stop()},20000)}catch(error){stopRecording();speechStatus.textContent=`Microphone unavailable: ${error.message}`}};
+</script>
 """
 
 
@@ -244,7 +270,7 @@ def html_page(state, args, message=""):
 <form class='card' method='post' action='/prepare'><h2>1. Environment and language</h2>
 <label>Refined calibration row</label><select name='row'>{capture_options}</select>
 <label>Mode</label><select name='mode'><option value='env_uncertainty'>With environment uncertainty (LLM uses perceived E-hat)</option><option value='planner_only'>Planner uncertainty only (both use ground-truth E)</option></select>
-<label>L1 — object-relative goal instruction</label><textarea name='l1'>Go near the person.</textarea>
+<label>L1 — object-relative goal instruction</label><div class='speech-row'><textarea id='l1' name='l1'>Go near the person.</textarea><button id='speech' type='button' title='Record L1 prompt' aria-label='Record L1 prompt'>●</button></div><input id='speech-file' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status' class='hint'>Speak or type naturally. Review the transcript before generating routes.</p>
 <label>L2 — expert preference</label><textarea name='l2'>Prefer the route with the largest clearance.</textarea>
 <button>Generate HRRT route family</button></form>
 <form class='card' method='post' action='/score'><h2>2. Human expert selection</h2>
@@ -252,7 +278,7 @@ def html_page(state, args, message=""):
 <label>Selected HRRT expert route</label><select name='route'>{route_options}</select>
 <button {'disabled' if not routes else ''}>Score and plot trajectories</button></form>
 <div class='card'><h2>Result</h2>{score_block}<p class='hint'>{html.escape(message)}</p><pre>{html.escape(result_json)}</pre></div>
-</section><section class='card'><h2>Trajectory and safety-tube view</h2>{plot}<p class='legend'>Blue: LLM trajectory and q-tube · green: selected HRRT expert and q-tube · red: ground-truth obstacle · orange: perceived obstacle.</p></section></div></main></body></html>"""
+</section><section class='card'><h2>Trajectory and safety-tube view</h2>{plot}<p class='legend'>Blue: LLM trajectory and q-tube · green: selected HRRT expert and q-tube · red: ground-truth obstacle · orange: perceived obstacle.</p></section></div>{SPEECH_SCRIPT}</main></body></html>"""
 
 
 def plot_svg(result):
@@ -307,6 +333,36 @@ class GatewayHandler(BaseHTTPRequestHandler):
         body = html_page(self.state, self.args)
         self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers(); self.wfile.write(body.encode())
     def do_POST(self):
+        if self.path == "/api/transcribe":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0:
+                    raise ValueError("audio recording is empty")
+                if length > MAX_AUDIO_BYTES:
+                    raise ValueError("audio recording is too large")
+                mime_type, extension = audio_file_metadata(self.headers.get("Content-Type", ""))
+                if not os.getenv("OPENAI_API_KEY"):
+                    raise RuntimeError("OPENAI_API_KEY is not set in the verifier process")
+                from openai import OpenAI
+                response = OpenAI().audio.transcriptions.create(
+                    file=(f"calibration-prompt.{extension}", self.rfile.read(length), mime_type),
+                    model=self.args.transcription_model,
+                    response_format="json",
+                )
+                text = str(response.text).strip()
+                if not text:
+                    raise RuntimeError("no speech was detected")
+                body = compact({"ok": True, "text": text}).encode()
+                self.send_response(200)
+            except ValueError as error:
+                body = compact({"ok": False, "error": str(error)}).encode()
+                self.send_response(400)
+            except Exception as error:
+                body = compact({"ok": False, "error": str(error)}).encode()
+                self.send_response(503)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers(); self.wfile.write(body)
+            return
         length = int(self.headers.get("Content-Length", "0"))
         form = {key: values[-1] for key, values in parse_qs(self.rfile.read(length).decode()).items()}
         try:
@@ -367,6 +423,7 @@ def build_parser():
     parser.add_argument("--vllm-base-url", default="http://127.0.0.1:8000/v1")
     parser.add_argument("--vllm-api-key", default="EMPTY")
     parser.add_argument("--llama-model", default="hrrt_planner")
+    parser.add_argument("--transcription-model", default="gpt-4o-mini-transcribe")
     parser.add_argument("--start-x", type=float, default=-3.5); parser.add_argument("--start-y", type=float, default=0.0)
     parser.add_argument("--fixed-z", type=float, default=-0.5)
     parser.add_argument("--workspace-x-min", type=float, default=-3.0); parser.add_argument("--workspace-x-max", type=float, default=3.0)

@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
@@ -195,7 +195,7 @@ def score_pair(expert_waypoints, predicted_waypoints, args):
     }
 
 
-def public_result(capture_id, rows, mode, l1, l2, expert, predicted, result, environments_used, start, goal, perceived):
+def public_result(capture_id, rows, mode, l1, l2, expert, predicted, result, environments_used, start, goal, perceived, workspace):
     return {
         "capture_id": capture_id,
         "session_id": rows[0].get("session_id", ""),
@@ -216,6 +216,7 @@ def public_result(capture_id, rows, mode, l1, l2, expert, predicted, result, env
         "ground_truth_obstacles": environments_used[0],
         "planning_obstacles": environments_used[1],
         "perceived_obstacles": perceived,
+        "workspace": workspace,
     }
 
 
@@ -245,7 +246,7 @@ setupSpeech('speech-l1','speech-file-l1','l1','speech-status-l1');setupSpeech('s
 
 def html_page(state, args, message=""):
     capture_options = "".join(
-        f'<option value="{i}">row {i}: capture {html.escape(cid)}</option>'
+        f'<option value="{i}"{" selected" if i == state["row_number"] else ""}>row {i}: capture {html.escape(cid)}</option>'
         for i, (cid, _) in enumerate(state["captures"], 1)
     )
     selected = state["row_number"]
@@ -275,7 +276,7 @@ def html_page(state, args, message=""):
 <h1>Calibration trajectory verifier</h1><p class='hint'>Offline replacement for live mission-gateway perception. Select a refined calibration capture, compare LLM and HRRT trajectories, and inspect the residual tube.</p>
 <div class='grid'><section>
 <form class='card' method='post' action='/prepare'><h2>1. Environment and language</h2>
-<label>Refined calibration row</label><select name='row'>{capture_options}</select>
+<label>Refined calibration row</label><select name='row' onchange="window.location='/?row='+this.value">{capture_options}</select>
 <label>Mode</label><select name='mode'><option value='env_uncertainty'>With environment uncertainty (LLM uses perceived E-hat)</option><option value='planner_only'>Planner uncertainty only (both use ground-truth E)</option></select>
 <label>L1 — object-relative goal instruction</label><div class='speech-row'><textarea id='l1' name='l1'>Go near the person.</textarea><button id='speech-l1' type='button' title='Record L1 prompt' aria-label='Record L1 prompt'>●</button></div><input id='speech-file-l1' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l1' class='hint'>Speak or type naturally. Review the transcript before generating routes.</p>
 <label>L2 — expert preference</label><div class='speech-row'><textarea id='l2' name='l2'>Prefer the route with the largest clearance.</textarea><button id='speech-l2' type='button' title='Record L2 preference' aria-label='Record L2 preference'>●</button></div><input id='speech-file-l2' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l2' class='hint'>Speak or type the preference, then review the transcript.</p>
@@ -322,11 +323,12 @@ def plot_scene(scene):
         points.extend(((float(obstacle["min_corner"][0]), float(obstacle["min_corner"][1])), (float(obstacle["max_corner"][0]), float(obstacle["max_corner"][1]))))
     if not points:
         return "<p class='hint'>No geometry is available for this capture.</p>"
-    min_x, max_x = min(p[0] for p in points) - 0.5, max(p[0] for p in points) + 0.5
-    min_y, max_y = min(p[1] for p in points) - 0.5, max(p[1] for p in points) + 0.5
-    width, height = 900, 600
+    limits = scene.get("workspace", {"x": [-3.0, 3.0], "y": [-3.0, 3.0]})
+    min_x, max_x = float(limits["x"][0]), float(limits["x"][1])
+    min_y, max_y = float(limits["y"][0]), float(limits["y"][1])
+    width, height, pad = 900, 650, 62
     def xy(point):
-        return ((point[0] - min_x) / max(max_x - min_x, 1e-6) * width, height - (point[1] - min_y) / max(max_y - min_y, 1e-6) * height)
+        return (pad + (point[0] - min_x) / max(max_x - min_x, 1e-6) * (width - 2 * pad), height - pad - (point[1] - min_y) / max(max_y - min_y, 1e-6) * (height - 2 * pad))
     def polyline(waypoints, color, width_px=3):
         coords = " ".join(f"{xy((float(p['x']), float(p['y'])))[0]:.1f},{xy((float(p['x']), float(p['y'])))[1]:.1f}" for p in waypoints)
         return f"<polyline points='{coords}' fill='none' stroke='{color}' stroke-width='{width_px}' stroke-opacity='.75'/>"
@@ -339,6 +341,13 @@ def plot_scene(scene):
         x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
         x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
         shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#f59e0b22' stroke='#d97706' stroke-dasharray='6 4'/>")
+    grid = "".join(
+        f"<line x1='{xy((x, min_y))[0]:.1f}' y1='{xy((x, min_y))[1]:.1f}' x2='{xy((x, max_y))[0]:.1f}' y2='{xy((x, max_y))[1]:.1f}' stroke='#94a3b833'/>"
+        for x in range(math.ceil(min_x), math.floor(max_x) + 1)
+    ) + "".join(
+        f"<line x1='{xy((min_x, y))[0]:.1f}' y1='{xy((min_x, y))[1]:.1f}' x2='{xy((max_x, y))[0]:.1f}' y2='{xy((max_x, y))[1]:.1f}' stroke='#94a3b833'/>"
+        for y in range(math.ceil(min_y), math.floor(max_y) + 1)
+    )
     route_colors = ("#64748b", "#8b5cf6", "#0891b2", "#db2777", "#65a30d", "#ea580c", "#0f766e", "#7c3aed")
     route_lines = "".join(polyline(route["waypoints"], route_colors[i % len(route_colors)]) for i, route in enumerate(scene.get("routes", [])))
     start_x, start_y = xy((float(scene["start"]["x"]), float(scene["start"]["y"])))
@@ -346,7 +355,7 @@ def plot_scene(scene):
     if scene.get("goal"):
         goal_x, goal_y = xy((float(scene["goal"]["x"]), float(scene["goal"]["y"])))
         markers += f"<circle cx='{goal_x:.1f}' cy='{goal_y:.1f}' r='9' fill='#eab308' stroke='#111827' stroke-width='2'/><text x='{goal_x+12:.1f}' y='{goal_y:.1f}' fill='#111827'>goal</text>"
-    return f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='Dataset obstacles, drone pose, proposed goal, and HRRT route candidates'>{''.join(shapes)}{route_lines}{markers}</svg>"
+    return f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='Dataset obstacles, drone pose, proposed goal, and HRRT route candidates'>{grid}{''.join(shapes)}{route_lines}{markers}</svg>"
 
 
 def plot_svg(result):
@@ -360,11 +369,12 @@ def plot_svg(result):
         points += [(float(obstacle["min_corner"][0]), float(obstacle["min_corner"][1])), (float(obstacle["max_corner"][0]), float(obstacle["max_corner"][1]))]
     if not points:
         return ""
-    min_x, max_x = min(p[0] for p in points) - 0.5, max(p[0] for p in points) + 0.5
-    min_y, max_y = min(p[1] for p in points) - 0.5, max(p[1] for p in points) + 0.5
-    width, height = 900, 600
+    limits = result.get("workspace", {"x": [-3.0, 3.0], "y": [-3.0, 3.0]})
+    min_x, max_x = float(limits["x"][0]), float(limits["x"][1])
+    min_y, max_y = float(limits["y"][0]), float(limits["y"][1])
+    width, height, pad = 900, 650, 62
     def xy(point):
-        return ((point[0] - min_x) / (max_x - min_x) * width, height - (point[1] - min_y) / (max_y - min_y) * height)
+        return (pad + (point[0] - min_x) / max(max_x - min_x, 1e-6) * (width - 2 * pad), height - pad - (point[1] - min_y) / max(max_y - min_y, 1e-6) * (height - 2 * pad))
     def polyline(waypoints, color, width_px=4):
         coords = " ".join(f"{xy((float(p['x']), float(p['y'])))[0]:.1f},{xy((float(p['x']), float(p['y'])))[1]:.1f}" for p in waypoints)
         return f"<polyline points='{coords}' fill='none' stroke='{color}' stroke-width='{width_px}'/>"
@@ -387,9 +397,16 @@ def plot_svg(result):
         x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
         x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
         shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#f59e0b22' stroke='#d97706' stroke-dasharray='6 4'/>")
+    grid = "".join(
+        f"<line x1='{xy((x, min_y))[0]:.1f}' y1='{xy((x, min_y))[1]:.1f}' x2='{xy((x, max_y))[0]:.1f}' y2='{xy((x, max_y))[1]:.1f}' stroke='#94a3b833'/>"
+        for x in range(math.ceil(min_x), math.floor(max_x) + 1)
+    ) + "".join(
+        f"<line x1='{xy((min_x, y))[0]:.1f}' y1='{xy((min_x, y))[1]:.1f}' x2='{xy((max_x, y))[0]:.1f}' y2='{xy((max_x, y))[1]:.1f}' stroke='#94a3b833'/>"
+        for y in range(math.ceil(min_y), math.floor(max_y) + 1)
+    )
     return (
         f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='LLM and HRRT trajectories'>"
-        f"{''.join(shapes)}{tube(result['expert_samples'], '#16a34a')}"
+        f"{grid}{''.join(shapes)}{tube(result['expert_samples'], '#16a34a')}"
         f"{tube(result['predicted_samples'], '#2563eb')}"
         f"{polyline(result['expert_waypoints'], '#16a34a')}"
         f"{polyline(result['predicted_waypoints'], '#2563eb')}"
@@ -402,6 +419,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
     state = None
     args = None
     def do_GET(self):
+        parsed = urlsplit(self.path)
+        query = parse_qs(parsed.query)
+        if parsed.path == "/" and query.get("row"):
+            try:
+                row_number = int(query["row"][-1])
+                capture_id, rows = choose_capture(self.state["captures"], row_number)
+                self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "routes": [], "route_data": [], "result": None, "results": {}})
+                for key in ("goal", "start", "ground_truth_obstacles", "perceived_obstacles", "intent", "goal_relations", "goal_relation_results"):
+                    self.state.pop(key, None)
+            except (TypeError, ValueError) as error:
+                self.state["row_error"] = str(error)
         body = html_page(self.state, self.args)
         self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers(); self.wfile.write(body.encode())
     def do_POST(self):
@@ -469,7 +497,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     scored = score_pair(expert["waypoints"], predicted, self.args)
                     results[mode_name] = public_result(
                         capture_id, rows, mode_name, form.get("l1", ""), form.get("l2", ""),
-                        expert, predicted, scored, (gt, mode_obstacles), start, goal, perceived
+                        expert, predicted, scored, (gt, mode_obstacles), start, goal, perceived, workspace
                     )
                 self.state.update({"result": results[mode], "results": results, "mode": mode, "l1": form.get("l1", ""), "l2": form.get("l2", "")})
                 message = f"Scored both modes against HRRT route {expert['route_id']} using ideal double-integrator residual."

@@ -307,7 +307,7 @@ def mock_predicted_waypoints(start, goal, perceived, workspace, args):
     return min(payload["routes"], key=lambda route: (route["path_length_m"], route["route_id"]))["waypoints"]
 
 
-def vllm_predicted_waypoints(start, goal, perceived, workspace, l1_text, args, feedback="", validate=True):
+def vllm_predicted_waypoints(start, goal, perceived, workspace, l1_text, args, feedback="", validate=True, prompt_text=""):
     try:
         import instructor
         from openai import OpenAI
@@ -339,17 +339,17 @@ def vllm_predicted_waypoints(start, goal, perceived, workspace, l1_text, args, f
     }
     if feedback:
         request["verification_feedback"] = feedback
+    base_prompt = prompt_text or (
+        "Return sparse collision-free NED waypoints using only the supplied perceived environment. "
+        "The first and last waypoints must equal start and goal. "
+        "If verification feedback is supplied, correct that failure while preserving the approved task."
+    )
     plan = client.chat.completions.create(
         model=args.llama_model,
         response_model=Plan,
         messages=[{
             "role": "user",
-            "content": (
-                "Return sparse collision-free NED waypoints using only the supplied perceived environment. "
-                "The first and last waypoints must equal start and goal. "
-                "If verification feedback is supplied, correct that failure while preserving the approved task.\n"
-                + compact(request)
-            ),
+            "content": base_prompt + "\n" + compact(request),
         }],
         temperature=0.0,
     )

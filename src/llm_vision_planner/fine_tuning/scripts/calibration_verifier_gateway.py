@@ -62,6 +62,9 @@ from interactive_mission_gateway import (  # noqa: E402
     range_constrained_goal,
     route_cards as mission_route_cards,
 )
+from prompt_generator import INSTRUCTIONS, PromptGenerator  # noqa: E402
+from refinment import PathRefinement  # noqa: E402
+from verifier import PathVerifier  # noqa: E402
 
 
 def compact(value):
@@ -157,7 +160,7 @@ def plan_family(start, goal, obstacles, workspace, args):
     )
 
 
-def planner_waypoints(start, goal, planning_obstacles, workspace, l1, args, feedback=""):
+def planner_waypoints(start, goal, planning_obstacles, workspace, l1, args, feedback="", prompt_text=""):
     if args.planner_provider == "mock":
         family = plan_family(start, goal, planning_obstacles, workspace, args)
         return min(family["routes"], key=lambda route: (route["path_length_m"], route["route_id"]))["waypoints"]
@@ -169,30 +172,58 @@ def planner_waypoints(start, goal, planning_obstacles, workspace, l1, args, feed
     )
     return vllm_predicted_waypoints(
         start, goal, planning_obstacles, workspace, l1, planner_args,
-        feedback=feedback, validate=False,
+        feedback=feedback, validate=False, prompt_text=prompt_text,
     )
 
 
-def sanity_check_waypoints(waypoints, start, goal, obstacles, workspace, clearance):
-    """Deterministic verifier shared by HRRT and LLM candidates."""
-    if not isinstance(waypoints, list) or len(waypoints) < 2 or len(waypoints) > 8:
-        return False, "waypoint count must be between 2 and 8"
-    for index, point in enumerate(waypoints):
-        try:
-            values = [float(point[key]) for key in ("x", "y", "z")]
-        except (KeyError, TypeError, ValueError):
-            return False, f"waypoint {index + 1} is missing finite x/y/z values"
-        if not all(math.isfinite(value) for value in values):
-            return False, f"waypoint {index + 1} contains a non-finite value"
-        if not (workspace["x"][0] <= values[0] <= workspace["x"][1] and workspace["y"][0] <= values[1] <= workspace["y"][1]):
-            return False, f"waypoint {index + 1} is outside the planning workspace"
-    if any(abs(float(waypoints[0][key]) - float(start[key])) > 1e-3 for key in ("x", "y", "z")):
-        return False, "first waypoint does not equal the approved start"
-    if any(abs(float(waypoints[-1][key]) - float(goal[key])) > 1e-3 for key in ("x", "y", "z")):
-        return False, "last waypoint does not equal the approved goal"
-    if not safe_path(waypoints, obstacles, workspace, clearance):
-        return False, "segment clearance check failed"
-    return True, "passed"
+def configured_verifier(workspace, clearance):
+    verifier = PathVerifier.__new__(PathVerifier)
+    verifier.safety_margin_m = float(clearance)
+    verifier.interpolation_spacing_m = 1.0
+    verifier.cruise_speed_mps = 0.3
+    verifier.nominal_dt_s = verifier.interpolation_spacing_m / verifier.cruise_speed_mps
+    verifier.max_velocity_mps = 0.5
+    verifier.max_acceleration_mps2 = 0.5
+    verifier.goal_tolerance_m = 0.05
+    verifier.start_tolerance_m = 0.10
+    verifier.progress_tolerance_m = 1e-3
+    return verifier
+
+
+def refine_waypoints(waypoints, workspace, obstacles, clearance, fixed_z):
+    refiner = PathRefinement.__new__(PathRefinement)
+    refiner.interpolation_spacing_m = 1.0
+    refiner.safety_margin_m = float(clearance)
+    refiner.nudge_epsilon_m = 0.02
+    refiner.fixed_z = float(fixed_z)
+    return refiner.interpolate_waypoints(waypoints, workspace, obstacles)
+
+
+def verify_waypoints(waypoints, start, goal, obstacles, workspace, clearance):
+    """Use the production ROS2 PathVerifier metrics without starting ROS nodes."""
+    verifier = configured_verifier(workspace, clearance)
+    metrics = verifier.compute_metrics({
+        "waypoints": waypoints,
+        "start": start,
+        "goal": goal,
+        "obstacles": obstacles,
+        "workspace": workspace,
+    })
+    failed = metrics["failed_constraints"]
+    reason = "passed" if not failed else ", ".join(failed)
+    return bool(metrics["passed"]), reason, metrics
+
+
+def planner_prompt(start, goal, obstacles, workspace, clearance, l1="", feedback=""):
+    prompt_builder = PromptGenerator.__new__(PromptGenerator)
+    prompt_builder.workspace_x = (float(workspace["x"][0]), float(workspace["x"][1]))
+    prompt_builder.workspace_y = (float(workspace["y"][0]), float(workspace["y"][1]))
+    prompt_builder.fixed_z = float(workspace["z"])
+    prompt_builder.clearance_m = float(clearance)
+    prompt = "\n".join([INSTRUCTIONS, f"Operator instruction: {l1}", prompt_builder.build_nl_env(start, goal, obstacles), prompt_builder.constraints()])
+    if feedback:
+        prompt += "\n" + feedback
+    return prompt
 
 
 def score_pair(expert_waypoints, predicted_waypoints, args):
@@ -513,8 +544,9 @@ def run_scoring_job(state, args, form):
         expert = next((route for route in routes if str(route["route_id"]) == str(selection.selected_route_id)), None)
         if expert is None:
             raise ValueError("the LLM selector returned a route outside the displayed HRRT family")
-        expert_ok, expert_reason = sanity_check_waypoints(
-            expert["waypoints"], start, goal, gt, workspace, args.clearance_m
+        expert_waypoints = refine_waypoints(expert["waypoints"], workspace, gt, args.clearance_m, args.fixed_z)
+        expert_ok, expert_reason, expert_metrics = verify_waypoints(
+            expert_waypoints, start, goal, gt, workspace, args.clearance_m
         )
         if not expert_ok:
             set_progress(state, "HRRT verification", f"Selected route failed sanity check: {expert_reason}; retrying once.", last_plot, "HRRT verification failed; regenerating one expert route.")
@@ -522,44 +554,57 @@ def run_scoring_job(state, args, form):
             retry_args.seed = args.seed + 1
             retry_family = plan_family(start, goal, gt, workspace, retry_args)
             retry_expert = next(
-                (route for route in retry_family["routes"] if sanity_check_waypoints(route["waypoints"], start, goal, gt, workspace, args.clearance_m)[0]),
+                (route for route in retry_family["routes"] if verify_waypoints(refine_waypoints(route["waypoints"], workspace, gt, args.clearance_m, args.fixed_z), start, goal, gt, workspace, args.clearance_m)[0]),
                 None,
             )
             if retry_expert is None:
                 raise ValueError(f"HRRT route failed refinement verification: {expert_reason}")
             expert = retry_expert
+            expert_waypoints = refine_waypoints(expert["waypoints"], workspace, gt, args.clearance_m, args.fixed_z)
+            expert_ok, expert_reason, expert_metrics = verify_waypoints(expert_waypoints, start, goal, gt, workspace, args.clearance_m)
             expert_reason = "passed after one HRRT refinement retry"
         else:
             expert_reason = "passed"
-        selected_scene = dict(preview, routes=[], selected_waypoints=expert["waypoints"])
+        selected_scene = dict(preview, routes=[], selected_waypoints=expert_waypoints)
         last_plot = plot_scene(selected_scene)
         set_progress(state, "HRRT verification", f"Selected {expert['route_id']} passed sanity verification ({expert_reason}).", last_plot, "Green: verified LLM-selected HRRT expert route.")
         results = {}
         for mode_name, mode_obstacles in (("env_uncertainty", perceived), ("planner_only", gt)):
             set_progress(state, "LLM waypoint generation", f"Generating {mode_name} planner waypoints.", last_plot, "Green: selected HRRT expert route.")
-            raw_predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args)
+            base_prompt = planner_prompt(start, goal, mode_obstacles, workspace, args.clearance_m, l1=l1)
+            raw_predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args, prompt_text=base_prompt)
             live_scene = dict(selected_scene, raw_predicted_waypoints=raw_predicted)
             last_plot = plot_scene(live_scene)
-            raw_ok, raw_reason = sanity_check_waypoints(raw_predicted, start, goal, mode_obstacles, workspace, args.clearance_m)
+            refined_candidate = refine_waypoints(raw_predicted, workspace, mode_obstacles, args.clearance_m, args.fixed_z)
+            raw_ok, raw_reason, raw_metrics = verify_waypoints(refined_candidate, start, goal, mode_obstacles, workspace, args.clearance_m)
             set_progress(state, "Trajectory verification", f"Raw LLM waypoints for {mode_name}: {raw_reason}.", last_plot, "Green: verified HRRT · orange dashed: raw LLM waypoints (always retained).")
             predicted = raw_predicted
             refinement = "not needed"
             if not raw_ok:
-                feedback = f"{mode_name} verification failed: {raw_reason}. Keep the same start and goal, stay inside the workspace, and increase obstacle clearance."
+                feedback = (
+                    "Previous plan failed verification. Regenerate a sparse waypoint plan that fixes the failed "
+                    "metrics while keeping the same start, goal, workspace, and obstacle snapshot.\n"
+                    f"Failed constraints: {', '.join(raw_metrics['failed_constraints']) or 'unknown'}\n"
+                    f"{raw_metrics['feedback_table']}\n"
+                    "Prefer a route with larger obstacle clearance, monotonic goal progress, and smoother segment changes."
+                )
                 set_progress(state, "Refinement feedback (1/1)", f"Sending one verification feedback retry for {mode_name}: {raw_reason}.", last_plot, "Orange dashed: failed raw LLM path · blue: one refined retry when available.")
-                predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args, feedback=feedback)
+                predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args, feedback=feedback, prompt_text=planner_prompt(start, goal, mode_obstacles, workspace, args.clearance_m, l1=l1, feedback=feedback))
+                predicted = refine_waypoints(predicted, workspace, mode_obstacles, args.clearance_m, args.fixed_z)
                 refined_scene = dict(selected_scene, raw_predicted_waypoints=raw_predicted, predicted_waypoints=predicted)
                 last_plot = plot_scene(refined_scene)
-                refined_ok, refined_reason = sanity_check_waypoints(predicted, start, goal, mode_obstacles, workspace, args.clearance_m)
+                refined_ok, refined_reason, refined_metrics = verify_waypoints(predicted, start, goal, mode_obstacles, workspace, args.clearance_m)
                 if not refined_ok:
                     raise ValueError(f"LLM trajectory failed refinement verification in {mode_name}: {refined_reason}")
                 refinement = f"refined once after: {raw_reason}"
             else:
+                predicted = refined_candidate
                 live_scene["predicted_waypoints"] = predicted
                 last_plot = plot_scene(live_scene)
             set_progress(state, "QP optimization", f"Solving paired minimum-control trajectories for {mode_name}.", last_plot, "Verified HRRT and LLM waypoints are being optimized.")
-            scored = score_pair(expert["waypoints"], predicted, args)
-            item = public_result(capture_id, rows, mode_name, l1, l2, expert, raw_predicted, predicted, scored, (gt, mode_obstacles), start, goal, perceived, workspace, {"hrrt": expert_reason, "raw_llm": raw_reason, "llm_refinement": refinement})
+            scored = score_pair(expert_waypoints, predicted, args)
+            result_expert = dict(expert, waypoints=expert_waypoints)
+            item = public_result(capture_id, rows, mode_name, l1, l2, result_expert, raw_predicted, predicted, scored, (gt, mode_obstacles), start, goal, perceived, workspace, {"hrrt": expert_reason, "hrrt_metrics": expert_metrics, "raw_llm": raw_reason, "llm_refinement": refinement})
             item.update({"expert_selector": "openai" if args.intent_provider == "openai" else "mock", "expert_model": args.expert_model if args.intent_provider == "openai" else "", "selection_reason": selection.reason})
             results[mode_name] = item
         with state["lock"]:

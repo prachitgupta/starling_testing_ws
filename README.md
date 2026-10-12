@@ -795,6 +795,17 @@ ros2 launch llm_vision_planner full_plot.launch.py \
 
 Open `http://127.0.0.1:8080`.
 
+For a temporary public reviewer URL, run Cloudflare Quick Tunnel on the same
+machine in a second terminal:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8080
+```
+
+Share the printed `https://*.trycloudflare.com` URL. Keep the ROS launch and
+`cloudflared` terminals running; the URL is unauthenticated and expires when
+the tunnel stops.
+
 1. Use the mode buttons in the left panel to select **Adaptive conformal** or
    **Mission execution**.
 2. In Adaptive conformal mode, enter: `Fly beyond the chair while staying away
@@ -1123,6 +1134,16 @@ address to type into the browser. Select either mode from the left panel before
 submitting the first mission prompt. See Section 11 for the approval walkthrough.
 Add `land_after_complete:=false` to the launch command to hold the final goal
 instead of landing automatically.
+
+For public reviewer access, run this on the same gateway machine in another
+terminal after the launch succeeds:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8080
+```
+
+Share the printed `https://*.trycloudflare.com` URL. Keep both terminals running;
+the URL is temporary and unauthenticated.
 
 ## 13. Generate the residual calibration dataset
 

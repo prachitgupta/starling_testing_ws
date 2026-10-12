@@ -245,6 +245,26 @@ residual_calibration_recorder:
     capture_position_change_threshold_m: 0.15
     capture_yaw_change_threshold_rad: 0.261799
 
+# Offline calibration verifier gateway.  It intentionally reads a refined CSV
+# instead of subscribing to ROS perception topics; command-line arguments can
+# override these values for a particular capture and planner service.
+calibration_verifier_gateway:
+  ros__parameters:
+    dataset: fine_tuning/datasets/calibration_residual_raw_person.csv
+    row: 1
+    host: 127.0.0.1
+    port: 8091
+    planner_provider: mock
+    vllm_base_url: http://127.0.0.1:8000/v1
+    llama_model: hrrt_planner
+    goal_x: 0.0
+    goal_y: 1.5
+    fixed_z: -0.5
+    clearance_m: 0.40
+    hrrt_iterations: 300
+    max_candidates: 8
+    max_waypoints: 8
+
 llm_planner:
   ros__parameters:
     prompt_topic: /llm_vision/prompt

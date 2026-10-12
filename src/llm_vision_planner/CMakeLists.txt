@@ -25,6 +25,7 @@ install(PROGRAMS
   fine_tuning/scripts/lqr.py
   fine_tuning/scripts/residual_calibration_recorder.py
   fine_tuning/scripts/postprocess_residual_calibration.py
+  fine_tuning/scripts/calibration_verifier_gateway.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

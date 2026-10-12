@@ -416,6 +416,57 @@ The launch argument overrides the compatible defaults in
 `config/llm_vision_planner.yaml` for the fixed prompt generator, interactive
 gateway, and Llama planner together.
 
+## 12. Interactive calibration verifier (E versus E-hat)
+
+The calibration verifier is an offline, browser-based companion to the full
+ROS mission gateway. It reads one capture from the refined residual-calibration
+CSV, asks for L1 and L2, generates an HRRT route family, lets a human select the
+expert route, and computes the double-integrator residual score for **both**
+modes:
+
+- `env_uncertainty`: HRRT uses ground-truth `E`; the LLM planner uses perceived
+  `E-hat`.
+- `planner_only`: both planners use ground-truth `E`; perceived geometry is not
+  used around the LLM trajectory.
+
+The displayed safety-tube quantile is intentionally set to the trajectory score
+for this experiment (`q = S`). The `--row` value is one-based over sorted
+`capture_id` groups, not a zero-based CSV line number.
+
+Run with the deterministic mock planner first:
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
+python fine_tuning/scripts/calibration_verifier_gateway.py \
+  --dataset fine_tuning/datasets/calibration_residual_raw_person.csv \
+  --row 1 \
+  --planner-provider mock \
+  --host 127.0.0.1 \
+  --port 8091
+```
+
+Open [http://127.0.0.1:8091](http://127.0.0.1:8091), enter L1/L2, generate
+routes, choose the final HRRT route, and click **Score and plot trajectories**.
+The page reports both scores and overlays the LLM and expert paths, ground-truth
+obstacles, perceived obstacles, and score-radius tubes.
+
+To use the served refined Llama adapter instead of the mock planner:
+
+```bash
+python fine_tuning/scripts/calibration_verifier_gateway.py \
+  --dataset fine_tuning/datasets/calibration_residual_raw_person.csv \
+  --row 1 \
+  --planner-provider vllm \
+  --vllm-base-url http://127.0.0.1:8000/v1 \
+  --llama-model hrrt_planner \
+  --host 127.0.0.1 \
+  --port 8091
+```
+
+Use `--host 0.0.0.0` and the documented `cloudflared` tunnel workflow when
+remote reviewers need access. The same defaults are represented by the
+`calibration_verifier_gateway` section in `config/llm_vision_planner.yaml`.
+
 ## Command help
 
 The commands above expose every supported option. The installed scripts also
@@ -428,4 +479,5 @@ python fine_tuning/scripts/review_hrrt_labels.py --help
 python fine_tuning/scripts/finalize_hrrt_sft_dataset.py --help
 python fine_tuning/scripts/train_hrrt_peft.py --help
 python fine_tuning/scripts/evaluate_hrrt_adapter.py --help
+python fine_tuning/scripts/calibration_verifier_gateway.py --help
 ```

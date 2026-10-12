@@ -31,7 +31,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from hrrt_star import plan_hrrt_star, segment_clear  # noqa: E402
+from hrrt_star import normalize_obstacles, plan_hrrt_star, segment_clear  # noqa: E402
 from min_control_qp import generate_shared_pair  # noqa: E402
 
 
@@ -281,6 +281,7 @@ def choose_expert(routes, obstacles, args):
 def safe_path(waypoints, obstacles, workspace, clearance_m):
     if len(waypoints) < 2:
         return False
+    obstacles = normalize_obstacles(obstacles)
     return all(
         segment_clear(
             (float(first["x"]), float(first["y"])),

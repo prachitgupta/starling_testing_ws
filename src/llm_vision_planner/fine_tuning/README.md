@@ -399,9 +399,10 @@ cd /projects/bhkj/pgupta12/starling_multiple_trajectory_idea
 DISTILLATION_MODE=dss
 ADAPTER_NAME="llama31_8b_hrrt_lora_$DISTILLATION_MODE"
 ADAPTER_DIR="$PWD/src/llm_vision_planner/fine_tuning/outputs/$ADAPTER_NAME"
+ADAPTER_CHECKPOINT="$(dirname "$(find "$ADAPTER_DIR" -name adapter_model.safetensors -print -quit)")"
 
-test -s "$ADAPTER_DIR/adapter_config.json"
-test -s "$ADAPTER_DIR/adapter_model.safetensors"
+test -s "$ADAPTER_CHECKPOINT/adapter_config.json"
+test -s "$ADAPTER_CHECKPOINT/adapter_model.safetensors"
 tar -C "$(dirname "$ADAPTER_DIR")" -czf "$ADAPTER_DIR.tar.gz" "$ADAPTER_NAME"
 exit
 ```
@@ -414,9 +415,9 @@ ssh prachit2@"$GPU_IP"
 ```
 
 Run the following commands at the GPU server prompt. This is intentionally a
-normal one-sided `scp`: the GPU server pulls from NCSA, so you authenticate only
-to NCSA (including Duo) and do not ask the local workstation to authenticate to
-the GPU server a second time:
+one-sided transfer: the GPU server pulls from NCSA, so you authenticate only to
+NCSA (including Duo) and do not ask the local workstation to authenticate to the
+GPU server a second time. `rsync -P` can resume an interrupted transfer:
 
 ```bash
 DISTILLATION_MODE=dss
@@ -425,14 +426,40 @@ NCSA_ARCHIVE="/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_
 GPU_OUTPUTS="/home/prachit2/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs"
 
 mkdir -p "$GPU_OUTPUTS"
-scp pgupta12@dtai-login.delta.ncsa.illinois.edu:"$NCSA_ARCHIVE" "$GPU_OUTPUTS/"
-cd "$GPU_OUTPUTS"
-tar -xzf "$ADAPTER_NAME.tar.gz"
+rsync -avP \
+  pgupta12@dtai-login.delta.ncsa.illinois.edu:"${NCSA_ARCHIVE%.tar.gz}/" \
+  "$GPU_OUTPUTS/$ADAPTER_NAME/"
+find "$GPU_OUTPUTS/$ADAPTER_NAME" -name adapter_config.json -print
+find "$GPU_OUTPUTS/$ADAPTER_NAME" -name adapter_model.safetensors -print
+```
 
-ADAPTER="/home/prachit2/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs/$ADAPTER_NAME"
-MODEL_ALIAS="hrrt_planner_$DISTILLATION_MODE"
+If `rsync` is unavailable, use this non-resumable fallback:
+
+```bash
+scp -r \
+  pgupta12@dtai-login.delta.ncsa.illinois.edu:"${NCSA_ARCHIVE%.tar.gz}/" \
+  "$GPU_OUTPUTS/$ADAPTER_NAME/"
+```
+
+If you already downloaded the tar archive, validate it before extracting. Do
+not use a partial archive after `gzip -t` fails:
+
+```bash
+cd "$GPU_OUTPUTS"
+gzip -t "$ADAPTER_NAME.tar.gz"
+tar -tzf "$ADAPTER_NAME.tar.gz" >/dev/null
+tar -xzf "$ADAPTER_NAME.tar.gz"
+```
+
+Training saves the adapter in a checkpoint subdirectory. Select the directory
+that contains both adapter files, rather than the parent output directory:
+
+```bash
+ADAPTER="$(dirname "$(find "$GPU_OUTPUTS/$ADAPTER_NAME" -name adapter_model.safetensors -print -quit)")"
 test -s "$ADAPTER/adapter_config.json"
 test -s "$ADAPTER/adapter_model.safetensors"
+
+MODEL_ALIAS="hrrt_planner_$DISTILLATION_MODE"
 
 CUDA_VISIBLE_DEVICES=0 vllm serve meta-llama/Meta-Llama-3.1-8B-Instruct \
   --host 0.0.0.0 \

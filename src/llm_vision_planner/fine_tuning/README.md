@@ -170,7 +170,7 @@ python fine_tuning/scripts/review_hrrt_labels.py \
 Terminal 2:
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8090
+./cloudflared tunnel --url http://127.0.0.1:8090 2>&1 | grep -oE 'https://[a-zA-Z0-9-]+.trycloudflare.com'
 ```
 
 Send the printed `https://...trycloudflare.com` URL to reviewers. Keep both
@@ -459,14 +459,16 @@ curl -fsS "$VLLM_BASE_URL/models" | python3 -m json.tool
 ros2 launch llm_vision_planner full_plot.launch.py \
   llm_provider:=llama \
   llama_model_name:="$MODEL_ALIAS" \
-  interaction_mode:=interactive
+  interaction_mode:=interactive \
+  web_ui_host:=0.0.0.0 \
+  web_ui_port:=8081
 ```
 
 To share the interactive mission UI publicly, run this on the same ROS machine
 in a second terminal:
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8080
+./cloudflared tunnel --url http://127.0.0.1:8081 2>&1 | grep -oE 'https://[a-zA-Z0-9-]+.trycloudflare.com'
 ```
 
 Share the printed `https://*.trycloudflare.com` URL. Keep the ROS launch and
@@ -496,7 +498,7 @@ python fine_tuning/scripts/calibration_verifier_gateway.py \
   --row 2 \
   --intent-provider mock \
   --planner-provider mock \
-  --host 127.0.0.1 \
+  --host 0.0.0.0 \
   --port 8091
 ```
 
@@ -515,11 +517,17 @@ python fine_tuning/scripts/calibration_verifier_gateway.py \
   --planner-provider vllm \
   --vllm-base-url http://127.0.0.1:8000/v1 \
   --llama-model hrrt_planner \
-  --host 127.0.0.1 \
+  --host 0.0.0.0 \
   --port 8091
 ```
 
-Use `--host 0.0.0.0` plus the `cloudflared` workflow for remote reviewers.
+For remote reviewers, keep the verifier bound to `0.0.0.0` and run:
+
+```bash
+./cloudflared tunnel --url http://127.0.0.1:8091 2>&1 | grep -oE 'https://[a-zA-Z0-9-]+.trycloudflare.com'
+```
+
+Share the printed URL while the verifier and tunnel processes remain running.
 Defaults are in `config/llm_vision_planner.yaml`.
 
 ## Command help

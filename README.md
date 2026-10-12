@@ -790,16 +790,17 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   llm_provider:=llama \
   llama_model_name:="$LLAMA_MODEL_NAME" \
   visualizer:=contraction \
-  web_ui_host:=127.0.0.1
+  web_ui_host:=0.0.0.0 \
+  web_ui_port:=8081
 ```
 
-Open `http://127.0.0.1:8080`.
+Open `http://127.0.0.1:8081` locally.
 
 For a temporary public reviewer URL, run Cloudflare Quick Tunnel on the same
 machine in a second terminal:
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8080
+./cloudflared tunnel --url http://127.0.0.1:8081 2>&1 | grep -oE 'https://[a-zA-Z0-9-]+.trycloudflare.com'
 ```
 
 Share the printed `https://*.trycloudflare.com` URL. Keep the ROS launch and
@@ -1115,7 +1116,8 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   llama_model_name:="$LLAMA_MODEL_NAME" \
   vicon_objects_json:="$VICON_OBJECTS_JSON" \
   visualizer:=contraction \
-  web_ui_host:=0.0.0.0
+  web_ui_host:=0.0.0.0 \
+  web_ui_port:=8081
 ```
 
 Use the RC kill switch or change PX4/QGroundControl mode to abort.
@@ -1128,7 +1130,7 @@ The vehicle alignment topic is `/vicon/Starling2/Starling2`. `environment:=sim`
 does not use these Vicon inputs and retains the existing simulation behavior.
 
 From another device on the same network, open
-`http://<ground-station-lan-ip>:8080` once `/llm_vision/mission_state` reports
+`http://<ground-station-lan-ip>:8081` once `/llm_vision/mission_state` reports
 `HOLDING_FOR_PLAN`. The `0.0.0.0` value is the server bind address, not the
 address to type into the browser. Select either mode from the left panel before
 submitting the first mission prompt. See Section 11 for the approval walkthrough.
@@ -1139,7 +1141,7 @@ For public reviewer access, run this on the same gateway machine in another
 terminal after the launch succeeds:
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8080
+./cloudflared tunnel --url http://127.0.0.1:8081 2>&1 | grep -oE 'https://[a-zA-Z0-9-]+.trycloudflare.com'
 ```
 
 Share the printed `https://*.trycloudflare.com` URL. Keep both terminals running;

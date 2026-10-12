@@ -157,7 +157,7 @@ def plan_family(start, goal, obstacles, workspace, args):
     )
 
 
-def planner_waypoints(start, goal, planning_obstacles, workspace, l1, args):
+def planner_waypoints(start, goal, planning_obstacles, workspace, l1, args, feedback=""):
     if args.planner_provider == "mock":
         family = plan_family(start, goal, planning_obstacles, workspace, args)
         return min(family["routes"], key=lambda route: (route["path_length_m"], route["route_id"]))["waypoints"]
@@ -168,8 +168,31 @@ def planner_waypoints(start, goal, planning_obstacles, workspace, l1, args):
         clearance_m=args.clearance_m,
     )
     return vllm_predicted_waypoints(
-        start, goal, planning_obstacles, workspace, l1, planner_args
+        start, goal, planning_obstacles, workspace, l1, planner_args,
+        feedback=feedback, validate=False,
     )
+
+
+def sanity_check_waypoints(waypoints, start, goal, obstacles, workspace, clearance):
+    """Deterministic verifier shared by HRRT and LLM candidates."""
+    if not isinstance(waypoints, list) or len(waypoints) < 2 or len(waypoints) > 8:
+        return False, "waypoint count must be between 2 and 8"
+    for index, point in enumerate(waypoints):
+        try:
+            values = [float(point[key]) for key in ("x", "y", "z")]
+        except (KeyError, TypeError, ValueError):
+            return False, f"waypoint {index + 1} is missing finite x/y/z values"
+        if not all(math.isfinite(value) for value in values):
+            return False, f"waypoint {index + 1} contains a non-finite value"
+        if not (workspace["x"][0] <= values[0] <= workspace["x"][1] and workspace["y"][0] <= values[1] <= workspace["y"][1]):
+            return False, f"waypoint {index + 1} is outside the planning workspace"
+    if any(abs(float(waypoints[0][key]) - float(start[key])) > 1e-3 for key in ("x", "y", "z")):
+        return False, "first waypoint does not equal the approved start"
+    if any(abs(float(waypoints[-1][key]) - float(goal[key])) > 1e-3 for key in ("x", "y", "z")):
+        return False, "last waypoint does not equal the approved goal"
+    if not safe_path(waypoints, obstacles, workspace, clearance):
+        return False, "segment clearance check failed"
+    return True, "passed"
 
 
 def score_pair(expert_waypoints, predicted_waypoints, args):
@@ -199,7 +222,7 @@ def score_pair(expert_waypoints, predicted_waypoints, args):
     }
 
 
-def public_result(capture_id, rows, mode, l1, l2, expert, predicted, result, environments_used, start, goal, perceived, workspace):
+def public_result(capture_id, rows, mode, l1, l2, expert, raw_predicted, predicted, result, environments_used, start, goal, perceived, workspace, verification):
     return {
         "capture_id": capture_id,
         "session_id": rows[0].get("session_id", ""),
@@ -209,6 +232,8 @@ def public_result(capture_id, rows, mode, l1, l2, expert, predicted, result, env
         "expert_waypoints": expert["waypoints"],
         "expert_route_id": expert["route_id"],
         "predicted_waypoints": predicted,
+        "raw_predicted_waypoints": raw_predicted,
+        "verification": verification,
         "start": start,
         "goal": goal,
         "score": result["score"],
@@ -287,8 +312,8 @@ def html_page(state, args, message=""):
             f"(q = {item['tube_quantile']:.5f} m)</p>"
             for name, item in results.items()
         )
-    stage_hint = "" if view_error else ("Final view: selected HRRT and LLM trajectories with QP-optimized samples and score tubes." if result else ("Select an HRRT route above; all generated candidates are shown in the plot." if routes else "Dataset scene loaded: red is ground truth, orange is perceived, and the blue marker is the drone pose."))
-    legend = "" if view_error else f"{stage_hint} Red: ground-truth obstacle · orange dashed: perceived obstacle · blue marker: drone pose · gold marker: proposed goal."
+    stage_hint = "" if view_error else ("Final view: verified HRRT and refined LLM trajectories with QP-optimized samples and score tubes." if result else ("Select an HRRT route above; all generated candidates are shown in the plot." if routes else "Dataset scene loaded: red is ground truth, orange is perceived, and the blue marker is the drone pose."))
+    legend = "" if view_error else f"{stage_hint} Red: ground-truth obstacle · orange dashed box: perceived obstacle · green: HRRT · orange dashed path: raw LLM · blue: refined LLM · blue marker: drone · gold marker: goal."
     message_block = f"<p class='error'>{html.escape(message)}</p>" if message.startswith("Error:") else f"<p class='hint'>{html.escape(message)}</p>"
     goal = state.get("goal")
     if goal:
@@ -362,7 +387,7 @@ def plot_scene(scene):
         points.append((float(scene["goal"]["x"]), float(scene["goal"]["y"])))
     for route in scene.get("routes", []):
         points.extend((float(p["x"]), float(p["y"])) for p in route["waypoints"])
-    for key in ("selected_waypoints", "predicted_waypoints"):
+    for key in ("selected_waypoints", "predicted_waypoints", "raw_predicted_waypoints"):
         points.extend((float(p["x"]), float(p["y"])) for p in scene.get(key, []))
     for obstacle in obstacles:
         points.extend(((float(obstacle["min_corner"][0]), float(obstacle["min_corner"][1])), (float(obstacle["max_corner"][0]), float(obstacle["max_corner"][1]))))
@@ -374,9 +399,10 @@ def plot_scene(scene):
     width, height, pad = 900, 650, 62
     def xy(point):
         return (pad + (point[0] - min_x) / max(max_x - min_x, 1e-6) * (width - 2 * pad), height - pad - (point[1] - min_y) / max(max_y - min_y, 1e-6) * (height - 2 * pad))
-    def polyline(waypoints, color, width_px=3):
+    def polyline(waypoints, color, width_px=3, dash=""):
         coords = " ".join(f"{xy((float(p['x']), float(p['y'])))[0]:.1f},{xy((float(p['x']), float(p['y'])))[1]:.1f}" for p in waypoints)
-        return f"<polyline points='{coords}' fill='none' stroke='{color}' stroke-width='{width_px}' stroke-opacity='.75'/>"
+        dash_attr = f" stroke-dasharray='{dash}'" if dash else ""
+        return f"<polyline points='{coords}' fill='none' stroke='{color}' stroke-width='{width_px}' stroke-opacity='.75'{dash_attr}/>"
     shapes = []
     for obstacle in scene["ground_truth_obstacles"]:
         x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
@@ -391,6 +417,8 @@ def plot_scene(scene):
     route_lines = "".join(polyline(route["waypoints"], route_colors[i % len(route_colors)]) for i, route in enumerate(scene.get("routes", [])))
     if scene.get("selected_waypoints"):
         route_lines += polyline(scene["selected_waypoints"], "#16a34a", 6)
+    if scene.get("raw_predicted_waypoints"):
+        route_lines += polyline(scene["raw_predicted_waypoints"], "#f97316", 5, "8 5")
     if scene.get("predicted_waypoints"):
         route_lines += polyline(scene["predicted_waypoints"], "#2563eb", 6)
     start_x, start_y = xy((float(scene["start"]["x"]), float(scene["start"]["y"])))
@@ -403,8 +431,8 @@ def plot_scene(scene):
 
 def plot_svg(result):
     points = []
-    for key in ("expert_waypoints", "predicted_waypoints"):
-        points += [(float(p["x"]), float(p["y"])) for p in result[key]]
+    for key in ("expert_waypoints", "predicted_waypoints", "raw_predicted_waypoints"):
+        points += [(float(p["x"]), float(p["y"])) for p in result.get(key, [])]
     for key in ("start", "goal"):
         if result.get(key):
             points.append((float(result[key]["x"]), float(result[key]["y"])))
@@ -418,9 +446,10 @@ def plot_svg(result):
     width, height, pad = 900, 650, 62
     def xy(point):
         return (pad + (point[0] - min_x) / max(max_x - min_x, 1e-6) * (width - 2 * pad), height - pad - (point[1] - min_y) / max(max_y - min_y, 1e-6) * (height - 2 * pad))
-    def polyline(waypoints, color, width_px=4):
+    def polyline(waypoints, color, width_px=4, dash=""):
         coords = " ".join(f"{xy((float(p['x']), float(p['y'])))[0]:.1f},{xy((float(p['x']), float(p['y'])))[1]:.1f}" for p in waypoints)
-        return f"<polyline points='{coords}' fill='none' stroke='{color}' stroke-width='{width_px}'/>"
+        dash_attr = f" stroke-dasharray='{dash}'" if dash else ""
+        return f"<polyline points='{coords}' fill='none' stroke='{color}' stroke-width='{width_px}'{dash_attr}/>"
     scale = min(width / (max_x - min_x), height / (max_y - min_y))
     def tube(samples, color):
         radius = float(result["tube_quantile"]) * scale
@@ -446,6 +475,7 @@ def plot_svg(result):
         f"{grid}{''.join(shapes)}{tube(result['expert_samples'], '#16a34a')}"
         f"{tube(result['predicted_samples'], '#2563eb')}"
         f"{polyline(result['expert_waypoints'], '#16a34a')}"
+        f"{polyline(result.get('raw_predicted_waypoints', []), '#f97316', 4, '8 5')}"
         f"{polyline(result['predicted_waypoints'], '#2563eb')}"
         f"<circle cx='{xy((float(result['start']['x']), float(result['start']['y'])))[0]:.1f}' cy='{xy((float(result['start']['x']), float(result['start']['y'])))[1]:.1f}' r='9' fill='#2563eb' stroke='#fff' stroke-width='2'/><circle cx='{xy((float(result['goal']['x']), float(result['goal']['y'])))[0]:.1f}' cy='{xy((float(result['goal']['x']), float(result['goal']['y'])))[1]:.1f}' r='9' fill='#eab308' stroke='#111827' stroke-width='2'/>"
         f"<text x='15' y='25' fill='#111827'>q={result['tube_quantile']:.3f} m</text></svg>"
@@ -483,21 +513,53 @@ def run_scoring_job(state, args, form):
         expert = next((route for route in routes if str(route["route_id"]) == str(selection.selected_route_id)), None)
         if expert is None:
             raise ValueError("the LLM selector returned a route outside the displayed HRRT family")
+        expert_ok, expert_reason = sanity_check_waypoints(
+            expert["waypoints"], start, goal, gt, workspace, args.clearance_m
+        )
+        if not expert_ok:
+            set_progress(state, "HRRT verification", f"Selected route failed sanity check: {expert_reason}; retrying once.", last_plot, "HRRT verification failed; regenerating one expert route.")
+            retry_args = SimpleNamespace(**vars(args))
+            retry_args.seed = args.seed + 1
+            retry_family = plan_family(start, goal, gt, workspace, retry_args)
+            retry_expert = next(
+                (route for route in retry_family["routes"] if sanity_check_waypoints(route["waypoints"], start, goal, gt, workspace, args.clearance_m)[0]),
+                None,
+            )
+            if retry_expert is None:
+                raise ValueError(f"HRRT route failed refinement verification: {expert_reason}")
+            expert = retry_expert
+            expert_reason = "passed after one HRRT refinement retry"
+        else:
+            expert_reason = "passed"
         selected_scene = dict(preview, routes=[], selected_waypoints=expert["waypoints"])
         last_plot = plot_scene(selected_scene)
-        set_progress(state, "Expert route selected", f"Selected {expert['route_id']}: {selection.reason}", last_plot, "Green: LLM-selected HRRT expert route.")
+        set_progress(state, "HRRT verification", f"Selected {expert['route_id']} passed sanity verification ({expert_reason}).", last_plot, "Green: verified LLM-selected HRRT expert route.")
         results = {}
         for mode_name, mode_obstacles in (("env_uncertainty", perceived), ("planner_only", gt)):
             set_progress(state, "LLM waypoint generation", f"Generating {mode_name} planner waypoints.", last_plot, "Green: selected HRRT expert route.")
-            predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args)
-            live_scene = dict(selected_scene, predicted_waypoints=predicted)
+            raw_predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args)
+            live_scene = dict(selected_scene, raw_predicted_waypoints=raw_predicted)
             last_plot = plot_scene(live_scene)
-            set_progress(state, "Trajectory verification", f"Checking raw LLM waypoints for {mode_name}.", last_plot, "Green: HRRT expert · blue: raw LLM waypoints, shown even if verification fails.")
-            if not safe_path(predicted, mode_obstacles, workspace, args.clearance_m):
-                raise ValueError(f"LLM trajectory failed collision checking in {mode_name}")
+            raw_ok, raw_reason = sanity_check_waypoints(raw_predicted, start, goal, mode_obstacles, workspace, args.clearance_m)
+            set_progress(state, "Trajectory verification", f"Raw LLM waypoints for {mode_name}: {raw_reason}.", last_plot, "Green: verified HRRT · orange dashed: raw LLM waypoints (always retained).")
+            predicted = raw_predicted
+            refinement = "not needed"
+            if not raw_ok:
+                feedback = f"{mode_name} verification failed: {raw_reason}. Keep the same start and goal, stay inside the workspace, and increase obstacle clearance."
+                set_progress(state, "Refinement feedback (1/1)", f"Sending one verification feedback retry for {mode_name}: {raw_reason}.", last_plot, "Orange dashed: failed raw LLM path · blue: one refined retry when available.")
+                predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args, feedback=feedback)
+                refined_scene = dict(selected_scene, raw_predicted_waypoints=raw_predicted, predicted_waypoints=predicted)
+                last_plot = plot_scene(refined_scene)
+                refined_ok, refined_reason = sanity_check_waypoints(predicted, start, goal, mode_obstacles, workspace, args.clearance_m)
+                if not refined_ok:
+                    raise ValueError(f"LLM trajectory failed refinement verification in {mode_name}: {refined_reason}")
+                refinement = f"refined once after: {raw_reason}"
+            else:
+                live_scene["predicted_waypoints"] = predicted
+                last_plot = plot_scene(live_scene)
             set_progress(state, "QP optimization", f"Solving paired minimum-control trajectories for {mode_name}.", last_plot, "Verified HRRT and LLM waypoints are being optimized.")
             scored = score_pair(expert["waypoints"], predicted, args)
-            item = public_result(capture_id, rows, mode_name, l1, l2, expert, predicted, scored, (gt, mode_obstacles), start, goal, perceived, workspace)
+            item = public_result(capture_id, rows, mode_name, l1, l2, expert, raw_predicted, predicted, scored, (gt, mode_obstacles), start, goal, perceived, workspace, {"hrrt": expert_reason, "raw_llm": raw_reason, "llm_refinement": refinement})
             item.update({"expert_selector": "openai" if args.intent_provider == "openai" else "mock", "expert_model": args.expert_model if args.intent_provider == "openai" else "", "selection_reason": selection.reason})
             results[mode_name] = item
         with state["lock"]:

@@ -307,7 +307,7 @@ def mock_predicted_waypoints(start, goal, perceived, workspace, args):
     return min(payload["routes"], key=lambda route: (route["path_length_m"], route["route_id"]))["waypoints"]
 
 
-def vllm_predicted_waypoints(start, goal, perceived, workspace, l1_text, args):
+def vllm_predicted_waypoints(start, goal, perceived, workspace, l1_text, args, feedback="", validate=True):
     try:
         import instructor
         from openai import OpenAI
@@ -337,6 +337,8 @@ def vllm_predicted_waypoints(start, goal, perceived, workspace, l1_text, args):
         "workspace": workspace,
         "perceived_obstacles": perceived,
     }
+    if feedback:
+        request["verification_feedback"] = feedback
     plan = client.chat.completions.create(
         model=args.llama_model,
         response_model=Plan,
@@ -344,7 +346,9 @@ def vllm_predicted_waypoints(start, goal, perceived, workspace, l1_text, args):
             "role": "user",
             "content": (
                 "Return sparse collision-free NED waypoints using only the supplied perceived environment. "
-                "The first and last waypoints must equal start and goal.\n" + compact(request)
+                "The first and last waypoints must equal start and goal. "
+                "If verification feedback is supplied, correct that failure while preserving the approved task.\n"
+                + compact(request)
             ),
         }],
         temperature=0.0,
@@ -352,7 +356,7 @@ def vllm_predicted_waypoints(start, goal, perceived, workspace, l1_text, args):
     waypoints = [item.model_dump() for item in plan.waypoints]
     waypoints[0] = dict(start)
     waypoints[-1] = dict(goal)
-    if not safe_path(waypoints, perceived, workspace, args.clearance_m):
+    if validate and not safe_path(waypoints, perceived, workspace, args.clearance_m):
         raise ValueError("Llama returned a path that fails perceived-environment collision checking")
     return waypoints
 

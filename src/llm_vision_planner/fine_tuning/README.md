@@ -513,8 +513,12 @@ python3 fine_tuning/scripts/calibration_verifier_gateway.py \
 Open [http://127.0.0.1:8091](http://127.0.0.1:8091), enter L1 and propose a goal.
 Accept, reject, or replace it manually; only then is HRRT generation enabled.
 Review the plotted candidates, enter L2, then let the selector choose the expert
-route and score. Raw LLM waypoints remain visible at verification, including an
-invalid trajectory, before the final QP/tube plot replaces them.
+route and score. Both the selected HRRT route and the LLM route pass deterministic
+sanity/collision verification. A failed LLM route stays on the plot in orange
+dashes; the verifier sends exactly one feedback retry, shown in blue. QP
+optimization and residual scoring run only after the HRRT and (possibly refined)
+LLM routes pass. The final JSON records raw/refined waypoints and verification
+reasons.
 
 To use the served refined Llama adapter instead of the mock planner:
 

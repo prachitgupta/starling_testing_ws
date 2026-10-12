@@ -509,13 +509,14 @@ paths, both obstacle geometries, and score-radius tubes.
 To use the served refined Llama adapter instead of the mock planner:
 
 ```bash
+GPU_IP=<gpu-server-ip-or-hostname>
 python fine_tuning/scripts/calibration_verifier_gateway.py \
   --dataset fine_tuning/datasets/calibration_residual_raw_person.csv \
   --row 2 \
   --intent-provider openai \
   --intent-model gpt-5.4-nano \
   --planner-provider vllm \
-  --vllm-base-url http://127.0.0.1:8000/v1 \
+  --vllm-base-url http://$GPU_IP:8000/v1 \
   --llama-model hrrt_planner \
   --host 0.0.0.0 \
   --port 8091

@@ -388,27 +388,96 @@ The report includes structured-output validity, reasoning-schema validity,
 geometric feasibility, selected-route agreement, endpoint error, and mean path
 error.
 
-## 11. Download and select an adapter at launch
+## 11. Transfer the NCSA adapter to the GPU server and serve it
 
-Run on the computer that will serve Llama:
+First package the trained adapter on NCSA. Set `DISTILLATION_MODE` to the mode
+that was actually trained (`dss` or `dss_scott`):
 
 ```bash
-cd ~/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs
+ssh pgupta12@dtai-login.delta.ncsa.illinois.edu
+cd /projects/bhkj/pgupta12/starling_multiple_trajectory_idea
 DISTILLATION_MODE=dss
-scp pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/llama31_8b_hrrt_lora_$DISTILLATION_MODE.tar.gz .
-tar -xzf "llama31_8b_hrrt_lora_$DISTILLATION_MODE.tar.gz"
-test -s "llama31_8b_hrrt_lora_$DISTILLATION_MODE/adapter_config.json"
-test -s "llama31_8b_hrrt_lora_$DISTILLATION_MODE/adapter_model.safetensors"
+ADAPTER_NAME="llama31_8b_hrrt_lora_$DISTILLATION_MODE"
+ADAPTER_DIR="$PWD/src/llm_vision_planner/fine_tuning/outputs/$ADAPTER_NAME"
+
+test -s "$ADAPTER_DIR/adapter_config.json"
+test -s "$ADAPTER_DIR/adapter_model.safetensors"
+tar -C "$(dirname "$ADAPTER_DIR")" -czf "$ADAPTER_DIR.tar.gz" "$ADAPTER_NAME"
+exit
 ```
 
-Serve the selected adapter with an OpenAI-compatible model alias, for example
-`hrrt_planner_dss` or `hrrt_planner_dss_scott`. Then pass that same alias to the
-ROS launch file:
+On the local workstation, define the destination GPU address and transfer the
+archive from NCSA to the `prachit2` account. `scp -3` routes the transfer through
+the local workstation, so the NCSA login node does not need direct access to the
+GPU server:
 
 ```bash
+GPU_IP=<gpu-server-ip-or-hostname>
+DISTILLATION_MODE=dss
+ADAPTER_NAME="llama31_8b_hrrt_lora_$DISTILLATION_MODE"
+NCSA_ARCHIVE="/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/$ADAPTER_NAME.tar.gz"
+GPU_OUTPUTS="/home/prachit2/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs"
+
+ssh prachit2@"$GPU_IP" "mkdir -p '$GPU_OUTPUTS'"
+scp -3 \
+  pgupta12@dtai-login.delta.ncsa.illinois.edu:"$NCSA_ARCHIVE" \
+  prachit2@"$GPU_IP":"$GPU_OUTPUTS/"
+```
+
+Log in to the GPU server, unpack and verify the adapter, then start vLLM. The
+adapter alias supplied to `--lora-modules`, `--served-model-name`, and the ROS
+launch must be identical:
+
+```bash
+ssh prachit2@"$GPU_IP"
+cd /home/prachit2/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs
+DISTILLATION_MODE=dss
+ADAPTER_NAME="llama31_8b_hrrt_lora_$DISTILLATION_MODE"
+tar -xzf "$ADAPTER_NAME.tar.gz"
+
+ADAPTER="/home/prachit2/starling_testing_ws/src/llm_vision_planner/fine_tuning/outputs/$ADAPTER_NAME"
+MODEL_ALIAS="hrrt_planner_$DISTILLATION_MODE"
+test -s "$ADAPTER/adapter_config.json"
+test -s "$ADAPTER/adapter_model.safetensors"
+
+CUDA_VISIBLE_DEVICES=0 vllm serve meta-llama/Meta-Llama-3.1-8B-Instruct \
+  --host 0.0.0.0 \
+  --enable-lora \
+  --max-lora-rank 128 \
+  --lora-modules "$MODEL_ALIAS=$ADAPTER" \
+  --served-model-name "$MODEL_ALIAS" \
+  --dtype float16 \
+  --gpu-memory-utilization 0.80 \
+  --max-model-len 4096 \
+  --port 8000
+```
+
+This is the HRRT equivalent of the earlier `rrt_planner` command. If vLLM is
+not already installed on the GPU server, activate its Python environment and
+install `vllm` first. The Hugging Face account on that server must also have
+access to `meta-llama/Meta-Llama-3.1-8B-Instruct`.
+
+From a second GPU-server terminal, verify that the adapter alias is advertised:
+
+```bash
+curl -fsS http://127.0.0.1:8000/v1/models | python3 -m json.tool
+```
+
+Finally, on the machine running ROS, set the GPU address and confirm that vLLM
+is reachable. Set `llm_planner.ros__parameters.vllm_base_url` in
+`config/llm_vision_planner.yaml` to the displayed URL, then pass the same model
+alias to the launch file:
+
+```bash
+GPU_IP=<gpu-server-ip-or-hostname>
+DISTILLATION_MODE=dss
+MODEL_ALIAS="hrrt_planner_$DISTILLATION_MODE"
+VLLM_BASE_URL="http://$GPU_IP:8000/v1"
+curl -fsS "$VLLM_BASE_URL/models" | python3 -m json.tool
+
 ros2 launch llm_vision_planner full_plot.launch.py \
   llm_provider:=llama \
-  llama_model_name:=hrrt_planner_dss \
+  llama_model_name:="$MODEL_ALIAS" \
   interaction_mode:=interactive
 ```
 

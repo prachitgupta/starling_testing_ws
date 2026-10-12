@@ -984,7 +984,7 @@ ros2 daemon start
 
 printenv ROS_DOMAIN_ID RMW_IMPLEMENTATION ROS_LOCALHOST_ONLY
 ros2 topic list | sort | grep -E \
-  '^(/tof_pc|/voa_pc_out|/tflite|/tflite_data|/fmu/out/vehicle_odometry|/llm_vision/(semantic_obstacles|obstacles)|/tf|/tf_static)$'
+  '^(/hires_small_color|/tof_pc|/tflite|/fmu/out/vehicle_odometry|/llm_vision/(semantic_obstacles|obstacles)|/tf|/tf_static)$'
 ros2 topic hz /tof_pc
 ros2 topic hz /llm_vision/semantic_obstacles
 ```
@@ -993,32 +993,21 @@ Both `ros2 topic hz` commands must receive messages. Stop each check with
 `Ctrl+C`. If `/tof_pc` is missing, do not start the experiment: the bag would not
 contain the raw depth data required for later point-cloud work.
 
-Record raw sensor inputs, synchronized pose/frames, the optional VOA cloud, and
-both custom obstacle outputs:
+Record the three reproduction topics:
 
 ```bash
 mkdir -p ~/rosbags
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BAG_DIR="$HOME/rosbags/perception-$STAMP"
 
-ros2 bag record --storage mcap --output "$BAG_DIR" \
+ros2 bag record -O "$BAG_DIR" \
+  /hires_small_color \
   /tof_pc \
-  /tflite_data \
-  /tflite \
-  /fmu/out/vehicle_odometry \
-  /tf \
-  /tf_static \
-  /voa_pc_out \
-  /llm_vision/semantic_obstacles \
-  /llm_vision/obstacles
+  /tflite
 ```
 
-Leave this terminal running for the entire scene or flight. Press `Ctrl+C` once
-to stop and allow rosbag2 to finish its metadata. Do not power off or disconnect
-the recorder while it is closing the bag. Topics not published by a particular
-configuration may remain at zero messages; `/tof_pc`, `/tflite_data`,
-`/fmu/out/vehicle_odometry`, and `/llm_vision/semantic_obstacles` are required for
-this perception pipeline.
+Keep recording for the scene or flight. Press `Ctrl+C` once and wait for bag
+metadata to finish. Required: `/hires_small_color`, `/tof_pc`, `/tflite`.
 
 Verify the recording before moving or deleting it:
 
@@ -1027,9 +1016,7 @@ ros2 bag info "$BAG_DIR"
 du -sh "$BAG_DIR"
 ```
 
-The bag information must show non-zero message counts for the four required
-topics. Copy the complete bag directory, including `metadata.yaml` and every
-`.mcap` file, from the recorder to the analysis computer:
+Confirm non-zero counts, then copy the complete bag directory:
 
 ```bash
 rsync -av --progress "$BAG_DIR/" \
@@ -1037,8 +1024,17 @@ rsync -av --progress "$BAG_DIR/" \
 ```
 
 Replace `USER@ANALYSIS_COMPUTER` with the analysis computer's SSH login and
-network address. When using Option B DDS, omit `ros_wifi_dds.sh enable` and use
-the Option B environment from Section 1 on the recorder as well.
+address. For Option B DDS, omit `ros_wifi_dds.sh enable`.
+
+Replay from this worktree:
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+BAG_DIR="$(ls -td "$HOME"/rosbags/perception-* | head -1)"
+ros2 bag play "$BAG_DIR" --clock
+```
 
 ### Open the live perception plot
 
@@ -1342,33 +1338,31 @@ mkdir -p ~/rosbags
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BAG_DIR="$HOME/rosbags/person-calibration-$STAMP"
 
-ros2 bag record --storage mcap --output "$BAG_DIR" \
+ros2 bag record -O "$BAG_DIR" \
+  /hires_small_color \
   /tof_pc \
-  /tflite_data \
-  /tflite \
-  /fmu/out/vehicle_odometry \
-  /tf \
-  /tf_static \
-  /voa_pc_out \
-  /llm_vision/semantic_obstacles \
-  /llm_vision/obstacles \
-  /vicon/person/person \
-  /vicon/Starling2/Starling2 \
-  /llm_vision/vision_calibration_status \
-  /llm_vision/mission_state
+  /tflite
 ```
 
-Keep rosbag running throughout data collection. After landing, press `Ctrl+C`
-once in the rosbag terminal and verify the result with:
+Keep recording during collection. After landing, press `Ctrl+C` once and verify:
 
 ```bash
 ros2 bag info "$BAG_DIR"
 du -sh "$BAG_DIR"
 ```
 
-The bag must contain non-zero counts for `/tof_pc`, `/tflite_data`,
-`/fmu/out/vehicle_odometry`, `/llm_vision/semantic_obstacles`, and
-`/vicon/person/person`.
+The bag must contain non-zero counts for `/hires_small_color`, `/tof_pc`, and
+`/tflite`.
+
+Replay from this worktree:
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+BAG_DIR="$(ls -td "$HOME"/rosbags/person-calibration-* | head -1)"
+ros2 bag play "$BAG_DIR" --clock
+```
 
 In a monitor terminal:
 

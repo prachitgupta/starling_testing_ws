@@ -1,19 +1,15 @@
 # HRRT preference-conditioned Llama fine-tuning
 
-This workflow distills an HRRT-star teacher into a Llama waypoint planner. Llama
-receives only the deployment scene, human preference, and safety constraints. It
-never receives route cards or candidate routes.
+Distill HRRT-star route preferences into a Llama waypoint planner. The deployed
+model receives scene geometry, human preference, and safety constraints only.
 
 Two dataset modes are available:
 
-- `dss`: full-plan supervision plus a sampled reasoning-only auxiliary task.
-- `dss_scott`: a minimal SCOTT-style extension of the DSS data with paired positive/counterfactual
-  rationale-conditioned waypoint tasks. Counterfactual HRRT routes are verified
-  safe and appear only in explicitly prefixed auxiliary training tasks.
+- `dss`: full-plan plus reasoning-only auxiliary supervision.
+- `dss_scott`: DSS plus paired safe positive/counterfactual rationale tasks.
 
-`dss_scott` intentionally keeps the existing standard LoRA/SFT formulation. It
-tests SCOTT's counterfactual-conditioning idea without implementing the paper's
-token-level contrastive decoder or a new custom loss.
+Both modes use the existing LoRA/SFT loss; `dss_scott` does not add a
+token-level contrastive decoder or custom loss.
 
 Both modes keep the deployed response unchanged:
 
@@ -21,7 +17,7 @@ Both modes keep the deployed response unchanged:
 {"reasoning":"Preference: ... Geometry: ... Decision: ... Safety: ...","waypoints":[{"x":0,"y":0,"z":-0.5}]}
 ```
 
-Run stages 1–5 on the local workstation. Run stages 6–10 on NCSA DeltaAI.
+Run stages 1–5 locally; run stages 6–10 on NCSA DeltaAI.
 
 ## 1. Enter the correct worktree and install data-generation dependencies
 
@@ -34,11 +30,9 @@ export OPENAI_API_KEY=YOUR_KEY
 TEACHER_MODEL=gpt-6-luna
 ```
 
-Use `gpt-6-luna` for lower-cost, high-volume generation. For a stronger but
-more expensive teacher, set `TEACHER_MODEL=gpt-6.1-sol` instead.
+Use `gpt-6-luna` for volume; use `gpt-6.1-sol` for a stronger teacher.
 
-Choose one mode. Keep the two modes in different directories so raw labels,
-reviews, splits, adapters, and metrics cannot overwrite each other.
+Choose one mode and keep each mode in its own directory.
 
 ```bash
 DISTILLATION_MODE=dss
@@ -56,8 +50,7 @@ mkdir -p "$DATASET_ROOT"
 
 ## 2. Smoke-test the selected mode without API calls
 
-This command intentionally spells out every generator option. `--teacher mock`
-uses deterministic labels and does not require `OPENAI_API_KEY`.
+Smoke test without API calls; `--teacher mock` is deterministic.
 
 ```bash
 python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
@@ -81,30 +74,21 @@ python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
 wc -l "$DATASET_ROOT/hrrt_teacher_smoke.jsonl"
 ```
 
-`--min-obstacles` and `--max-obstacles` accept values from `0` through `4`.
-Use at least `1` for useful HRRT preference data: zero-obstacle scenes normally
-fail the generator's non-trivial-route check because the direct start-to-goal
-segment is clear.
+Obstacle counts may be `0`–`4`; use at least `1` for non-trivial routes.
 
-Synthetic teacher-data scenes use only the three deployment test classes:
-`person`, `chair`, and `stop_sign`. If a scene contains four obstacles, one of
-these classes is repeated with a distinct object ID.
+Synthetic scenes use `person`, `chair`, and `stop_sign`; four-obstacle scenes
+repeat one class with a new object ID.
 
-Add `--resume` only when continuing the same output file. Resume refuses to mix
-`dss` and `dss_scott` records. Without `--resume`, an existing output file is
-replaced.
+Use `--resume` only for the same file and mode; otherwise the output is replaced.
 
 ## 3. Generate teacher labels
 
-The teacher sees the full scene, route cards, and candidate waypoints. DSS uses
-one API call per preference to select and explain a route. DSS-SCOTT uses two:
-one route-selection call followed by an answer-conditioned rationale call with
-the positive and safe counterfactual trajectories fixed. For 2,000 scenes and
-six preferences, this is 12,000 DSS calls or 24,000 DSS-SCOTT calls.
+The teacher sees the full scene and route candidates. DSS uses one API call per
+preference; DSS-SCOTT uses route selection plus rationale conditioning. For
+2,000 scenes × 6 preferences: 12,000 DSS or 24,000 DSS-SCOTT calls.
 
-The Llama-facing explanation cannot mention route IDs, cards, candidates, or
-unavailable comparisons. Invalid explanations fall back to a deterministic
-scene-grounded template.
+Llama-facing reasoning excludes route IDs/cards/candidates; invalid output uses
+a deterministic scene-grounded fallback.
 
 ```bash
 python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
@@ -129,10 +113,8 @@ python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
   --resume
 ```
 
-If interrupted, rerun exactly the same command. Resume removes only an incomplete
-scene before continuing, so a scene cannot contain a partial preference set. A
-one-obstacle scene has five valid preferences (there is no second object for the
-close-to-object preference), and resume retains that five-row scene as complete.
+If interrupted, rerun the same command. Resume removes only an incomplete scene;
+one-obstacle scenes may contain five valid preferences.
 
 Create scene-isolated review assignments:
 
@@ -146,8 +128,8 @@ python fine_tuning/scripts/build_hrrt_human_audit.py \
   --seed 42
 ```
 
-Every validation and test label, plus a stratified training sample, is assigned
-to human review. Splits are made by scene rather than individual preference row.
+Validation/test labels and a stratified training sample are reviewed. Splits are
+scene-isolated.
 
 ## 4. Review teacher labels and reasoning
 
@@ -160,24 +142,19 @@ python fine_tuning/scripts/review_hrrt_labels.py \
   --port 8090
 ```
 
-Open [http://127.0.0.1:8090](http://127.0.0.1:8090). For every assignment:
+Open [http://127.0.0.1:8090](http://127.0.0.1:8090). For each assignment:
 
 1. Read the human preference, audit reason, and Llama-facing reason.
 2. Compare the colored route plot and route metrics.
 3. Accept the teacher, choose a corrected route, or mark the sample ambiguous.
-4. A corrected route requires a human reason. Prefer the same compact structure:
-   `Preference`, `Geometry`, `Decision`, and `Safety`.
+4. Give corrected routes a reason using `Preference`, `Geometry`, `Decision`, and `Safety`.
 
-The UI saves after every decision. A valid human reason overrides the teacher
-reason. If a corrected route has an unusable reason, finalization constructs a
-factual deterministic explanation for the corrected route. Ambiguous rows are
-removed.
+The UI saves each decision; valid human reasons override teacher reasons.
+Ambiguous rows are removed.
 
 ### Share the review UI with remote reviewers
 
-`127.0.0.1` is reachable only from the machine running the server. For a
-temporary HTTPS URL that reviewers can open from their own computers or phones,
-install `cloudflared` on that machine and use two terminals.
+Use `0.0.0.0` plus `cloudflared` for temporary remote HTTPS access.
 
 Terminal 1 (bind to all interfaces so the tunnel can reach the service):
 
@@ -196,13 +173,9 @@ Terminal 2:
 cloudflared tunnel --url http://127.0.0.1:8090
 ```
 
-Copy the `https://...trycloudflare.com` URL printed by `cloudflared` and send
-it to the reviewers. Keep both terminals running; the URL stops working when
-the tunnel process exits. Stop the server and tunnel with `Ctrl-C` after the
-review is complete. Because this review service has no login, treat the URL as
-a secret and share it only with the intended reviewers. For a stable URL,
-create a named Cloudflare Tunnel and protect it with Cloudflare Access instead
-of using the temporary quick tunnel.
+Send the printed `https://...trycloudflare.com` URL to reviewers. Keep both
+processes running; stop them with `Ctrl-C`. Treat the unauthenticated URL as
+secret; use a named tunnel plus Cloudflare Access for a stable deployment.
 
 ## 5. Finalize train, validation, and test CSVs
 
@@ -221,8 +194,7 @@ python fine_tuning/scripts/finalize_hrrt_sft_dataset.py \
   --auxiliary-seed 42
 ```
 
-For DSS-SCOTT, use the same command but enable paired counterfactual auxiliary
-tasks:
+For DSS-SCOTT, enable paired counterfactual auxiliary tasks:
 
 ```bash
 python fine_tuning/scripts/finalize_hrrt_sft_dataset.py \
@@ -237,9 +209,8 @@ python fine_tuning/scripts/finalize_hrrt_sft_dataset.py \
   --auxiliary-seed 42
 ```
 
-`--reasoning-aux-ratio` and `--counterfactual-aux-ratio` accept values from zero
-through one. Auxiliary rows are added only to training. Validation and test retain
-only the exact one-call deployment task.
+Auxiliary ratios are `0`–`1`; auxiliary rows are training-only. Validation/test
+keep the one-call deployment task.
 
 ```bash
 ls -lh \
@@ -260,7 +231,7 @@ mkdir -p logs src/llm_vision_planner/fine_tuning/datasets/dss
 mkdir -p src/llm_vision_planner/fine_tuning/datasets/dss_scott
 ```
 
-For an existing clone:
+Existing clone:
 
 ```bash
 cd /projects/bhkj/$USER/starling_multiple_trajectory_idea
@@ -271,7 +242,7 @@ mkdir -p logs
 
 ## 7. Upload one finalized mode
 
-Run locally after setting `DISTILLATION_MODE` and `DATASET_ROOT` as in stage 1:
+Run locally with the stage-1 `DISTILLATION_MODE` and `DATASET_ROOT`:
 
 ```bash
 scp "$DATASET_ROOT"/hrrt_sft_{train,validation,test}.csv \
@@ -313,9 +284,8 @@ sbatch --export=ALL,DISTILLATION_MODE=dss_scott \
   src/llm_vision_planner/fine_tuning/scripts/train_hrrt_peft_lora.sbatch
 ```
 
-The batch script accepts optional exported overrides named `PROJECT_ROOT`,
-`HRRT_ENV_DIR`, `HF_HOME`, `DISTILLATION_MODE`, `DATASET_ROOT`, and `OUTPUT`.
-Its default output is
+Optional exported overrides: `PROJECT_ROOT`, `HRRT_ENV_DIR`, `HF_HOME`,
+`DISTILLATION_MODE`, `DATASET_ROOT`, and `OUTPUT`. Default output:
 `fine_tuning/outputs/llama31_8b_hrrt_lora_<mode>`.
 
 Monitor the job:
@@ -326,7 +296,7 @@ tail -f logs/hrrt-peft-JOB_ID.out
 sacct -j JOB_ID --format=JobID,JobName,State,Elapsed,AllocTRES,ExitCode
 ```
 
-For a direct interactive run, this command lists every trainer argument:
+Direct interactive run with explicit trainer arguments:
 
 ```bash
 DISTILLATION_MODE=dss
@@ -351,7 +321,7 @@ python src/llm_vision_planner/fine_tuning/scripts/train_hrrt_peft.py \
   --qlora
 ```
 
-Omit `--qlora` only when intentionally loading the base model without 4-bit NF4.
+Omit `--qlora` only when intentionally not using 4-bit NF4.
 
 ## 10. Evaluate the locked test split
 
@@ -362,7 +332,7 @@ srun --account=bhkj-dtai-gh --partition=ghx4 --nodes=1 --ntasks-per-node=1 \
   --cpus-per-task=16 --gpus-per-node=1 --mem=128g --time=01:00:00 --pty bash
 ```
 
-Evaluate every supported option explicitly:
+Evaluate the locked test split:
 
 ```bash
 cd /projects/bhkj/$USER/starling_multiple_trajectory_idea
@@ -378,20 +348,18 @@ python src/llm_vision_planner/fine_tuning/scripts/evaluate_hrrt_adapter.py \
   --max-new-tokens 600
 ```
 
-To score previously generated outputs instead of loading a model, add:
+To score existing predictions, add:
 
 ```text
 --predictions /absolute/path/to/predictions.jsonl
 ```
 
-The report includes structured-output validity, reasoning-schema validity,
-geometric feasibility, selected-route agreement, endpoint error, and mean path
-error.
+The report includes schema validity, feasibility, route agreement, endpoint error,
+and mean path error.
 
 ## 11. Transfer the NCSA adapter to the GPU server and serve it
 
-First package the trained adapter on NCSA. Set `DISTILLATION_MODE` to the mode
-that was actually trained (`dss` or `dss_scott`):
+On NCSA, package the trained mode (`dss` or `dss_scott`):
 
 ```bash
 ssh pgupta12@dtai-login.delta.ncsa.illinois.edu
@@ -414,10 +382,8 @@ GPU_IP=<gpu-server-ip-or-hostname>
 ssh prachit2@"$GPU_IP"
 ```
 
-Run the following commands at the GPU server prompt. This is intentionally a
-one-sided transfer: the GPU server pulls from NCSA, so you authenticate only to
-NCSA (including Duo) and do not ask the local workstation to authenticate to the
-GPU server a second time. `rsync -P` can resume an interrupted transfer:
+At the GPU prompt, pull from NCSA with resumable `rsync -P`; complete NCSA Duo
+there:
 
 ```bash
 DISTILLATION_MODE=dss
@@ -433,7 +399,7 @@ find "$GPU_OUTPUTS/$ADAPTER_NAME" -name adapter_config.json -print
 find "$GPU_OUTPUTS/$ADAPTER_NAME" -name adapter_model.safetensors -print
 ```
 
-If `rsync` is unavailable, use this non-resumable fallback:
+Fallback when `rsync` is unavailable:
 
 ```bash
 scp -r \
@@ -441,8 +407,7 @@ scp -r \
   "$GPU_OUTPUTS/$ADAPTER_NAME/"
 ```
 
-If you already downloaded the tar archive, validate it before extracting. Do
-not use a partial archive after `gzip -t` fails:
+For an existing archive, validate before extracting:
 
 ```bash
 cd "$GPU_OUTPUTS"
@@ -451,8 +416,7 @@ tar -tzf "$ADAPTER_NAME.tar.gz" >/dev/null
 tar -xzf "$ADAPTER_NAME.tar.gz"
 ```
 
-Training saves the adapter in a checkpoint subdirectory. Select the directory
-that contains both adapter files, rather than the parent output directory:
+Use the checkpoint directory containing both adapter files:
 
 ```bash
 ADAPTER="$(dirname "$(find "$GPU_OUTPUTS/$ADAPTER_NAME" -name adapter_model.safetensors -print -quit)")"
@@ -473,21 +437,17 @@ CUDA_VISIBLE_DEVICES=0 vllm serve meta-llama/Meta-Llama-3.1-8B-Instruct \
   --port 8000
 ```
 
-This is the HRRT equivalent of the earlier `rrt_planner` command. If vLLM is
-not already installed on the GPU server, activate its Python environment and
-install `vllm` first. The Hugging Face account on that server must also have
-access to `meta-llama/Meta-Llama-3.1-8B-Instruct`.
+This is the HRRT equivalent of `rrt_planner`. Install vLLM in the GPU Python
+environment if needed. The GPU Hugging Face account needs gated Llama access.
 
-From a second GPU-server terminal, verify that the adapter alias is advertised:
+Verify the adapter alias from a second GPU terminal:
 
 ```bash
 curl -fsS http://127.0.0.1:8000/v1/models | python3 -m json.tool
 ```
 
-Finally, on the machine running ROS, set the GPU address and confirm that vLLM
-is reachable. Set `llm_planner.ros__parameters.vllm_base_url` in
-`config/llm_vision_planner.yaml` to the displayed URL, then pass the same model
-alias to the launch file:
+On the ROS machine, set `llm_planner.ros__parameters.vllm_base_url` to the GPU
+URL and use the same model alias:
 
 ```bash
 GPU_IP=<gpu-server-ip-or-hostname>
@@ -502,26 +462,20 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   interaction_mode:=interactive
 ```
 
-The launch argument overrides the compatible defaults in
-`config/llm_vision_planner.yaml` for the fixed prompt generator, interactive
-gateway, and Llama planner together.
+The launch alias overrides the planner model for the fixed and interactive flows.
 
 ## 12. Interactive calibration verifier (E versus E-hat)
 
-The calibration verifier is an offline, browser-based companion to the full
-ROS mission gateway. It reads one capture from the refined residual-calibration
-CSV, asks for L1 and L2, generates an HRRT route family, lets a human select the
-expert route, and computes the double-integrator residual score for **both**
-modes:
+The offline verifier reads one refined calibration capture, parses L1/L2, creates
+HRRT routes, accepts a human route choice, and scores both modes:
 
 - `env_uncertainty`: HRRT uses ground-truth `E`; the LLM planner uses perceived
   `E-hat`.
 - `planner_only`: both planners use ground-truth `E`; perceived geometry is not
   used around the LLM trajectory.
 
-The displayed safety-tube quantile is intentionally set to the trajectory score
-for this experiment (`q = S`). The `--row` value is one-based over sorted
-`capture_id` groups, not a zero-based CSV line number.
+The displayed tube quantile is `q = S`. `--row` is one-based over sorted
+`capture_id` groups.
 
 Run with the deterministic mock planner first:
 
@@ -536,14 +490,9 @@ python fine_tuning/scripts/calibration_verifier_gateway.py \
   --port 8091
 ```
 
-Open [http://127.0.0.1:8091](http://127.0.0.1:8091), enter an object-relative
-L1 instruction such as `Go near the person` and an L2 route preference. The
-gateway runs the same intent parser, relation normalization, and constrained
-goal solver as the live interactive mission gateway; no goal coordinates are
-entered manually. Generate routes, choose the final HRRT route, and click
-**Score and plot trajectories**.
-The page reports both scores and overlays the LLM and expert paths, ground-truth
-obstacles, perceived obstacles, and score-radius tubes.
+Open [http://127.0.0.1:8091](http://127.0.0.1:8091), enter object-relative L1
+and L2, generate routes, choose an HRRT route, and score. The page overlays both
+paths, both obstacle geometries, and score-radius tubes.
 
 To use the served refined Llama adapter instead of the mock planner:
 
@@ -560,14 +509,12 @@ python fine_tuning/scripts/calibration_verifier_gateway.py \
   --port 8091
 ```
 
-Use `--host 0.0.0.0` and the documented `cloudflared` tunnel workflow when
-remote reviewers need access. The same defaults are represented by the
-`calibration_verifier_gateway` section in `config/llm_vision_planner.yaml`.
+Use `--host 0.0.0.0` plus the `cloudflared` workflow for remote reviewers.
+Defaults are in `config/llm_vision_planner.yaml`.
 
 ## Command help
 
-The commands above expose every supported option. The installed scripts also
-provide authoritative summaries:
+Show all supported options:
 
 ```bash
 python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py --help

@@ -25,7 +25,7 @@ Run stages 1–5 locally; run stages 6–10 on NCSA DeltaAI.
 cd ~/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
 python3 -m venv .venv-hrrt-data
 source .venv-hrrt-data/bin/activate
-python -m pip install --upgrade pip openai pydantic numpy scipy matplotlib
+python3 -m pip install --upgrade pip openai pydantic numpy scipy matplotlib
 export OPENAI_API_KEY=YOUR_KEY
 TEACHER_MODEL=gpt-6-luna
 ```
@@ -53,7 +53,7 @@ mkdir -p "$DATASET_ROOT"
 Smoke test without API calls; `--teacher mock` is deterministic.
 
 ```bash
-python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
+python3 fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
   --output "$DATASET_ROOT/hrrt_teacher_smoke.jsonl" \
   --scenes 10 \
   --preferences-per-scene 6 \
@@ -91,7 +91,7 @@ Llama-facing reasoning excludes route IDs/cards/candidates; invalid output uses
 a deterministic scene-grounded fallback.
 
 ```bash
-python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
+python3 fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
   --output "$DATASET_ROOT/hrrt_teacher_raw.jsonl" \
   --scenes 2000 \
   --preferences-per-scene 6 \
@@ -119,7 +119,7 @@ one-obstacle scenes may contain five valid preferences.
 Create scene-isolated review assignments:
 
 ```bash
-python fine_tuning/scripts/build_hrrt_human_audit.py \
+python3 fine_tuning/scripts/build_hrrt_human_audit.py \
   --input "$DATASET_ROOT/hrrt_teacher_raw.jsonl" \
   --output "$DATASET_ROOT/hrrt_human_audit.jsonl" \
   --train-audit-ratio 0.10 \
@@ -134,7 +134,7 @@ scene-isolated.
 ## 4. Review teacher labels and reasoning
 
 ```bash
-python fine_tuning/scripts/review_hrrt_labels.py \
+python3 fine_tuning/scripts/review_hrrt_labels.py \
   --raw "$DATASET_ROOT/hrrt_teacher_raw.jsonl" \
   --audit "$DATASET_ROOT/hrrt_human_audit.jsonl" \
   --reviews "$DATASET_ROOT/hrrt_human_reviews.jsonl" \
@@ -159,7 +159,7 @@ Use `0.0.0.0` plus `cloudflared` for temporary remote HTTPS access.
 Terminal 1 (bind to all interfaces so the tunnel can reach the service):
 
 ```bash
-python fine_tuning/scripts/review_hrrt_labels.py \
+python3 fine_tuning/scripts/review_hrrt_labels.py \
   --raw "$DATASET_ROOT/hrrt_teacher_raw.jsonl" \
   --audit "$DATASET_ROOT/hrrt_human_audit.jsonl" \
   --reviews "$DATASET_ROOT/hrrt_human_reviews.jsonl" \
@@ -182,7 +182,7 @@ secret; use a named tunnel plus Cloudflare Access for a stable deployment.
 For DSS:
 
 ```bash
-python fine_tuning/scripts/finalize_hrrt_sft_dataset.py \
+python3 fine_tuning/scripts/finalize_hrrt_sft_dataset.py \
   --raw "$DATASET_ROOT/hrrt_teacher_raw.jsonl" \
   --audit "$DATASET_ROOT/hrrt_human_audit.jsonl" \
   --reviews "$DATASET_ROOT/hrrt_human_reviews.jsonl" \
@@ -197,7 +197,7 @@ python fine_tuning/scripts/finalize_hrrt_sft_dataset.py \
 For DSS-SCOTT, enable paired counterfactual auxiliary tasks:
 
 ```bash
-python fine_tuning/scripts/finalize_hrrt_sft_dataset.py \
+python3 fine_tuning/scripts/finalize_hrrt_sft_dataset.py \
   --raw "$DATASET_ROOT/hrrt_teacher_raw.jsonl" \
   --audit "$DATASET_ROOT/hrrt_human_audit.jsonl" \
   --reviews "$DATASET_ROOT/hrrt_human_reviews.jsonl" \
@@ -255,12 +255,12 @@ scp "$DATASET_ROOT"/hrrt_sft_{train,validation,test}.csv \
 cd /projects/bhkj/$USER/starling_multiple_trajectory_idea
 module purge
 module load cray-python
-python -m venv /projects/bhkj/$USER/hf_auth_env
+python3 -m venv /projects/bhkj/$USER/hf_auth_env
 source /projects/bhkj/$USER/hf_auth_env/bin/activate
-python -m pip install --upgrade huggingface_hub
+python3 -m pip install --upgrade huggingface_hub
 export HF_HOME=/projects/bhkj/$USER/hf_cache
 hf auth login
-python - <<'PY'
+python3 - <<'PY'
 from huggingface_hub import HfApi
 print(HfApi().model_info("meta-llama/Meta-Llama-3.1-8B-Instruct").modelId)
 PY
@@ -300,7 +300,7 @@ Direct interactive run with explicit trainer arguments:
 
 ```bash
 DISTILLATION_MODE=dss
-python src/llm_vision_planner/fine_tuning/scripts/train_hrrt_peft.py \
+python3 src/llm_vision_planner/fine_tuning/scripts/train_hrrt_peft.py \
   --train "src/llm_vision_planner/fine_tuning/datasets/$DISTILLATION_MODE/hrrt_sft_train.csv" \
   --validation "src/llm_vision_planner/fine_tuning/datasets/$DISTILLATION_MODE/hrrt_sft_validation.csv" \
   --output-dir "src/llm_vision_planner/fine_tuning/outputs/llama31_8b_hrrt_lora_$DISTILLATION_MODE" \
@@ -338,7 +338,7 @@ Evaluate the locked test split:
 cd /projects/bhkj/$USER/starling_multiple_trajectory_idea
 source /projects/bhkj/$USER/hrrt_peft_env/bin/activate
 DISTILLATION_MODE=dss
-python src/llm_vision_planner/fine_tuning/scripts/evaluate_hrrt_adapter.py \
+python3 src/llm_vision_planner/fine_tuning/scripts/evaluate_hrrt_adapter.py \
   --test "src/llm_vision_planner/fine_tuning/datasets/$DISTILLATION_MODE/hrrt_sft_test.csv" \
   --adapter "src/llm_vision_planner/fine_tuning/outputs/llama31_8b_hrrt_lora_$DISTILLATION_MODE" \
   --base-model meta-llama/Meta-Llama-3.1-8B-Instruct \
@@ -498,7 +498,7 @@ Run with the deterministic mock planner first:
 
 ```bash
 cd ~/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
-python fine_tuning/scripts/calibration_verifier_gateway.py \
+python3 fine_tuning/scripts/calibration_verifier_gateway.py \
   --dataset fine_tuning/datasets/calibration_residual_raw_person.csv \
   --row 2 \
   --intent-provider mock \
@@ -515,7 +515,7 @@ To use the served refined Llama adapter instead of the mock planner:
 
 ```bash
 GPU_IP=172.22.224.93
-python fine_tuning/scripts/calibration_verifier_gateway.py \
+python3 fine_tuning/scripts/calibration_verifier_gateway.py \
   --dataset fine_tuning/datasets/calibration_residual_raw_person.csv \
   --row 2 \
   --intent-provider openai \
@@ -541,11 +541,11 @@ Defaults are in `config/llm_vision_planner.yaml`.
 Show all supported options:
 
 ```bash
-python fine_tuning/scripts/generate_hrrt_finetuning_dataset.py --help
-python fine_tuning/scripts/build_hrrt_human_audit.py --help
-python fine_tuning/scripts/review_hrrt_labels.py --help
-python fine_tuning/scripts/finalize_hrrt_sft_dataset.py --help
-python fine_tuning/scripts/train_hrrt_peft.py --help
-python fine_tuning/scripts/evaluate_hrrt_adapter.py --help
-python fine_tuning/scripts/calibration_verifier_gateway.py --help
+python3 fine_tuning/scripts/generate_hrrt_finetuning_dataset.py --help
+python3 fine_tuning/scripts/build_hrrt_human_audit.py --help
+python3 fine_tuning/scripts/review_hrrt_labels.py --help
+python3 fine_tuning/scripts/finalize_hrrt_sft_dataset.py --help
+python3 fine_tuning/scripts/train_hrrt_peft.py --help
+python3 fine_tuning/scripts/evaluate_hrrt_adapter.py --help
+python3 fine_tuning/scripts/calibration_verifier_gateway.py --help
 ```

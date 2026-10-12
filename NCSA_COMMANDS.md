@@ -130,9 +130,9 @@ This one-time setup is shared by both experts.
 cd /projects/bhkj/$USER/starling_testing_ws
 module purge
 module load cray-python
-python -m venv /projects/bhkj/$USER/hf_auth_env
+python3 -m venv /projects/bhkj/$USER/hf_auth_env
 source /projects/bhkj/$USER/hf_auth_env/bin/activate
-python -m pip install -U huggingface_hub
+python3 -m pip install -U huggingface_hub
 export HF_HOME=/projects/bhkj/$USER/hf_cache
 hf auth login
 ```
@@ -141,7 +141,7 @@ Save a Hugging Face read token with access to the gated Llama model, then verify
 that access:
 
 ```bash
-python - <<'PY'
+python3 - <<'PY'
 from huggingface_hub import HfApi
 print(HfApi().model_info("meta-llama/Meta-Llama-3.1-8B-Instruct").modelId)
 PY

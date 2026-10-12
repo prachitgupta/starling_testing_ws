@@ -1000,7 +1000,7 @@ mkdir -p ~/rosbags
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BAG_DIR="$HOME/rosbags/perception-$STAMP"
 
-ros2 bag record -O "$BAG_DIR" \
+ros2 bag record -o "$BAG_DIR" \
   /hires_small_color \
   /tof_pc \
   /tflite
@@ -1338,7 +1338,7 @@ mkdir -p ~/rosbags
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BAG_DIR="$HOME/rosbags/person-calibration-$STAMP"
 
-ros2 bag record -O "$BAG_DIR" \
+ros2 bag record -o "$BAG_DIR" \
   /hires_small_color \
   /tof_pc \
   /tflite

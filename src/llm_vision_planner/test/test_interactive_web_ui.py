@@ -51,6 +51,13 @@ class InteractiveWebUiTest(unittest.TestCase):
         self.assertIn("P: ", html)
         self.assertIn("GT: ", html)
 
+    def test_landscape_keeps_controls_and_visual_side_by_side(self):
+        html = (ROOT / "web" / "interactive.html").read_text(encoding="utf-8")
+        self.assertIn("height:calc(100dvh - 76px)", html)
+        self.assertIn("overflow-y:auto", html)
+        self.assertIn("@media(orientation:landscape) and (max-height:600px)", html)
+        self.assertIn("grid-template-columns:minmax(280px,40vw) minmax(0,1fr)", html)
+
     def test_audio_file_metadata_accepts_browser_recording_types(self):
         self.assertEqual(audio_file_metadata("audio/webm;codecs=opus"), ("audio/webm", "webm"))
         self.assertEqual(audio_file_metadata("audio/ogg; codecs=opus"), ("audio/ogg", "ogg"))

@@ -462,6 +462,16 @@ ros2 launch llm_vision_planner full_plot.launch.py \
   interaction_mode:=interactive
 ```
 
+To share the interactive mission UI publicly, run this on the same ROS machine
+in a second terminal:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8080
+```
+
+Share the printed `https://*.trycloudflare.com` URL. Keep the ROS launch and
+Cloudflare terminals running; the temporary URL is unauthenticated.
+
 The launch alias overrides the planner model for the fixed and interactive flows.
 
 ## 12. Interactive calibration verifier (E versus E-hat)

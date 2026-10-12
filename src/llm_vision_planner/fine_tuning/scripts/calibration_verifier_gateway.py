@@ -335,6 +335,26 @@ def scene_preview(state, args):
     }
 
 
+def grid_axes(xy, min_x, max_x, min_y, max_y, width, height):
+    vertical = "".join(
+        f"<line x1='{xy((x, min_y))[0]:.1f}' y1='{xy((x, min_y))[1]:.1f}' x2='{xy((x, max_y))[0]:.1f}' y2='{xy((x, max_y))[1]:.1f}' stroke='#94a3b833'/>"
+        f"<text x='{xy((x, min_y))[0]+2:.1f}' y='{height-45:.1f}' fill='#475569' font-size='12'>{x}</text>"
+        for x in range(math.ceil(min_x), math.floor(max_x) + 1)
+    )
+    horizontal = "".join(
+        f"<line x1='{xy((min_x, y))[0]:.1f}' y1='{xy((min_x, y))[1]:.1f}' x2='{xy((max_x, y))[0]:.1f}' y2='{xy((max_x, y))[1]:.1f}' stroke='#94a3b833'/>"
+        f"<text x='25' y='{xy((min_x, y))[1]+4:.1f}' fill='#475569' font-size='12'>{y}</text>"
+        for y in range(math.ceil(min_y), math.floor(max_y) + 1)
+    )
+    axes = ""
+    if min_x <= 0 <= max_x:
+        axes += f"<line x1='{xy((0, min_y))[0]:.1f}' y1='{xy((0, min_y))[1]:.1f}' x2='{xy((0, max_y))[0]:.1f}' y2='{xy((0, max_y))[1]:.1f}' stroke='#334155' stroke-width='1.5'/>"
+    if min_y <= 0 <= max_y:
+        axes += f"<line x1='{xy((min_x, 0))[0]:.1f}' y1='{xy((min_x, 0))[1]:.1f}' x2='{xy((max_x, 0))[0]:.1f}' y2='{xy((max_x, 0))[1]:.1f}' stroke='#334155' stroke-width='1.5'/>"
+    sign = f"<g transform='translate({width-145},18)' fill='#0f172a' stroke='#0f172a' font-size='11'><rect x='0' y='0' width='132' height='54' rx='6' fill='#ffffffcc' stroke='#64748b'/><line x1='18' y1='35' x2='52' y2='35' stroke-width='2'/><polygon points='52,35 45,31 45,39' stroke='none'/><line x1='18' y1='35' x2='18' y2='12' stroke-width='2'/><polygon points='18,12 14,19 22,19' stroke='none'/><text x='56' y='39' stroke='none'>+x</text><text x='23' y='13' stroke='none'>+y</text><text x='76' y='20' stroke='none'>+z down</text><text x='76' y='36' stroke='none'>NED top view</text></g>"
+    return vertical + horizontal + axes + sign
+
+
 def plot_scene(scene):
     obstacles = scene["ground_truth_obstacles"] + scene["perceived_obstacles"]
     points = [(float(scene["start"]["x"]), float(scene["start"]["y"]))]
@@ -366,13 +386,7 @@ def plot_scene(scene):
         x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
         x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
         shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#f59e0b22' stroke='#d97706' stroke-dasharray='6 4'/>")
-    grid = "".join(
-        f"<line x1='{xy((x, min_y))[0]:.1f}' y1='{xy((x, min_y))[1]:.1f}' x2='{xy((x, max_y))[0]:.1f}' y2='{xy((x, max_y))[1]:.1f}' stroke='#94a3b833'/>"
-        for x in range(math.ceil(min_x), math.floor(max_x) + 1)
-    ) + "".join(
-        f"<line x1='{xy((min_x, y))[0]:.1f}' y1='{xy((min_x, y))[1]:.1f}' x2='{xy((max_x, y))[0]:.1f}' y2='{xy((max_x, y))[1]:.1f}' stroke='#94a3b833'/>"
-        for y in range(math.ceil(min_y), math.floor(max_y) + 1)
-    )
+    grid = grid_axes(xy, min_x, max_x, min_y, max_y, width, height)
     route_colors = ("#64748b", "#8b5cf6", "#0891b2", "#db2777", "#65a30d", "#ea580c", "#0f766e", "#7c3aed")
     route_lines = "".join(polyline(route["waypoints"], route_colors[i % len(route_colors)]) for i, route in enumerate(scene.get("routes", [])))
     if scene.get("selected_waypoints"):
@@ -426,13 +440,7 @@ def plot_svg(result):
         x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
         x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
         shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#f59e0b22' stroke='#d97706' stroke-dasharray='6 4'/>")
-    grid = "".join(
-        f"<line x1='{xy((x, min_y))[0]:.1f}' y1='{xy((x, min_y))[1]:.1f}' x2='{xy((x, max_y))[0]:.1f}' y2='{xy((x, max_y))[1]:.1f}' stroke='#94a3b833'/>"
-        for x in range(math.ceil(min_x), math.floor(max_x) + 1)
-    ) + "".join(
-        f"<line x1='{xy((min_x, y))[0]:.1f}' y1='{xy((min_x, y))[1]:.1f}' x2='{xy((max_x, y))[0]:.1f}' y2='{xy((max_x, y))[1]:.1f}' stroke='#94a3b833'/>"
-        for y in range(math.ceil(min_y), math.floor(max_y) + 1)
-    )
+    grid = grid_axes(xy, min_x, max_x, min_y, max_y, width, height)
     return (
         f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='LLM and HRRT trajectories'>"
         f"{grid}{''.join(shapes)}{tube(result['expert_samples'], '#16a34a')}"

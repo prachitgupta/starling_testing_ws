@@ -226,6 +226,7 @@ main{max-width:1400px;margin:auto}.grid{display:grid;grid-template-columns:360px
 .card{background:#102437;border:1px solid #29445b;border-radius:14px;padding:16px;margin-bottom:14px}
 label{display:block;color:#a9c3d6;font-size:12px;margin:10px 0 4px}input,select,textarea,button{width:100%;box-sizing:border-box;padding:9px;border-radius:8px;border:1px solid #41617a;background:#081725;color:#eef8ff}textarea{min-height:62px}button{background:#2788c7;font-weight:700;cursor:pointer;margin-top:12px}.secondary{background:#21445b}
 pre{white-space:pre-wrap;overflow:auto}.metric{font-size:19px;color:#59e0aa;font-weight:800}.hint{color:#a9c3d6;font-size:12px;line-height:1.4}
+.error{color:#fecaca;background:#7f1d1d55;border:1px solid #ef4444;border-radius:8px;padding:10px;font-weight:700}
 svg{width:100%;height:auto;background:#eff7fb;border-radius:10px}.legend{font-size:12px;color:#b9d0e0}
 .speech-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}.speech-row button{width:48px;margin-top:0}.listening{background:#b91c1c}
 @media(max-width:850px){.grid{grid-template-columns:1fr}body{padding:8px}}
@@ -258,8 +259,17 @@ def html_page(state, args, message=""):
     result = state.get("result")
     results = state.get("results", {})
     result_json = compact(result) if result else ""
-    preview = scene_preview(state, args)
-    plot = plot_svg(result) if result else plot_scene(preview)
+    view_error = ""
+    try:
+        preview = scene_preview(state, args)
+        plot = plot_svg(result) if result else plot_scene(preview)
+    except (KeyError, TypeError, ValueError) as error:
+        result = None
+        results = {}
+        result_json = ""
+        plot = ""
+        view_error = f"Error: {error}"
+        message = message or view_error
     score_block = (
         f"<div class='metric'>{result['score']:.5f}</div>"
         f"<div class='hint'>Tube quantile q = score = {result['score']:.5f} m; max residual time = {result['score_max_time_s']:.2f} s</div>"
@@ -271,7 +281,9 @@ def html_page(state, args, message=""):
             f"(q = {item['tube_quantile']:.5f} m)</p>"
             for name, item in results.items()
         )
-    stage_hint = "Final view: selected HRRT and LLM trajectories with QP-optimized samples and score tubes." if result else ("Select an HRRT route above; all generated candidates are shown in the plot." if routes else "Dataset scene loaded: red is ground truth, orange is perceived, and the blue marker is the drone pose.")
+    stage_hint = "" if view_error else ("Final view: selected HRRT and LLM trajectories with QP-optimized samples and score tubes." if result else ("Select an HRRT route above; all generated candidates are shown in the plot." if routes else "Dataset scene loaded: red is ground truth, orange is perceived, and the blue marker is the drone pose."))
+    legend = "" if view_error else f"{stage_hint} Red: ground-truth obstacle · orange dashed: perceived obstacle · blue marker: drone pose · gold marker: proposed goal."
+    message_block = f"<p class='error'>{html.escape(message)}</p>" if message.startswith("Error:") else f"<p class='hint'>{html.escape(message)}</p>"
     return f"""<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Calibration verifier</title><style>{STYLE}</style></head><body><main>
 <h1>Calibration trajectory verifier</h1><p class='hint'>Offline replacement for live mission-gateway perception. Select a refined calibration capture, compare LLM and HRRT trajectories, and inspect the residual tube.</p>
 <div class='grid'><section>
@@ -285,8 +297,8 @@ def html_page(state, args, message=""):
 <input type='hidden' name='row' value='{selected}'><input type='hidden' name='mode' value='{html.escape(state.get('mode','env_uncertainty'))}'><input type='hidden' name='l1' value='{html.escape(state.get('l1',''))}'><input type='hidden' name='l2' value='{html.escape(state.get('l2',''))}'>
 <label>Selected HRRT expert route</label><select name='route'>{route_options}</select>
 <button {'disabled' if not routes else ''}>Score and plot trajectories</button></form>
-<div class='card'><h2>Result</h2>{score_block}<p class='hint'>{html.escape(message)}</p><pre>{html.escape(result_json)}</pre></div>
-</section><section class='card'><h2>Trajectory and safety-tube view</h2>{plot}<p class='legend'>{html.escape(stage_hint)} Red: ground-truth obstacle · orange dashed: perceived obstacle · blue marker: drone pose · gold marker: proposed goal.</p></section></div>{SPEECH_SCRIPT}</main></body></html>"""
+<div class='card'><h2>Result</h2>{score_block}{message_block}<pre>{html.escape(result_json)}</pre></div>
+</section><section class='card'><h2>Trajectory and safety-tube view</h2>{plot}<p class='legend'>{html.escape(legend)}</p></section></div>{SPEECH_SCRIPT}</main></body></html>"""
 
 
 def scene_preview(state, args):
@@ -505,6 +517,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 raise ValueError("unknown action")
         except Exception as exc:
             message = f"Error: {exc}"
+            self.state.update({"routes": [], "route_data": [], "result": None, "results": {}})
+            if "row_number" in locals():
+                self.state["row_number"] = row_number
+            if "capture_id" in locals():
+                self.state["capture_id"] = capture_id
+            if "rows" in locals():
+                self.state["rows"] = rows
+            for key in ("goal", "start", "ground_truth_obstacles", "perceived_obstacles", "intent", "goal_relations", "goal_relation_results"):
+                self.state.pop(key, None)
         body = html_page(self.state, self.args, message)
         self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers(); self.wfile.write(body.encode())
     def log_message(self, *_args):

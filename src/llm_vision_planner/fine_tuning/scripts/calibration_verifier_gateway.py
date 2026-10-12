@@ -288,6 +288,7 @@ label{display:block;color:#a9c3d6;font-size:12px;margin:10px 0 4px}input,select,
 pre{white-space:pre-wrap;overflow:auto}.metric{font-size:19px;color:#59e0aa;font-weight:800}.hint{color:#a9c3d6;font-size:12px;line-height:1.4}
 .error{color:#fecaca;background:#7f1d1d55;border:1px solid #ef4444;border-radius:8px;padding:10px;font-weight:700}
 svg{width:100%;height:auto;background:#eff7fb;border-radius:10px}.legend{font-size:12px;color:#b9d0e0}
+.plot-key{display:flex;flex-wrap:wrap;gap:8px 14px;margin:10px 0;padding:10px;background:#081725;border-radius:8px;font-size:12px}.key-item{display:flex;align-items:center;gap:6px}.key-line{width:30px;border-top:4px solid}.key-dashed{border-top-style:dashed}.score-lock{border:2px solid #59e0aa;background:#0b2b2b;padding:12px;border-radius:10px;margin-bottom:10px}
 .speech-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}.speech-row button{width:48px;margin-top:0}.listening{background:#b91c1c}
 .manual-goal{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 @media(max-width:850px){.grid{grid-template-columns:1fr}body{padding:8px}}
@@ -302,9 +303,10 @@ function stopRecording(){if(timer)clearTimeout(timer);if(stream)stream.getTracks
 fileInput.onchange=async()=>{const file=fileInput.files[0];if(file)await transcribe(file,file.type);fileInput.value=''};
 if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)button.onclick=()=>fileInput.click();else button.onclick=async()=>{if(recorder?.state==='recording'){recorder.stop();return}try{stream=await navigator.mediaDevices.getUserMedia({audio:true});const chunks=[];recorder=new MediaRecorder(stream,audioType?{mimeType:audioType}:undefined);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onstop=async()=>{const type=recorder.mimeType||audioType;stopRecording();await transcribe(new Blob(chunks,{type}),type)};recorder.start();button.classList.add('listening');button.textContent='■';status.textContent='Listening…';timer=setTimeout(()=>{if(recorder?.state==='recording')recorder.stop()},20000)}catch(error){stopRecording();status.textContent=`Microphone unavailable: ${error.message}`}}}
 setupSpeech('speech-l1','speech-file-l1','l1','speech-status-l1');setupSpeech('speech-l2','speech-file-l2','l2','speech-status-l2');
-const scoreForm=document.getElementById('score-form'),scoreButton=document.getElementById('score-button'),pipelineStatus=document.getElementById('pipeline-status'),plotContainer=document.getElementById('plot-container'),plotLegend=document.getElementById('plot-legend');
-async function pollPipeline(){const response=await fetch('/api/progress',{cache:'no-store'}),progress=await response.json();pipelineStatus.textContent=`${progress.stage}: ${progress.message}`;if(progress.plot)plotContainer.innerHTML=progress.plot;if(progress.legend)plotLegend.textContent=progress.legend;if(progress.done){scoreButton.disabled=false;if(progress.error){pipelineStatus.classList.add('error')}else{window.location.reload()}return}setTimeout(pollPipeline,350)}
-scoreForm.addEventListener('submit',async event=>{event.preventDefault();scoreButton.disabled=true;pipelineStatus.classList.remove('error');pipelineStatus.textContent='Starting LLM route selection…';const response=await fetch('/api/score',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(scoreForm))});const payload=await response.json();if(!response.ok){pipelineStatus.textContent=payload.error||'Unable to start scoring';pipelineStatus.classList.add('error');scoreButton.disabled=false;return}pollPipeline()});
+const scoreForm=document.getElementById('score-form'),scoreButton=document.getElementById('score-button'),pipelineStatus=document.getElementById('pipeline-status'),plotContainer=document.getElementById('plot-container'),plotLegend=document.getElementById('plot-legend'),scoreResults=document.getElementById('score-results'),resultJson=document.getElementById('result-json');
+function showScores(progress){scoreResults.replaceChildren();const box=document.createElement('div');box.className='score-lock';const title=document.createElement('div');title.className='metric';title.textContent=`Final scores — ${progress.selected_mode} displayed`;box.appendChild(title);for(const [name,item] of Object.entries(progress.scores||{})){const line=document.createElement('p');line.textContent=`${name}: score = ${Number(item.score).toFixed(5)} m · tube q = ${Number(item.tube_quantile).toFixed(5)} m · max residual at ${Number(item.max_time_s).toFixed(2)} s`;box.appendChild(line)}scoreResults.appendChild(box);if(progress.result)resultJson.textContent=JSON.stringify(progress.result,null,2)}
+async function pollPipeline(){const response=await fetch('/api/progress',{cache:'no-store'}),progress=await response.json();pipelineStatus.textContent=`${progress.stage}: ${progress.message}`;if(progress.plot)plotContainer.innerHTML=progress.plot;if(progress.legend)plotLegend.textContent=progress.legend;if(progress.done){if(progress.error){pipelineStatus.classList.add('error');scoreButton.disabled=false}else{showScores(progress);scoreButton.disabled=true;scoreButton.textContent='Final result locked — change row to run again'}return}setTimeout(pollPipeline,350)}
+scoreForm.addEventListener('submit',async event=>{event.preventDefault();scoreButton.disabled=true;scoreResults.replaceChildren();resultJson.textContent='';pipelineStatus.classList.remove('error');pipelineStatus.textContent='Starting LLM route selection…';const response=await fetch('/api/score',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(scoreForm))});const payload=await response.json();if(!response.ok){pipelineStatus.textContent=payload.error||'Unable to start scoring';pipelineStatus.classList.add('error');scoreButton.disabled=false;return}pollPipeline()});
 </script>
 """
 
@@ -364,8 +366,8 @@ def html_page(state, args, message=""):
 <input type='hidden' name='row' value='{selected}'><input type='hidden' name='mode' value='{html.escape(state.get('mode','env_uncertainty'))}'><input type='hidden' name='l1' value='{html.escape(state.get('l1',''))}'>
 <label>L2 — route preference for the OpenAI selector</label><div class='speech-row'><textarea id='l2' name='l2'>{l2_value}</textarea><button id='speech-l2' type='button' title='Record L2 preference' aria-label='Record L2 preference'>●</button></div><input id='speech-file-l2' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l2' class='hint'>The LLM selects one displayed HRRT route from this preference.</p>
 <button id='score-button' {'disabled' if not routes else ''}>Select route, score, and plot</button><p id='pipeline-status' class='hint'>{'HRRT family ready; enter L2 for LLM route selection.' if routes else 'Waiting for an accepted goal and HRRT route family.'}</p></form>
-<div class='card'><h2>Result</h2>{score_block}{message_block}<pre>{html.escape(result_json)}</pre></div>
-</section><section class='card'><h2>Trajectory and safety-tube view</h2><div id='plot-container'>{plot}</div><p id='plot-legend' class='legend'>{html.escape(legend)}</p></section></div>{SPEECH_SCRIPT}</main></body></html>"""
+<div class='card'><h2>Result</h2><div id='score-results'>{score_block}</div>{message_block}<pre id='result-json'>{html.escape(result_json)}</pre></div>
+</section><section class='card'><h2>Trajectory and safety-tube view</h2><div class='plot-key'><span class='key-item'><i class='key-line' style='border-color:#16a34a'></i>HRRT expert</span><span class='key-item'><i class='key-line key-dashed' style='border-color:#f97316'></i>Raw LLM</span><span class='key-item'><i class='key-line' style='border-color:#2563eb'></i>Refined LLM</span><span class='key-item'><i class='key-line' style='border-color:#b91c1c'></i>Ground truth obstacle</span><span class='key-item'><i class='key-line key-dashed' style='border-color:#d97706'></i>Perceived obstacle</span><span class='key-item'>Translucent green/blue = safety tubes</span></div><div id='plot-container'>{plot}</div><p id='plot-legend' class='legend'>{html.escape(legend)}</p></section></div>{SPEECH_SCRIPT}</main></body></html>"""
 
 
 def scene_preview(state, args):
@@ -509,12 +511,14 @@ def plot_svg(result):
         f"{polyline(result.get('raw_predicted_waypoints', []), '#f97316', 4, '8 5')}"
         f"{polyline(result['predicted_waypoints'], '#2563eb')}"
         f"<circle cx='{xy((float(result['start']['x']), float(result['start']['y'])))[0]:.1f}' cy='{xy((float(result['start']['x']), float(result['start']['y'])))[1]:.1f}' r='9' fill='#2563eb' stroke='#fff' stroke-width='2'/><circle cx='{xy((float(result['goal']['x']), float(result['goal']['y'])))[0]:.1f}' cy='{xy((float(result['goal']['x']), float(result['goal']['y'])))[1]:.1f}' r='9' fill='#eab308' stroke='#111827' stroke-width='2'/>"
-        f"<text x='15' y='25' fill='#111827'>q={result['tube_quantile']:.3f} m</text></svg>"
+        f"<rect x='12' y='10' width='220' height='34' rx='6' fill='#ffffffee' stroke='#334155'/><text x='23' y='32' fill='#111827' font-size='16' font-weight='700'>score = q = {result['tube_quantile']:.5f} m</text></svg>"
     )
 
 
-def set_progress(state, stage, message, plot="", legend="", done=False, error=False):
+def set_progress(state, stage, message, plot="", legend="", done=False, error=False, scores=None, result=None, selected_mode=""):
     payload = {"stage": stage, "message": message, "plot": plot, "legend": legend, "done": done, "error": error}
+    if scores is not None:
+        payload.update({"scores": scores, "result": result, "selected_mode": selected_mode})
     with state["lock"]:
         state["progress"] = payload
 
@@ -610,7 +614,25 @@ def run_scoring_job(state, args, form):
         with state["lock"]:
             state.update({"result": results[mode], "results": results, "mode": mode, "l1": l1, "l2": l2, "selected_route_id": expert["route_id"], "selection_reason": selection.reason})
         final_plot = plot_svg(results[mode])
-        set_progress(state, "Complete", f"Selected {expert['route_id']} and scored both uncertainty modes.", final_plot, "Final QP trajectories with safety-score tubes.", done=True)
+        score_summary = {
+            name: {
+                "score": item["score"],
+                "tube_quantile": item["tube_quantile"],
+                "max_time_s": item["score_max_time_s"],
+            }
+            for name, item in results.items()
+        }
+        set_progress(
+            state,
+            "Complete",
+            f"Selected {expert['route_id']} and scored both uncertainty modes. Final view is locked until the row changes.",
+            final_plot,
+            "Green: HRRT expert · orange dashed: raw LLM · blue: refined LLM · translucent green/blue: score tubes.",
+            done=True,
+            scores=score_summary,
+            result=results[mode],
+            selected_mode=mode,
+        )
     except Exception as error:
         set_progress(state, "Error", str(error), last_plot, "The last completed stage remains visible.", done=True, error=True)
     finally:

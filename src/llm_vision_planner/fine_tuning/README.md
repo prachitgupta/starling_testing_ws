@@ -522,6 +522,9 @@ dashes; its verification feedback table is appended to the same prompt for
 exactly one retry, shown in blue. QP optimization and residual scoring run only
 after the HRRT and (possibly refined) LLM routes pass. The final JSON records
 raw/refined waypoints and verification metrics.
+The color key remains visible during every live stage. Completion stops polling
+without reloading: both mode scores are printed, the selected score is stamped
+on the plot, and the final frame stays locked until the dataset row changes.
 
 To use the served refined Llama adapter instead of the mock planner:
 

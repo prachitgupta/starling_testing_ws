@@ -195,7 +195,7 @@ def score_pair(expert_waypoints, predicted_waypoints, args):
     }
 
 
-def public_result(capture_id, rows, mode, l1, l2, expert, predicted, result, environments_used):
+def public_result(capture_id, rows, mode, l1, l2, expert, predicted, result, environments_used, start, goal, perceived):
     return {
         "capture_id": capture_id,
         "session_id": rows[0].get("session_id", ""),
@@ -205,6 +205,8 @@ def public_result(capture_id, rows, mode, l1, l2, expert, predicted, result, env
         "expert_waypoints": expert["waypoints"],
         "expert_route_id": expert["route_id"],
         "predicted_waypoints": predicted,
+        "start": start,
+        "goal": goal,
         "score": result["score"],
         "score_max_time_s": result["max_time_s"],
         "residual": result["residual"],
@@ -213,6 +215,7 @@ def public_result(capture_id, rows, mode, l1, l2, expert, predicted, result, env
         "predicted_samples": result["predicted_samples"],
         "ground_truth_obstacles": environments_used[0],
         "planning_obstacles": environments_used[1],
+        "perceived_obstacles": perceived,
     }
 
 
@@ -254,7 +257,8 @@ def html_page(state, args, message=""):
     result = state.get("result")
     results = state.get("results", {})
     result_json = compact(result) if result else ""
-    plot = plot_svg(result) if result else "<p class='hint'>Generate HRRT routes, then select an expert route to score.</p>"
+    preview = scene_preview(state, args)
+    plot = plot_svg(result) if result else plot_scene(preview)
     score_block = (
         f"<div class='metric'>{result['score']:.5f}</div>"
         f"<div class='hint'>Tube quantile q = score = {result['score']:.5f} m; max residual time = {result['score_max_time_s']:.2f} s</div>"
@@ -266,6 +270,7 @@ def html_page(state, args, message=""):
             f"(q = {item['tube_quantile']:.5f} m)</p>"
             for name, item in results.items()
         )
+    stage_hint = "Final view: selected HRRT and LLM trajectories with QP-optimized samples and score tubes." if result else ("Select an HRRT route above; all generated candidates are shown in the plot." if routes else "Dataset scene loaded: red is ground truth, orange is perceived, and the blue marker is the drone pose.")
     return f"""<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Calibration verifier</title><style>{STYLE}</style></head><body><main>
 <h1>Calibration trajectory verifier</h1><p class='hint'>Offline replacement for live mission-gateway perception. Select a refined calibration capture, compare LLM and HRRT trajectories, and inspect the residual tube.</p>
 <div class='grid'><section>
@@ -280,14 +285,78 @@ def html_page(state, args, message=""):
 <label>Selected HRRT expert route</label><select name='route'>{route_options}</select>
 <button {'disabled' if not routes else ''}>Score and plot trajectories</button></form>
 <div class='card'><h2>Result</h2>{score_block}<p class='hint'>{html.escape(message)}</p><pre>{html.escape(result_json)}</pre></div>
-</section><section class='card'><h2>Trajectory and safety-tube view</h2>{plot}<p class='legend'>Blue: LLM trajectory and q-tube · green: selected HRRT expert and q-tube · red: ground-truth obstacle · orange: perceived obstacle.</p></section></div>{SPEECH_SCRIPT}</main></body></html>"""
+</section><section class='card'><h2>Trajectory and safety-tube view</h2>{plot}<p class='legend'>{html.escape(stage_hint)} Red: ground-truth obstacle · orange dashed: perceived obstacle · blue marker: drone pose · gold marker: proposed goal.</p></section></div>{SPEECH_SCRIPT}</main></body></html>"""
+
+
+def scene_preview(state, args):
+    if all(key in state for key in ("ground_truth_obstacles", "perceived_obstacles", "start")):
+        return {
+            "ground_truth_obstacles": state["ground_truth_obstacles"],
+            "perceived_obstacles": state["perceived_obstacles"],
+            "start": state["start"],
+            "goal": state.get("goal"),
+            "routes": state.get("routes", []),
+        }
+    rows = state.get("rows")
+    if rows is None:
+        _, rows = choose_capture(state["captures"], state["row_number"])
+    gt, perceived, start, workspace = scene_setup(rows, args)
+    return {
+        "ground_truth_obstacles": state.get("ground_truth_obstacles", gt),
+        "perceived_obstacles": state.get("perceived_obstacles", perceived),
+        "start": state.get("start", start),
+        "goal": state.get("goal"),
+        "routes": state.get("routes", []),
+        "workspace": workspace,
+    }
+
+
+def plot_scene(scene):
+    obstacles = scene["ground_truth_obstacles"] + scene["perceived_obstacles"]
+    points = [(float(scene["start"]["x"]), float(scene["start"]["y"]))]
+    if scene.get("goal"):
+        points.append((float(scene["goal"]["x"]), float(scene["goal"]["y"])))
+    for route in scene.get("routes", []):
+        points.extend((float(p["x"]), float(p["y"])) for p in route["waypoints"])
+    for obstacle in obstacles:
+        points.extend(((float(obstacle["min_corner"][0]), float(obstacle["min_corner"][1])), (float(obstacle["max_corner"][0]), float(obstacle["max_corner"][1]))))
+    if not points:
+        return "<p class='hint'>No geometry is available for this capture.</p>"
+    min_x, max_x = min(p[0] for p in points) - 0.5, max(p[0] for p in points) + 0.5
+    min_y, max_y = min(p[1] for p in points) - 0.5, max(p[1] for p in points) + 0.5
+    width, height = 900, 600
+    def xy(point):
+        return ((point[0] - min_x) / max(max_x - min_x, 1e-6) * width, height - (point[1] - min_y) / max(max_y - min_y, 1e-6) * height)
+    def polyline(waypoints, color, width_px=3):
+        coords = " ".join(f"{xy((float(p['x']), float(p['y'])))[0]:.1f},{xy((float(p['x']), float(p['y'])))[1]:.1f}" for p in waypoints)
+        return f"<polyline points='{coords}' fill='none' stroke='{color}' stroke-width='{width_px}' stroke-opacity='.75'/>"
+    shapes = []
+    for obstacle in scene["ground_truth_obstacles"]:
+        x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
+        x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
+        shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#ef444455' stroke='#b91c1c'/>")
+    for obstacle in scene["perceived_obstacles"]:
+        x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
+        x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
+        shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#f59e0b22' stroke='#d97706' stroke-dasharray='6 4'/>")
+    route_colors = ("#64748b", "#8b5cf6", "#0891b2", "#db2777", "#65a30d", "#ea580c", "#0f766e", "#7c3aed")
+    route_lines = "".join(polyline(route["waypoints"], route_colors[i % len(route_colors)]) for i, route in enumerate(scene.get("routes", [])))
+    start_x, start_y = xy((float(scene["start"]["x"]), float(scene["start"]["y"])))
+    markers = f"<circle cx='{start_x:.1f}' cy='{start_y:.1f}' r='9' fill='#2563eb' stroke='#fff' stroke-width='2'/><text x='{start_x+12:.1f}' y='{start_y:.1f}' fill='#111827'>drone</text>"
+    if scene.get("goal"):
+        goal_x, goal_y = xy((float(scene["goal"]["x"]), float(scene["goal"]["y"])))
+        markers += f"<circle cx='{goal_x:.1f}' cy='{goal_y:.1f}' r='9' fill='#eab308' stroke='#111827' stroke-width='2'/><text x='{goal_x+12:.1f}' y='{goal_y:.1f}' fill='#111827'>goal</text>"
+    return f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='Dataset obstacles, drone pose, proposed goal, and HRRT route candidates'>{''.join(shapes)}{route_lines}{markers}</svg>"
 
 
 def plot_svg(result):
     points = []
     for key in ("expert_waypoints", "predicted_waypoints"):
         points += [(float(p["x"]), float(p["y"])) for p in result[key]]
-    for obstacle in result["ground_truth_obstacles"] + result["planning_obstacles"]:
+    for key in ("start", "goal"):
+        if result.get(key):
+            points.append((float(result[key]["x"]), float(result[key]["y"])))
+    for obstacle in result["ground_truth_obstacles"] + result.get("perceived_obstacles", result["planning_obstacles"]):
         points += [(float(obstacle["min_corner"][0]), float(obstacle["min_corner"][1])), (float(obstacle["max_corner"][0]), float(obstacle["max_corner"][1]))]
     if not points:
         return ""
@@ -314,7 +383,7 @@ def plot_svg(result):
         x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
         x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
         shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#ef444455' stroke='#b91c1c'/>")
-    for obstacle in result["planning_obstacles"]:
+    for obstacle in result.get("perceived_obstacles", result["planning_obstacles"]):
         x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
         x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
         shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#f59e0b22' stroke='#d97706' stroke-dasharray='6 4'/>")
@@ -324,6 +393,7 @@ def plot_svg(result):
         f"{tube(result['predicted_samples'], '#2563eb')}"
         f"{polyline(result['expert_waypoints'], '#16a34a')}"
         f"{polyline(result['predicted_waypoints'], '#2563eb')}"
+        f"<circle cx='{xy((float(result['start']['x']), float(result['start']['y'])))[0]:.1f}' cy='{xy((float(result['start']['x']), float(result['start']['y'])))[1]:.1f}' r='9' fill='#2563eb' stroke='#fff' stroke-width='2'/><circle cx='{xy((float(result['goal']['x']), float(result['goal']['y'])))[0]:.1f}' cy='{xy((float(result['goal']['x']), float(result['goal']['y'])))[1]:.1f}' r='9' fill='#eab308' stroke='#111827' stroke-width='2'/>"
         f"<text x='15' y='25' fill='#111827'>q={result['tube_quantile']:.3f} m</text></svg>"
     )
 
@@ -379,7 +449,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     self.state["intent_parser"], self.args,
                 )
                 family = plan_family(start, goal, gt, workspace, self.args)
-                self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "mode": mode, "l1": form.get("l1", ""), "l2": form.get("l2", ""), "intent": intent.model_dump(), "goal_relations": relations, "goal_relation_results": relation_results, "goal": goal, "routes": route_cards(family["routes"]), "route_data": family["routes"], "result": None, "results": {}})
+                self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "mode": mode, "l1": form.get("l1", ""), "l2": form.get("l2", ""), "intent": intent.model_dump(), "goal_relations": relations, "goal_relation_results": relation_results, "goal": goal, "start": start, "ground_truth_obstacles": gt, "perceived_obstacles": perceived, "routes": route_cards(family["routes"]), "route_data": family["routes"], "result": None, "results": {}})
                 message = f"Intent parser selected goal ({goal['x']:.2f}, {goal['y']:.2f}); generated {len(family['routes'])} HRRT routes for capture {capture_id}."
             elif self.path == "/score":
                 if not self.state.get("route_data"):
@@ -399,7 +469,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     scored = score_pair(expert["waypoints"], predicted, self.args)
                     results[mode_name] = public_result(
                         capture_id, rows, mode_name, form.get("l1", ""), form.get("l2", ""),
-                        expert, predicted, scored, (gt, mode_obstacles)
+                        expert, predicted, scored, (gt, mode_obstacles), start, goal, perceived
                     )
                 self.state.update({"result": results[mode], "results": results, "mode": mode, "l1": form.get("l1", ""), "l2": form.get("l2", "")})
                 message = f"Scored both modes against HRRT route {expert['route_id']} using ideal double-integrator residual."

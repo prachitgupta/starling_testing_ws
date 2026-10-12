@@ -304,7 +304,8 @@ function stopRecording(){if(timer)clearTimeout(timer);if(stream)stream.getTracks
 fileInput.onchange=async()=>{const file=fileInput.files[0];if(file)await transcribe(file,file.type);fileInput.value=''};
 if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)button.onclick=()=>fileInput.click();else button.onclick=async()=>{if(recorder?.state==='recording'){recorder.stop();return}try{stream=await navigator.mediaDevices.getUserMedia({audio:true});const chunks=[];recorder=new MediaRecorder(stream,audioType?{mimeType:audioType}:undefined);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onstop=async()=>{const type=recorder.mimeType||audioType;stopRecording();await transcribe(new Blob(chunks,{type}),type)};recorder.start();button.classList.add('listening');button.textContent='■';status.textContent='Listening…';timer=setTimeout(()=>{if(recorder?.state==='recording')recorder.stop()},20000)}catch(error){stopRecording();status.textContent=`Microphone unavailable: ${error.message}`}}}
 setupSpeech('speech-l1','speech-file-l1','l1','speech-status-l1');setupSpeech('speech-l2','speech-file-l2','l2','speech-status-l2');
-const scoreForm=document.getElementById('score-form'),scoreButton=document.getElementById('score-button'),pipelineStatus=document.getElementById('pipeline-status'),plotContainer=document.getElementById('plot-container'),plotLegend=document.getElementById('plot-legend'),scoreResults=document.getElementById('score-results'),resultJson=document.getElementById('result-json');
+const scoreForm=document.getElementById('score-form'),scoreButton=document.getElementById('score-button'),pipelineStatus=document.getElementById('pipeline-status'),plotContainer=document.getElementById('plot-container'),plotLegend=document.getElementById('plot-legend'),scoreResults=document.getElementById('score-results'),resultJson=document.getElementById('result-json'),modeSelect=document.getElementById('mode-select');
+modeSelect?.addEventListener('change',async()=>{const mode=modeSelect.value;const hiddenMode=scoreForm?.querySelector('input[name="mode"]');if(hiddenMode)hiddenMode.value=mode;const response=await fetch(`/api/preview?mode=${encodeURIComponent(mode)}`,{cache:'no-store'});if(response.ok){const preview=await response.json();plotContainer.innerHTML=preview.plot;plotLegend.textContent=preview.legend}});
 function showScores(progress){scoreResults.replaceChildren();const box=document.createElement('div');box.className='score-lock';const title=document.createElement('div');title.className='metric';title.textContent=`Final scores — ${progress.selected_mode} displayed`;box.appendChild(title);for(const [name,item] of Object.entries(progress.scores||{})){const line=document.createElement('p');line.textContent=`${name}: score = ${Number(item.score).toFixed(5)} m · tube q = ${Number(item.tube_quantile).toFixed(5)} m · max residual at ${Number(item.max_time_s).toFixed(2)} s`;box.appendChild(line)}scoreResults.appendChild(box);if(progress.result)resultJson.textContent=JSON.stringify(progress.result,null,2)}
 function showHistory(history){const log=document.getElementById('pipeline-log');log.replaceChildren();for(const event of history||[]){const item=document.createElement('li');item.textContent=`${event.stage}: ${event.message}`;log.appendChild(item)}log.scrollTop=log.scrollHeight}
 async function pollPipeline(){const response=await fetch('/api/progress',{cache:'no-store'}),progress=await response.json();pipelineStatus.textContent=`${progress.stage}: ${progress.message}`;showHistory(progress.history);if(progress.plot)plotContainer.innerHTML=progress.plot;if(progress.legend)plotLegend.textContent=progress.legend;if(progress.done){if(progress.error){pipelineStatus.classList.add('error');scoreButton.disabled=false}else{showScores(progress);scoreButton.disabled=true;scoreButton.textContent='Final result locked — change row to run again'}return}setTimeout(pollPipeline,350)}
@@ -348,7 +349,8 @@ def html_page(state, args, message=""):
             for name, item in results.items()
         )
     stage_hint = "" if view_error else ("Final view: verified HRRT and refined LLM trajectories with QP-optimized samples and score tubes." if result else ("Select an HRRT route above; all generated candidates are shown in the plot." if routes else "Dataset scene loaded: red is ground truth, orange is perceived, and the blue marker is the drone pose."))
-    legend = "" if view_error else f"{stage_hint} Red: ground-truth obstacle · orange dashed box: perceived obstacle · green: HRRT · orange dashed path: raw LLM · blue: refined LLM · blue marker: drone · gold marker: goal."
+    obstacle_legend = "Red: ground-truth obstacle only." if state.get("mode") == "planner_only" else "Red: ground-truth obstacle · orange dashed box: perceived obstacle."
+    legend = "" if view_error else f"{stage_hint} {obstacle_legend} Green: HRRT · orange dashed path: raw LLM · blue: refined LLM · blue marker: drone · gold marker: goal."
     message_block = f"<p class='error'>{html.escape(message)}</p>" if message.startswith("Error:") else f"<p class='hint'>{html.escape(message)}</p>"
     goal = state.get("goal")
     if goal:
@@ -360,7 +362,7 @@ def html_page(state, args, message=""):
 <div class='grid'><section>
 <form class='card' method='post' action='/propose'><h2>1. Environment and language</h2>
 <label>Refined calibration row</label><select name='row' onchange="window.location='/?row='+this.value">{capture_options}</select>
-<label>Mode</label><select name='mode'><option value='env_uncertainty'>With environment uncertainty (LLM uses perceived E-hat)</option><option value='planner_only'>Planner uncertainty only (both use ground-truth E)</option></select>
+<label>Mode</label><select id='mode-select' name='mode'><option value='env_uncertainty'{' selected' if state.get('mode','env_uncertainty') == 'env_uncertainty' else ''}>With environment uncertainty (LLM uses perceived E-hat)</option><option value='planner_only'{' selected' if state.get('mode') == 'planner_only' else ''}>Planner uncertainty only (both use ground-truth E)</option></select>
 <label>L1 — object-relative goal instruction</label><div class='speech-row'><textarea id='l1' name='l1'>{l1_value}</textarea><button id='speech-l1' type='button' title='Record L1 prompt' aria-label='Record L1 prompt'>●</button></div><input id='speech-file-l1' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l1' class='hint'>Speak or type L1, then propose a goal.</p>
 <button>Propose goal</button></form>
 {goal_card}
@@ -380,6 +382,7 @@ def scene_preview(state, args):
             "start": state["start"],
             "goal": state.get("goal"),
             "routes": state.get("routes", []),
+            "mode": state.get("mode", "env_uncertainty"),
         }
     rows = state.get("rows")
     if rows is None:
@@ -391,6 +394,7 @@ def scene_preview(state, args):
         "start": state.get("start", start),
         "goal": state.get("goal"),
         "routes": state.get("routes", []),
+        "mode": state.get("mode", "env_uncertainty"),
         "workspace": workspace,
     }
 
@@ -416,7 +420,9 @@ def grid_axes(xy, min_x, max_x, min_y, max_y, width, height):
 
 
 def plot_scene(scene):
-    obstacles = scene["ground_truth_obstacles"] + scene["perceived_obstacles"]
+    show_perceived = scene.get("mode", "env_uncertainty") == "env_uncertainty"
+    perceived_obstacles = scene.get("perceived_obstacles", []) if show_perceived else []
+    obstacles = scene["ground_truth_obstacles"] + perceived_obstacles
     points = [(float(scene["start"]["x"]), float(scene["start"]["y"]))]
     if scene.get("goal"):
         points.append((float(scene["goal"]["x"]), float(scene["goal"]["y"])))
@@ -443,7 +449,7 @@ def plot_scene(scene):
         x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
         x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
         shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#ef444455' stroke='#b91c1c'/>")
-    for obstacle in scene["perceived_obstacles"]:
+    for obstacle in perceived_obstacles:
         x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
         x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
         shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#f59e0b22' stroke='#d97706' stroke-dasharray='6 4'/>")
@@ -471,7 +477,10 @@ def plot_svg(result):
     for key in ("start", "goal"):
         if result.get(key):
             points.append((float(result[key]["x"]), float(result[key]["y"])))
-    for obstacle in result["ground_truth_obstacles"] + result.get("perceived_obstacles", result["planning_obstacles"]):
+    plot_obstacles = result["ground_truth_obstacles"]
+    if result.get("mode") == "env_uncertainty":
+        plot_obstacles = plot_obstacles + result.get("perceived_obstacles", result["planning_obstacles"])
+    for obstacle in plot_obstacles:
         points += [(float(obstacle["min_corner"][0]), float(obstacle["min_corner"][1])), (float(obstacle["max_corner"][0]), float(obstacle["max_corner"][1]))]
     if not points:
         return ""
@@ -500,10 +509,11 @@ def plot_svg(result):
         x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
         x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
         shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#ef444455' stroke='#b91c1c'/>")
-    for obstacle in result.get("perceived_obstacles", result["planning_obstacles"]):
-        x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
-        x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
-        shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#f59e0b22' stroke='#d97706' stroke-dasharray='6 4'/>")
+    if result.get("mode") == "env_uncertainty":
+        for obstacle in result.get("perceived_obstacles", result["planning_obstacles"]):
+            x0, y0 = xy((float(obstacle["min_corner"][0]), float(obstacle["max_corner"][1])))
+            x1, y1 = xy((float(obstacle["max_corner"][0]), float(obstacle["min_corner"][1])))
+            shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#f59e0b22' stroke='#d97706' stroke-dasharray='6 4'/>")
     grid = grid_axes(xy, min_x, max_x, min_y, max_y, width, height)
     return (
         f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='LLM and HRRT trajectories'>"
@@ -544,7 +554,7 @@ def run_scoring_job(state, args, form):
         if not l2:
             raise ValueError("enter an L2 route preference")
         goal = state["goal"]
-        preview = scene_preview(state, args)
+        preview = dict(scene_preview(state, args), mode=mode)
         last_plot = plot_scene(preview)
         set_progress(state, "LLM route selection", f"Matching L2 against {len(routes)} displayed HRRT routes.", last_plot, "All HRRT candidates remain visible while the expert selector decides.")
         cards = mission_route_cards(routes, args.route_nominal_speed_mps)
@@ -663,6 +673,21 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/progress":
             with self.state["lock"]:
                 body = compact(self.state.get("progress", {"stage": "Idle", "message": "", "plot": "", "legend": "", "done": True, "error": False})).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers(); self.wfile.write(body)
+            return
+        if parsed.path == "/api/preview":
+            mode = query.get("mode", ["env_uncertainty"])[-1]
+            if mode not in ("env_uncertainty", "planner_only"):
+                mode = "env_uncertainty"
+            with self.state["lock"]:
+                self.state["mode"] = mode
+            preview = dict(scene_preview(self.state, self.args), mode=mode)
+            legend = (
+                "Planner-only mode: solid red boxes are ground-truth obstacles; perceived obstacles are hidden."
+                if mode == "planner_only"
+                else "Environment-uncertainty mode: solid red boxes are ground truth; orange dashed boxes are perceived obstacles."
+            )
+            body = compact({"plot": plot_scene(preview), "legend": legend}).encode()
             self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers(); self.wfile.write(body)
             return
         if parsed.path == "/" and query.get("row"):

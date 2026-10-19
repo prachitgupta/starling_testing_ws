@@ -32,9 +32,13 @@ python3 -m pip install torch transformers scipy numpy pyyaml sentencepiece
 
 PACKAGE_ROOT=src/llm_vision_planner
 SAFETY_RADIUS_THRESHOLD_M=${SAFETY_RADIUS_THRESHOLD_M:-0.40}
+MAX_EPOCHS=${MAX_EPOCHS:-}
 TRAIN_CSV=${TRAIN_CSV:-}
 VALIDATION_CSV=${VALIDATION_CSV:-}
 DATASET_ARGS=()
+if [ -n "$MAX_EPOCHS" ]; then
+  DATASET_ARGS+=(--max-epochs "$MAX_EPOCHS")
+fi
 if [ -n "$TRAIN_CSV" ]; then
   DATASET_ARGS+=(--train "$TRAIN_CSV")
 fi

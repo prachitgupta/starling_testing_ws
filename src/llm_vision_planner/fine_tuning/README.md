@@ -469,14 +469,14 @@ test -s src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hr
 test -s src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer.py
 test -s src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch
 test -s src/llm_vision_planner/fine_tuning/configs/hrrt_waypoint_transformer.yaml
-JOB_ID=$(sbatch --parsable --export=ALL,TRAIN_CSV=/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv,VALIDATION_CSV=/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv,SAFETY_RADIUS_THRESHOLD_M=0.40 src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch)
+JOB_ID=$(sbatch --parsable --export=ALL,TRAIN_CSV=/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv,VALIDATION_CSV=/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv,SAFETY_RADIUS_THRESHOLD_M=0.40,MAX_EPOCHS=100 src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch)
 printf '%s\n' "$JOB_ID" | tee waypoint_transformer_job_id.txt
 ```
 
-To request a different stopping radius, change only the numeric value in the
-submission command—for example, use
-`SAFETY_RADIUS_THRESHOLD_M=0.35` for a `0.35 m` threshold. For a direct Python
-run, pass `--safety-radius-threshold-m 0.35`.
+To request a different stopping radius or maximum epoch count, change only the
+corresponding values in the submission command—for example,
+`SAFETY_RADIUS_THRESHOLD_M=0.35,MAX_EPOCHS=150`. For a direct Python run, pass
+`--safety-radius-threshold-m 0.35 --max-epochs 150`.
 
 Monitor the submitted job with this copy-pasteable command:
 

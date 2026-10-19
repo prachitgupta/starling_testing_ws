@@ -370,30 +370,30 @@ print("Waypoint-transformer configuration and DSS datasets are compatible.")
 PY
 ```
 
-Submit from this local computer with the following block. It copies the exact
-trainer, YAML configuration, and batch file from this workspace, verifies that
-the existing DSS files are present on NCSA, submits the job, and saves the
-allocated job number remotely. It does not depend on an unpushed Git commit:
+First update the NCSA checkout from the committed branch. The currently
+installed configuration file on NCSA can be untracked, which makes a normal
+`git pull` refuse to overwrite it. The following block preserves that one file
+under `.local-backups/`, pulls the committed trainer, YAML configuration, and
+batch file, verifies the existing DSS data and all required trainer files, then
+submits the job. Paste it exactly at the NCSA login prompt:
 
 ```bash
-cd /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
-ssh pgupta12@dtai-login.delta.ncsa.illinois.edu 'mkdir -p /projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/scripts /projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/configs /projects/bhkj/pgupta12/starling_multiple_trajectory_idea/logs'
-rsync -avP \
-  fine_tuning/scripts/train_hrrt_waypoint_transformer.py \
-  fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch \
-  pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/scripts/
-rsync -avP \
-  fine_tuning/configs/hrrt_waypoint_transformer.yaml \
-  pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/configs/
-ssh pgupta12@dtai-login.delta.ncsa.illinois.edu <<'REMOTE'
 set -euo pipefail
 cd /projects/bhkj/pgupta12/starling_multiple_trajectory_idea
+git checkout starling_multiple_trajectory_idea
+mkdir -p .local-backups logs
+if [ -e src/llm_vision_planner/fine_tuning/configs/hrrt_waypoint_transformer.yaml ] && ! git ls-files --error-unmatch src/llm_vision_planner/fine_tuning/configs/hrrt_waypoint_transformer.yaml >/dev/null 2>&1; then
+  mv src/llm_vision_planner/fine_tuning/configs/hrrt_waypoint_transformer.yaml \
+    .local-backups/hrrt_waypoint_transformer.yaml.pre-b317370.$(date +%Y%m%d-%H%M%S)
+fi
+git pull --ff-only
 test -s src/llm_vision_planner/fine_tuning/datasets/dss/hrrt_sft_train.csv
 test -s src/llm_vision_planner/fine_tuning/datasets/dss/hrrt_sft_validation.csv
-mkdir -p logs
+test -s src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer.py
+test -s src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch
+test -s src/llm_vision_planner/fine_tuning/configs/hrrt_waypoint_transformer.yaml
 JOB_ID=$(sbatch --parsable --export=ALL,SAFETY_RADIUS_THRESHOLD_M=0.40 src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch)
 printf '%s\n' "$JOB_ID" | tee waypoint_transformer_job_id.txt
-REMOTE
 ```
 
 To request a different stopping radius, change only the numeric value in the

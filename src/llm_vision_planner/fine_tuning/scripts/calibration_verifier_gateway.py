@@ -270,6 +270,11 @@ def planner_waypoints(start, goal, planning_obstacles, workspace, l1, args, feed
     )
 
 
+def planner_display_name(args):
+    """Return the user-facing name for the selected waypoint planner."""
+    return "Transformer" if args.planner_provider == "transformer" else "LLM"
+
+
 def configured_verifier(workspace, clearance):
     verifier = PathVerifier.__new__(PathVerifier)
     verifier.safety_margin_m = float(clearance)
@@ -409,6 +414,8 @@ scoreForm.addEventListener('submit',async event=>{event.preventDefault();scoreBu
 
 
 def html_page(state, args, message=""):
+    planner_label = planner_display_name(args)
+    speech_script = SPEECH_SCRIPT.replace("LLM", planner_label)
     capture_options = "".join(
         f'<option value="{i}"{" selected" if i == state["row_number"] else ""}>row {i}: capture {html.escape(cid)}</option>'
         for i, (cid, _) in enumerate(state["captures"], 1)
@@ -442,9 +449,9 @@ def html_page(state, args, message=""):
             f"(q = {item['tube_quantile']:.5f} m)</p>"
             for name, item in results.items()
         )
-    stage_hint = "" if view_error else ("Final view: verified HRRT and refined LLM trajectories with QP-optimized samples and score tubes." if result else ("Select an HRRT route above; all generated candidates are shown in the plot." if routes else "Dataset scene loaded: red is ground truth, orange is perceived, and the blue marker is the drone pose."))
+    stage_hint = "" if view_error else (f"Final view: verified HRRT and refined {planner_label} trajectories with QP-optimized samples and score tubes." if result else ("Select an HRRT route above; all generated candidates are shown in the plot." if routes else "Dataset scene loaded: red is ground truth, orange is perceived, and the blue marker is the drone pose."))
     obstacle_legend = "Red: ground-truth obstacle only." if state.get("mode") == "planner_only" else "Red: ground-truth obstacle · orange dashed box: perceived obstacle."
-    legend = "" if view_error else f"{stage_hint} {obstacle_legend} Green: HRRT · orange dashed path: raw LLM · blue: refined LLM · blue marker: drone · gold marker: goal."
+    legend = "" if view_error else f"{stage_hint} {obstacle_legend} Green: HRRT · orange dashed path: raw {planner_label} · blue: refined {planner_label} · blue marker: drone · gold marker: goal."
     message_block = f"<p class='error'>{html.escape(message)}</p>" if message.startswith("Error:") else f"<p class='hint'>{html.escape(message)}</p>"
     goal = state.get("goal")
     if goal:
@@ -452,20 +459,20 @@ def html_page(state, args, message=""):
     else:
         goal_card = "<div class='card'><h2>2. Goal approval</h2><p class='hint'>Generate a goal proposal first. HRRT generation is disabled until the proposed goal is accepted or replaced manually.</p></div>"
     return f"""<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>Calibration verifier</title><style>{STYLE}</style></head><body><main>
-<h1>Calibration trajectory verifier</h1><p class='hint'>Offline replacement for live mission-gateway perception. Select a refined calibration capture, compare LLM and HRRT trajectories, and inspect the residual tube.</p>
+<h1>Calibration trajectory verifier</h1><p class='hint'>Offline replacement for live mission-gateway perception. Select a refined calibration capture, compare {planner_label} and HRRT trajectories, and inspect the residual tube.</p>
 <div class='grid'><section>
 <form class='card' method='post' action='/propose'><h2>1. Environment and language</h2>
 <label>Refined calibration row</label><select name='row' onchange="window.location='/?row='+this.value">{capture_options}</select>
-<label>Mode</label><select id='mode-select' name='mode'><option value='env_uncertainty'{' selected' if state.get('mode','env_uncertainty') == 'env_uncertainty' else ''}>With environment uncertainty (LLM uses perceived E-hat)</option><option value='planner_only'{' selected' if state.get('mode') == 'planner_only' else ''}>Planner uncertainty only (both use ground-truth E)</option></select>
+<label>Mode</label><select id='mode-select' name='mode'><option value='env_uncertainty'{' selected' if state.get('mode','env_uncertainty') == 'env_uncertainty' else ''}>With environment uncertainty ({planner_label} uses perceived E-hat)</option><option value='planner_only'{' selected' if state.get('mode') == 'planner_only' else ''}>Planner uncertainty only (both use ground-truth E)</option></select>
 <label>L1 — object-relative goal instruction</label><div class='speech-row'><textarea id='l1' name='l1'>{l1_value}</textarea><button id='speech-l1' type='button' title='Record L1 prompt' aria-label='Record L1 prompt'>●</button></div><input id='speech-file-l1' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l1' class='hint'>Speak or type L1, then propose a goal.</p>
 <button>Propose goal</button></form>
 {goal_card}
-<form id='score-form' class='card' method='post' action='/score'><h2>3. LLM expert selection and scoring</h2>
+<form id='score-form' class='card' method='post' action='/score'><h2>3. {planner_label} expert selection and scoring</h2>
 <input type='hidden' name='row' value='{selected}'><input type='hidden' name='mode' value='{html.escape(state.get('mode','env_uncertainty'))}'><input type='hidden' name='l1' value='{html.escape(state.get('l1',''))}'>
-<label>L2 — route preference for the OpenAI selector</label><div class='speech-row'><textarea id='l2' name='l2'>{l2_value}</textarea><button id='speech-l2' type='button' title='Record L2 preference' aria-label='Record L2 preference'>●</button></div><input id='speech-file-l2' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l2' class='hint'>The LLM selects one displayed HRRT route from this preference.</p>
-<button id='score-button' {'disabled' if not routes else ''}>Select route, score, and plot</button><p id='pipeline-status' class='hint'>{'HRRT family ready; enter L2 for LLM route selection.' if routes else 'Waiting for an accepted goal and HRRT route family.'}</p><ol id='pipeline-log' class='pipeline-log'></ol></form>
+<label>L2 — route preference for the OpenAI selector</label><div class='speech-row'><textarea id='l2' name='l2'>{l2_value}</textarea><button id='speech-l2' type='button' title='Record L2 preference' aria-label='Record L2 preference'>●</button></div><input id='speech-file-l2' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l2' class='hint'>The {planner_label} selects one displayed HRRT route from this preference.</p>
+<button id='score-button' {'disabled' if not routes else ''}>Select route, score, and plot</button><p id='pipeline-status' class='hint'>{f'HRRT family ready; enter L2 for {planner_label} route selection.' if routes else 'Waiting for an accepted goal and HRRT route family.'}</p><ol id='pipeline-log' class='pipeline-log'></ol></form>
 <div class='card'><h2>Result</h2><div id='score-results'>{score_block}</div>{message_block}<pre id='result-json'>{html.escape(result_json)}</pre></div>
-</section><section class='card'><h2>Trajectory and safety-tube view</h2><div class='plot-key'><span class='key-item'><i class='key-line' style='border-color:#16a34a'></i>HRRT expert</span><span class='key-item'><i class='key-line key-dashed' style='border-color:#f97316'></i>Raw LLM</span><span class='key-item'><i class='key-line' style='border-color:#2563eb'></i>Refined LLM</span><span class='key-item'><i class='key-line' style='border-color:#b91c1c'></i>Ground truth obstacle</span><span class='key-item'><i class='key-line key-dashed' style='border-color:#d97706'></i>Perceived obstacle</span><span class='key-item'>Translucent green/blue = safety tubes</span></div><div id='plot-container'>{plot}</div><p id='plot-legend' class='legend'>{html.escape(legend)}</p></section></div>{SPEECH_SCRIPT}</main></body></html>"""
+</section><section class='card'><h2>Trajectory and safety-tube view</h2><div class='plot-key'><span class='key-item'><i class='key-line' style='border-color:#16a34a'></i>HRRT expert</span><span class='key-item'><i class='key-line key-dashed' style='border-color:#f97316'></i>Raw {planner_label}</span><span class='key-item'><i class='key-line' style='border-color:#2563eb'></i>Refined {planner_label}</span><span class='key-item'><i class='key-line' style='border-color:#b91c1c'></i>Ground truth obstacle</span><span class='key-item'><i class='key-line key-dashed' style='border-color:#d97706'></i>Perceived obstacle</span><span class='key-item'>Translucent green/blue = safety tubes</span></div><div id='plot-container'>{plot}</div><p id='plot-legend' class='legend'>{html.escape(legend)}</p></section></div>{speech_script}</main></body></html>"""
 
 
 def scene_preview(state, args):
@@ -610,7 +617,7 @@ def plot_svg(result):
             shapes.append(f"<rect x='{x0:.1f}' y='{y0:.1f}' width='{x1-x0:.1f}' height='{y1-y0:.1f}' fill='#f59e0b22' stroke='#d97706' stroke-dasharray='6 4'/>")
     grid = grid_axes(xy, min_x, max_x, min_y, max_y, width, height)
     return (
-        f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='LLM and HRRT trajectories'>"
+        f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='{html.escape(result.get('planner_display_name', 'LLM'))} and HRRT trajectories'>"
         f"{grid}{''.join(shapes)}{tube(result['expert_samples'], '#16a34a')}"
         f"{tube(result['predicted_samples'], '#2563eb')}"
         f"{polyline(result['expert_waypoints'], '#16a34a')}"
@@ -635,6 +642,7 @@ def set_progress(state, stage, message, plot="", legend="", done=False, error=Fa
 
 def run_scoring_job(state, args, form):
     last_plot = ""
+    planner_label = planner_display_name(args)
     try:
         row_number = int(form.get("row", state["row_number"]))
         capture_id, rows = choose_capture(state["captures"], row_number)
@@ -651,14 +659,14 @@ def run_scoring_job(state, args, form):
         goal = state["goal"]
         preview = dict(scene_preview(state, args), mode=mode)
         last_plot = plot_scene(preview)
-        set_progress(state, "LLM route selection", f"Matching L2 against {len(routes)} displayed HRRT routes.", last_plot, "All HRRT candidates remain visible while the expert selector decides.")
+        set_progress(state, f"{planner_label} route selection", f"Matching L2 against {len(routes)} displayed HRRT routes.", last_plot, "All HRRT candidates remain visible while the expert selector decides.")
         cards = mission_route_cards(routes, args.route_nominal_speed_mps)
         selection = state["route_selector"].select(l2, cards, [])
         if selection.status != "SELECTED":
             raise ValueError(selection.clarifying_question or selection.reason)
         expert = next((route for route in routes if str(route["route_id"]) == str(selection.selected_route_id)), None)
         if expert is None:
-            raise ValueError("the LLM selector returned a route outside the displayed HRRT family")
+            raise ValueError(f"the {planner_label} selector returned a route outside the displayed HRRT family")
         expert_waypoints = refine_waypoints(expert["waypoints"], workspace, gt, args.clearance_m, args.fixed_z)
         expert_ok, expert_reason, expert_metrics = verify_waypoints(
             expert_waypoints, start, goal, gt, workspace, args.clearance_m
@@ -682,15 +690,15 @@ def run_scoring_job(state, args, form):
             expert_reason = "passed"
         selected_scene = dict(preview, routes=[], selected_waypoints=expert_waypoints)
         last_plot = plot_scene(selected_scene)
-        set_progress(state, "HRRT verification", f"Selected {expert['route_id']} passed sanity verification ({expert_reason}).", last_plot, "Green: verified LLM-selected HRRT expert route.")
+        set_progress(state, "HRRT verification", f"Selected {expert['route_id']} passed sanity verification ({expert_reason}).", last_plot, f"Green: verified {planner_label}-selected HRRT expert route.")
         results = {}
         for mode_name, mode_obstacles in (("env_uncertainty", perceived), ("planner_only", gt)):
-            set_progress(state, "Trial 1/2 · LLM generation", f"Generating the first {mode_name} LLM prediction.", last_plot, "Green: selected HRRT expert route. Trial 1 prediction will appear in orange.")
+            set_progress(state, f"Trial 1/2 · {planner_label} generation", f"Generating the first {mode_name} {planner_label} prediction.", last_plot, f"Green: selected HRRT expert route. Trial 1 prediction will appear in orange.")
             base_prompt = planner_prompt(start, goal, mode_obstacles, workspace, args.clearance_m, l1=l1)
             raw_predicted = planner_waypoints(start, goal, mode_obstacles, workspace, planner_preference, args, prompt_text=base_prompt)
             live_scene = dict(selected_scene, raw_predicted_waypoints=raw_predicted)
             last_plot = plot_scene(live_scene)
-            set_progress(state, "Trial 1/2 · refinement", f"First {mode_name} LLM prediction received; running PathRefinement.", last_plot, "Orange dashed: Trial 1 raw LLM prediction · green: HRRT expert.")
+            set_progress(state, "Trial 1/2 · refinement", f"First {mode_name} {planner_label} prediction received; running PathRefinement.", last_plot, f"Orange dashed: Trial 1 raw {planner_label} prediction · green: HRRT expert.")
             refined_candidate = refine_waypoints(raw_predicted, workspace, mode_obstacles, args.clearance_m, args.fixed_z)
             live_scene["predicted_waypoints"] = refined_candidate
             last_plot = plot_scene(live_scene)
@@ -710,7 +718,7 @@ def run_scoring_job(state, args, form):
                 raw_predicted = planner_waypoints(start, goal, mode_obstacles, workspace, planner_preference, args, feedback=feedback, prompt_text=planner_prompt(start, goal, mode_obstacles, workspace, args.clearance_m, l1=l1, feedback=feedback))
                 retry_scene = dict(selected_scene, raw_predicted_waypoints=raw_predicted)
                 last_plot = plot_scene(retry_scene)
-                set_progress(state, "Trial 2/2 · LLM generation", f"Second {mode_name} LLM prediction received from the feedback prompt.", last_plot, "Orange dashed now shows Trial 2 raw prediction; the failed Trial 1 display has been replaced.")
+                set_progress(state, f"Trial 2/2 · {planner_label} generation", f"Second {mode_name} {planner_label} prediction received from the feedback prompt.", last_plot, f"Orange dashed now shows Trial 2 raw {planner_label} prediction; the failed Trial 1 display has been replaced.")
                 predicted = refine_waypoints(raw_predicted, workspace, mode_obstacles, args.clearance_m, args.fixed_z)
                 refined_scene = dict(retry_scene, predicted_waypoints=predicted)
                 last_plot = plot_scene(refined_scene)
@@ -719,15 +727,16 @@ def run_scoring_job(state, args, form):
                 trial_records.append({"trial": 2, "passed": refined_ok, "reason": refined_reason, "metrics": refined_metrics})
                 if not refined_ok:
                     set_progress(state, "Trial 2/2 · verification failed", f"Second {mode_name} prediction also failed: {refined_reason}. No QP trajectory or score will be produced.", last_plot, "Final failed view: orange dashed is Trial 2 raw; blue is Trial 2 refined.")
-                    raise ValueError(f"No safe LLM plan after 2/2 trials in {mode_name}; Trial 2 failed: {refined_reason}")
+                    raise ValueError(f"No safe {planner_label} plan after 2/2 trials in {mode_name}; Trial 2 failed: {refined_reason}")
                 set_progress(state, "Trial 2/2 · verification passed", f"Second {mode_name} prediction passed after one feedback retry.", last_plot, "Orange dashed: Trial 2 raw · blue: verified Trial 2 refined · green: verified HRRT.")
                 refinement = f"trial 2 passed after trial 1 failed: {raw_reason}"
             else:
                 set_progress(state, "Trial 1/2 · verification passed", f"First {mode_name} prediction passed; Trial 2 is not needed.", last_plot, "Orange dashed: Trial 1 raw · blue: verified Trial 1 refined · green: verified HRRT.")
-            set_progress(state, "QP optimization", f"Solving paired minimum-control trajectories for {mode_name}.", last_plot, "Verified HRRT and LLM waypoints are being optimized.")
+            set_progress(state, "QP optimization", f"Solving paired minimum-control trajectories for {mode_name}.", last_plot, f"Verified HRRT and {planner_label} waypoints are being optimized.")
             scored = score_pair(expert_waypoints, predicted, args)
             result_expert = dict(expert, waypoints=expert_waypoints)
             item = public_result(capture_id, rows, mode_name, l1, l2, result_expert, raw_predicted, predicted, scored, (gt, mode_obstacles), start, goal, perceived, workspace, {"hrrt": expert_reason, "hrrt_metrics": expert_metrics, "llm_trials": trial_records, "llm_refinement": refinement})
+            item["planner_display_name"] = planner_label
             item.update({"expert_selector": "openai" if args.intent_provider == "openai" else "mock", "expert_model": args.expert_model if args.intent_provider == "openai" else "", "selection_reason": selection.reason})
             results[mode_name] = item
         with state["lock"]:
@@ -746,7 +755,7 @@ def run_scoring_job(state, args, form):
             "Complete",
             f"Selected {expert['route_id']} and scored both uncertainty modes. Final view is locked until the row changes.",
             final_plot,
-            "Green: HRRT expert · orange dashed: raw LLM · blue: refined LLM · translucent green/blue: score tubes.",
+            f"Green: HRRT expert · orange dashed: raw {planner_label} · blue: refined {planner_label} · translucent green/blue: score tubes.",
             done=True,
             scores=score_summary,
             result=results[mode],
@@ -806,8 +815,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     status = 409
                 else:
                     self.state["job_running"] = True
-                    self.state["progress_history"] = [{"stage": "Starting", "message": "Preparing LLM route selection."}]
-                    self.state["progress"] = {"stage": "Starting", "message": "Preparing LLM route selection.", "plot": "", "legend": "", "done": False, "error": False, "history": list(self.state["progress_history"])}
+                    planner_label = planner_display_name(self.args)
+                    self.state["progress_history"] = [{"stage": "Starting", "message": f"Preparing {planner_label} route selection."}]
+                    self.state["progress"] = {"stage": "Starting", "message": f"Preparing {planner_label} route selection.", "plot": "", "legend": "", "done": False, "error": False, "history": list(self.state["progress_history"])}
                     body = compact({"ok": True}).encode()
                     status = 202
             if status == 202:
@@ -893,7 +903,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     raise ValueError("manual goal is outside the planning workspace")
                 family = plan_family(start, goal, gt, workspace, self.args)
                 self.state.update({"row_number": row_number, "capture_id": capture_id, "rows": rows, "mode": mode, "goal": goal, "goal_accepted": True, "start": start, "ground_truth_obstacles": gt, "perceived_obstacles": perceived, "routes": route_cards(family["routes"]), "route_data": family["routes"], "result": None, "results": {}})
-                message = f"Goal accepted at ({goal['x']:.2f}, {goal['y']:.2f}, {goal['z']:.2f}); generated {len(family['routes'])} HRRT routes. Enter L2 for LLM route selection."
+                message = f"Goal accepted at ({goal['x']:.2f}, {goal['y']:.2f}, {goal['z']:.2f}); generated {len(family['routes'])} HRRT routes. Enter L2 for {planner_display_name(self.args)} route selection."
             else:
                 raise ValueError("unknown action")
         except Exception as exc:

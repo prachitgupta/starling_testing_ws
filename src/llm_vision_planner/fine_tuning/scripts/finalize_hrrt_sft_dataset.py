@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import random
 from typing import Dict, List, Mapping, Sequence
 
 from generate_hrrt_finetuning_dataset import (
@@ -105,6 +106,23 @@ def selected_for_auxiliary(sample_id: str, ratio: float, seed: int, salt: str) -
     return value < ratio
 
 
+def teacher_only_scene_split(
+    raw_rows: Sequence[Mapping[str, object]], validation_ratio: float, test_ratio: float, seed: int
+) -> Dict[int, str]:
+    """Deterministically split complete scenes without requiring human reviews."""
+    if not 0.0 < validation_ratio < 1.0 or not 0.0 < test_ratio < 1.0:
+        raise ValueError("teacher-only validation and test ratios must both be between 0 and 1")
+    scene_ids = sorted({int(row["scene_id"]) for row in raw_rows})
+    validation_count = max(1, round(len(scene_ids) * validation_ratio))
+    test_count = max(1, round(len(scene_ids) * test_ratio))
+    if validation_count + test_count >= len(scene_ids):
+        raise ValueError("teacher-only split needs at least one training scene")
+    random.Random(seed).shuffle(scene_ids)
+    split = {scene_id: "validation" for scene_id in scene_ids[:validation_count]}
+    split.update({scene_id: "test" for scene_id in scene_ids[validation_count : validation_count + test_count]})
+    return split
+
+
 def reasoning_prompt(
     environment: Mapping[str, object], preference_text: str, clearance_m: float
 ) -> str:
@@ -185,20 +203,27 @@ def finalize(args: argparse.Namespace) -> None:
         raise ValueError(
             f"Raw data modes {sorted(raw_modes)} do not match --distillation-mode {args.distillation_mode!r}"
         )
-    manifest = {str(row["sample_id"]): row for row in read_jsonl(args.audit)}
-    reviews = {str(row["sample_id"]): row for row in read_jsonl(args.reviews)}
-    missing = sorted(set(manifest) - set(reviews))
-    if missing:
-        raise ValueError(f"Human review is incomplete; {len(missing)} assigned labels remain, first={missing[:5]}")
+    if args.teacher_only:
+        manifest = {}
+        reviews = {}
+        scene_split = teacher_only_scene_split(
+            raw_rows, args.validation_scene_ratio, args.test_scene_ratio, args.split_seed
+        )
+    else:
+        manifest = {str(row["sample_id"]): row for row in read_jsonl(args.audit)}
+        reviews = {str(row["sample_id"]): row for row in read_jsonl(args.reviews)}
+        missing = sorted(set(manifest) - set(reviews))
+        if missing:
+            raise ValueError(f"Human review is incomplete; {len(missing)} assigned labels remain, first={missing[:5]}")
 
-    scene_split: Dict[int, str] = {}
-    for assignment in manifest.values():
-        if assignment["review_split"] in ("validation", "test"):
-            scene_id = int(assignment["scene_id"])
-            split = str(assignment["review_split"])
-            previous = scene_split.setdefault(scene_id, split)
-            if previous != split:
-                raise ValueError(f"scene {scene_id} appears in both {previous} and {split}")
+        scene_split: Dict[int, str] = {}
+        for assignment in manifest.values():
+            if assignment["review_split"] in ("validation", "test"):
+                scene_id = int(assignment["scene_id"])
+                split = str(assignment["review_split"])
+                previous = scene_split.setdefault(scene_id, split)
+                if previous != split:
+                    raise ValueError(f"scene {scene_id} appears in both {previous} and {split}")
 
     outputs: Dict[str, List[Dict[str, object]]] = {"train": [], "validation": [], "test": []}
     for raw in raw_rows:
@@ -207,7 +232,7 @@ def finalize(args: argparse.Namespace) -> None:
         split = scene_split.get(scene_id, "train")
         assignment = manifest.get(sample_id)
         review = reviews.get(sample_id)
-        if split in ("validation", "test") and (assignment is None or review is None):
+        if not args.teacher_only and split in ("validation", "test") and (assignment is None or review is None):
             raise ValueError(f"{sample_id}: every held-out-scene row must be human reviewed")
         if review and review["decision"] == "ambiguous":
             continue
@@ -352,6 +377,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=Path("fine_tuning/datasets"))
     parser.add_argument("--clearance-m", type=float, default=0.40)
     parser.add_argument("--distillation-mode", choices=DISTILLATION_MODES, default="dss")
+    parser.add_argument(
+        "--teacher-only",
+        action="store_true",
+        help="Use teacher labels directly and create a deterministic scene-level split without reading audit/review files.",
+    )
+    parser.add_argument("--validation-scene-ratio", type=float, default=0.10)
+    parser.add_argument("--test-scene-ratio", type=float, default=0.10)
+    parser.add_argument("--split-seed", type=int, default=42)
     parser.add_argument(
         "--reasoning-aux-ratio",
         type=float,

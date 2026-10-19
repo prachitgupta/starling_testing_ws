@@ -219,6 +219,55 @@ ls -lh \
   "$DATASET_ROOT/hrrt_sft_test.csv"
 ```
 
+### Teacher-only 80/10/10 scene split (no human audit)
+
+Use this when the structured waypoint transformer should imitate the HRRT
+teacher directly and no human route review is available. It does **not** call
+the audit builder and does not read audit or review files. It assigns each
+complete scene to exactly one split, so no scene appears in both training and
+evaluation. The existing Luna raw file currently contains 4,100 scenes and
+produces 3,280 training scenes, 410 validation scenes, and 410 test scenes.
+
+Paste this from the repository root:
+
+```bash
+cd /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
+python3 fine_tuning/scripts/finalize_hrrt_sft_dataset.py \
+  --raw fine_tuning/datasets/dss/hrrt_teacher_raw_luna_4000.jsonl \
+  --output-dir fine_tuning/datasets/dss_teacher_only_80_10_10 \
+  --clearance-m 0.40 \
+  --distillation-mode dss \
+  --teacher-only \
+  --validation-scene-ratio 0.10 \
+  --test-scene-ratio 0.10 \
+  --split-seed 42 \
+  --reasoning-aux-ratio 0.00 \
+  --counterfactual-aux-ratio 0.00
+```
+
+For the current raw file, the resulting full-plan CSVs contain 18,499 training
+rows, 2,317 validation rows, and 2,295 test rows. The rows are teacher labels;
+they are not human-verified. Check those counts directly:
+
+```bash
+cd /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
+python3 - <<'PY'
+import csv
+from pathlib import Path
+
+root = Path("fine_tuning/datasets/dss_teacher_only_80_10_10")
+expected = {"train": 18499, "validation": 2317, "test": 2295}
+for split, expected_count in expected.items():
+    path = root / f"hrrt_sft_{split}.csv"
+    with path.open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
+    full_plan = [row for row in rows if row["task_type"] == "full_plan"]
+    assert len(full_plan) == expected_count, (split, len(full_plan), expected_count)
+    assert {row["label_source"] for row in full_plan} == {"teacher"}, split
+    print(f"{split}: {len(full_plan)} teacher-labelled full-plan rows")
+PY
+```
+
 ## 6. Prepare the NCSA workspace
 
 ```bash

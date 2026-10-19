@@ -268,6 +268,21 @@ for split, expected_count in expected.items():
 PY
 ```
 
+```bash
+# Recreate CSVs from the completed human-reviewed Luna labels.
+cd /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
+python3 fine_tuning/scripts/finalize_hrrt_sft_dataset.py \
+  --raw fine_tuning/datasets/dss/hrrt_teacher_raw_luna_4000.jsonl \
+  --audit fine_tuning/datasets/dss/hrrt_human_audit_4000.jsonl \
+  --reviews fine_tuning/datasets/dss/hrrt_human_reviews_4000.jsonl \
+  --output-dir fine_tuning/datasets/dss_human_reviewed_4000 \
+  --clearance-m 0.40 \
+  --distillation-mode dss \
+  --reasoning-aux-ratio 0.00 \
+  --counterfactual-aux-ratio 0.00 \
+  --auxiliary-seed 42
+```
+
 ## 6. Prepare the NCSA workspace
 
 ```bash

@@ -161,10 +161,103 @@ def plan_family(start, goal, obstacles, workspace, args):
     )
 
 
+class WaypointTransformerPlanner:
+    """Local inference wrapper for a saved structured waypoint checkpoint."""
+
+    def __init__(self, checkpoint: Path, device_name: str) -> None:
+        try:
+            import torch
+            from transformers import AutoTokenizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "The transformer planner requires torch and transformers in the active Python environment."
+            ) from exc
+
+        checkpoint = checkpoint.expanduser().resolve()
+        config_path = checkpoint / "config.json"
+        weights_path = checkpoint / "model.pt"
+        tokenizer_path = checkpoint / "tokenizer"
+        for path in (config_path, weights_path, tokenizer_path):
+            if not path.exists():
+                raise FileNotFoundError(f"Transformer checkpoint is missing {path}")
+        with config_path.open(encoding="utf-8") as stream:
+            config = json.load(stream)
+        if not isinstance(config.get("model"), dict):
+            raise ValueError(f"{config_path} does not contain a model configuration")
+
+        model_config = dict(config["model"])
+        shared_encoder = checkpoint.parent / "text_encoder"
+        if shared_encoder.is_dir():
+            model_config["text_encoder_name"] = str(shared_encoder)
+        from train_hrrt_waypoint_transformer import build_model, encode_scene
+
+        if device_name == "auto":
+            device_name = "cuda" if torch.cuda.is_available() else "cpu"
+        if device_name.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError("--transformer-device requests CUDA, but CUDA is unavailable")
+        self.device = torch.device(device_name)
+        self.model_config = model_config
+        self.encode_scene = encode_scene
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
+        self.model = build_model(model_config).to(self.device)
+        self.model.load_state_dict(torch.load(weights_path, map_location=self.device), strict=True)
+        self.model.eval()
+
+    @staticmethod
+    def text_context(preference, obstacles):
+        if obstacles:
+            identities = "; ".join(
+                f"obstacle {index} is {str(obstacle.get('label', 'object')).replace('_', ' ')}"
+                for index, obstacle in enumerate(obstacles, start=1)
+            )
+        else:
+            identities = "there are no obstacles"
+        return f"Approved route preference: {str(preference).rstrip().rstrip('.')}. Scene-token identities: {identities}."
+
+    def predict(self, start, goal, obstacles, workspace, preference):
+        import torch
+
+        environment = {
+            "start": dict(start),
+            "goal": dict(goal),
+            "workspace": dict(workspace),
+            "obstacles": list(obstacles),
+        }
+        scene_tokens = self.encode_scene(environment)
+        if len(scene_tokens) > int(self.model_config["max_scene_tokens"]):
+            raise ValueError(
+                f"scene has {len(scene_tokens)} tokens, exceeding checkpoint limit "
+                f"{self.model_config['max_scene_tokens']}"
+            )
+        text = self.tokenizer(
+            [self.text_context(preference, obstacles)],
+            padding=True,
+            truncation=True,
+            max_length=int(self.model_config["max_text_length"]),
+            return_tensors="pt",
+        )
+        input_ids = text["input_ids"].to(self.device)
+        attention_mask = text["attention_mask"].to(self.device)
+        scene = torch.from_numpy(scene_tokens).unsqueeze(0).to(self.device)
+        scene_padding_mask = torch.zeros((1, len(scene_tokens)), dtype=torch.bool, device=self.device)
+        with torch.no_grad():
+            normalized = self.model(input_ids, attention_mask, scene, scene_padding_mask)[0]
+        lower = torch.tensor([workspace["x"][0], workspace["y"][0]], dtype=normalized.dtype, device=self.device)
+        upper = torch.tensor([workspace["x"][1], workspace["y"][1]], dtype=normalized.dtype, device=self.device)
+        coordinates = (lower + 0.5 * (normalized + 1.0) * (upper - lower)).detach().cpu().numpy()
+        z = float(workspace["z"])
+        waypoints = [{"x": float(x), "y": float(y), "z": z} for x, y in coordinates]
+        waypoints[0] = {"x": float(start["x"]), "y": float(start["y"]), "z": z}
+        waypoints[-1] = {"x": float(goal["x"]), "y": float(goal["y"]), "z": z}
+        return waypoints
+
+
 def planner_waypoints(start, goal, planning_obstacles, workspace, l1, args, feedback="", prompt_text=""):
     if args.planner_provider == "mock":
         family = plan_family(start, goal, planning_obstacles, workspace, args)
         return min(family["routes"], key=lambda route: (route["path_length_m"], route["route_id"]))["waypoints"]
+    if args.planner_provider == "transformer":
+        return args.transformer_planner.predict(start, goal, planning_obstacles, workspace, l1)
     planner_args = SimpleNamespace(
         vllm_base_url=args.vllm_base_url,
         vllm_api_key=args.vllm_api_key,
@@ -554,6 +647,7 @@ def run_scoring_job(state, args, form):
             raise ValueError("generate the HRRT route family for this row first")
         if not l2:
             raise ValueError("enter an L2 route preference")
+        planner_preference = l2 if args.planner_provider == "transformer" else l1
         goal = state["goal"]
         preview = dict(scene_preview(state, args), mode=mode)
         last_plot = plot_scene(preview)
@@ -593,7 +687,7 @@ def run_scoring_job(state, args, form):
         for mode_name, mode_obstacles in (("env_uncertainty", perceived), ("planner_only", gt)):
             set_progress(state, "Trial 1/2 · LLM generation", f"Generating the first {mode_name} LLM prediction.", last_plot, "Green: selected HRRT expert route. Trial 1 prediction will appear in orange.")
             base_prompt = planner_prompt(start, goal, mode_obstacles, workspace, args.clearance_m, l1=l1)
-            raw_predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args, prompt_text=base_prompt)
+            raw_predicted = planner_waypoints(start, goal, mode_obstacles, workspace, planner_preference, args, prompt_text=base_prompt)
             live_scene = dict(selected_scene, raw_predicted_waypoints=raw_predicted)
             last_plot = plot_scene(live_scene)
             set_progress(state, "Trial 1/2 · refinement", f"First {mode_name} LLM prediction received; running PathRefinement.", last_plot, "Orange dashed: Trial 1 raw LLM prediction · green: HRRT expert.")
@@ -613,7 +707,7 @@ def run_scoring_job(state, args, form):
                     f"{raw_metrics['feedback_table']}\n"
                     "Prefer a route with larger obstacle clearance, monotonic goal progress, and smoother segment changes."
                 )
-                raw_predicted = planner_waypoints(start, goal, mode_obstacles, workspace, l1, args, feedback=feedback, prompt_text=planner_prompt(start, goal, mode_obstacles, workspace, args.clearance_m, l1=l1, feedback=feedback))
+                raw_predicted = planner_waypoints(start, goal, mode_obstacles, workspace, planner_preference, args, feedback=feedback, prompt_text=planner_prompt(start, goal, mode_obstacles, workspace, args.clearance_m, l1=l1, feedback=feedback))
                 retry_scene = dict(selected_scene, raw_predicted_waypoints=raw_predicted)
                 last_plot = plot_scene(retry_scene)
                 set_progress(state, "Trial 2/2 · LLM generation", f"Second {mode_name} LLM prediction received from the feedback prompt.", last_plot, "Orange dashed now shows Trial 2 raw prediction; the failed Trial 1 display has been replaced.")
@@ -825,7 +919,7 @@ def build_parser():
     parser.add_argument("--row", type=int, default=1, help="1-based capture row to select initially.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8091)
-    parser.add_argument("--planner-provider", choices=("mock", "vllm"), default="mock")
+    parser.add_argument("--planner-provider", choices=("mock", "vllm", "transformer"), default="mock")
     parser.add_argument("--intent-provider", choices=("openai", "mock"), default="openai")
     parser.add_argument("--intent-model", default="gpt-5.4-nano")
     parser.add_argument("--expert-model", default="gpt-6.1-sol")
@@ -833,6 +927,16 @@ def build_parser():
     parser.add_argument("--vllm-base-url", default="http://127.0.0.1:8000/v1")
     parser.add_argument("--vllm-api-key", default="EMPTY")
     parser.add_argument("--llama-model", default="hrrt_planner")
+    parser.add_argument(
+        "--transformer-checkpoint",
+        type=Path,
+        help="checkpoint-epoch-* directory produced by train_hrrt_waypoint_transformer.py; required for --planner-provider transformer",
+    )
+    parser.add_argument(
+        "--transformer-device",
+        default="auto",
+        help="Torch device for --planner-provider transformer: auto, cuda, cuda:0, or cpu.",
+    )
     parser.add_argument("--transcription-model", default="gpt-4o-mini-transcribe")
     parser.add_argument("--start-x", type=float, default=-3.5); parser.add_argument("--start-y", type=float, default=0.0)
     parser.add_argument("--fixed-z", type=float, default=-0.5)
@@ -850,6 +954,10 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
+    if args.planner_provider == "transformer":
+        if args.transformer_checkpoint is None:
+            build_parser().error("--transformer-checkpoint is required for --planner-provider transformer")
+        args.transformer_planner = WaypointTransformerPlanner(args.transformer_checkpoint, args.transformer_device)
     captures = load_captures(args.dataset)
     choose_capture(captures, args.row)
     intent_parser = MockIntentParser() if args.intent_provider == "mock" else OpenAIIntentParser(args.intent_model)

@@ -342,7 +342,7 @@ validation predictions pass through offline refinement, verification, the
 shared ideal-double-integrator QP, residual scoring, and the contraction-radius
 calculation. The radius never contributes gradients. Training stops only after
 the radius is at most `0.40 m` for three consecutive epoch validations. If this
-never happens, training ends after 30 epochs and records the checkpoint with the
+never happens, training ends after 100 epochs and records the checkpoint with the
 smallest radius without claiming that the safety target passed. `0.40 m` is the
 configured default; the submission command below overrides it from the command
 line through `SAFETY_RADIUS_THRESHOLD_M`.
@@ -419,6 +419,130 @@ python3 -m json.tool /home/prachit/Desktop/starling_multiple_trajectory_idea/src
 
 The last command prints whether the requested stopping certificate was met, the
 configured threshold, best observed radius, best checkpoint, and completed epochs.
+
+### Deploy the structured waypoint transformer on the GPU server
+
+The structured transformer is not a vLLM/LoRA adapter.  The calibration gateway
+loads its PyTorch checkpoint directly on the GPU server, sends the predicted
+waypoints through the existing `PathRefinement`, `PathVerifier`, and shared QP
+stages, and displays the resulting trajectory and residual score. For this
+provider, L1 still creates the goal, while L2 is the route preference given to
+the transformer because that is the language field on which it was trained.
+
+First, run this exact block at the GPU-server prompt. It updates the gateway
+code from this branch, copies the complete transformer output directory from
+NCSA, selects the lowest finite-radius checkpoint when one exists (otherwise
+the lowest validation imitation-loss checkpoint), and verifies the inference
+files:
+
+```bash
+set -euo pipefail
+PROJECT=/home/prachit2/starling_testing_ws
+GPU_OUTPUTS="$PROJECT/src/llm_vision_planner/fine_tuning/outputs/hrrt_waypoint_transformer"
+NCSA_OUTPUTS=/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/hrrt_waypoint_transformer
+
+cd "$PROJECT"
+git fetch origin starling_multiple_trajectory_idea
+git checkout starling_multiple_trajectory_idea
+git pull --ff-only
+mkdir -p "$GPU_OUTPUTS"
+rsync -avP pgupta12@dtai-login.delta.ncsa.illinois.edu:"$NCSA_OUTPUTS/" "$GPU_OUTPUTS/"
+
+CHECKPOINT=$(GPU_OUTPUTS="$GPU_OUTPUTS" python3 - <<'PY'
+import json
+import math
+import os
+from pathlib import Path
+
+root = Path(os.environ["GPU_OUTPUTS"])
+candidates = []
+for metrics_path in root.glob("checkpoint-epoch-*/metrics.json"):
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    radius = float(metrics.get("safety_radius_m", math.inf))
+    imitation = float(metrics["euclidean_imitation_loss_m"])
+    key = (0, radius, imitation) if math.isfinite(radius) else (1, imitation, 0.0)
+    candidates.append((key, metrics_path.parent))
+if not candidates:
+    raise SystemExit(f"No checkpoint metrics found below {root}")
+print(min(candidates, key=lambda item: item[0])[1])
+PY
+)
+test -s "$CHECKPOINT/model.pt"
+test -s "$CHECKPOINT/config.json"
+test -d "$CHECKPOINT/tokenizer"
+printf 'Selected checkpoint: %s\n' "$CHECKPOINT"
+```
+
+Create the small local inference environment and rebuild the workspace so the
+gateway sees the transformer provider:
+
+```bash
+set -euo pipefail
+PROJECT=/home/prachit2/starling_testing_ws
+GPU_ENV=/home/prachit2/hrrt_waypoint_transformer_env
+cd "$PROJECT"
+source /opt/ros/humble/setup.bash
+python3 -m venv "$GPU_ENV"
+source "$GPU_ENV/bin/activate"
+python3 -m pip install --upgrade pip setuptools wheel
+python3 -m pip install torch transformers scipy numpy pyyaml sentencepiece openai
+colcon build --packages-select llm_vision_planner --symlink-install
+source install/setup.bash
+```
+
+Then start the calibration gateway with the local transformer. This command is
+fully offline for planning: `mock` only supplies the goal/route-selection test
+logic, while the checkpoint produces the waypoint route. It does not start
+vLLM or require a Llama model:
+
+```bash
+set -euo pipefail
+PROJECT=/home/prachit2/starling_testing_ws
+GPU_ENV=/home/prachit2/hrrt_waypoint_transformer_env
+GPU_OUTPUTS="$PROJECT/src/llm_vision_planner/fine_tuning/outputs/hrrt_waypoint_transformer"
+cd "$PROJECT"
+source /opt/ros/humble/setup.bash
+source "$GPU_ENV/bin/activate"
+source install/setup.bash
+
+CHECKPOINT=$(GPU_OUTPUTS="$GPU_OUTPUTS" python3 - <<'PY'
+import json
+import math
+import os
+from pathlib import Path
+
+root = Path(os.environ["GPU_OUTPUTS"])
+candidates = []
+for metrics_path in root.glob("checkpoint-epoch-*/metrics.json"):
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    radius = float(metrics.get("safety_radius_m", math.inf))
+    imitation = float(metrics["euclidean_imitation_loss_m"])
+    key = (0, radius, imitation) if math.isfinite(radius) else (1, imitation, 0.0)
+    candidates.append((key, metrics_path.parent))
+if not candidates:
+    raise SystemExit(f"No checkpoint metrics found below {root}")
+print(min(candidates, key=lambda item: item[0])[1])
+PY
+)
+
+python3 fine_tuning/scripts/calibration_verifier_gateway.py \
+  --dataset fine_tuning/datasets/calibration_residual_raw_person.csv \
+  --row 2 \
+  --intent-provider mock \
+  --planner-provider transformer \
+  --transformer-checkpoint "$CHECKPOINT" \
+  --transformer-device cuda:0 \
+  --clearance-m 0.40 \
+  --host 0.0.0.0 \
+  --port 8091
+```
+
+Open `http://172.22.224.93:8091`. Enter L1 to create the goal, accept the
+goal, then enter an L2 preference such as `Give every obstacle the widest
+practical berth.` The gateway applies its usual two-attempt refinement and
+verification procedure. The transformer receives the scene, generated goal,
+and L2 preference on each attempt; it does not receive teacher reasoning or
+the displayed HRRT routes.
 
 ## 10. Evaluate the locked test split
 

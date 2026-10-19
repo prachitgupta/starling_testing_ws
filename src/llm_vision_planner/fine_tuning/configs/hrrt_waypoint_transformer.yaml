@@ -19,7 +19,7 @@ model:
 
 training:
   output_dir: fine_tuning/outputs/hrrt_waypoint_transformer
-  max_epochs: 30
+  max_epochs: 100
   batch_size: 32
   validation_batch_size: 64
   gradient_accumulation_steps: 2

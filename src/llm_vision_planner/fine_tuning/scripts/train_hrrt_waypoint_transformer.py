@@ -675,6 +675,12 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_model(model_config).to(device)
+    # Keep one local base-encoder copy beside all epoch checkpoints.  The
+    # checkpoint model.pt still contains the fine-tuned weights; this folder
+    # only lets GPU-server inference rebuild the architecture without an
+    # additional Hugging Face download.
+    model.text_encoder.save_pretrained(output_dir / "text_encoder")
+    tokenizer.save_pretrained(output_dir / "tokenizer")
     text_parameters = list(model.text_encoder.parameters())
     text_parameter_ids = {id(parameter) for parameter in text_parameters}
     planner_parameters = [parameter for parameter in model.parameters() if id(parameter) not in text_parameter_ids]

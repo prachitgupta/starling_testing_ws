@@ -601,6 +601,10 @@ python3 fine_tuning/scripts/calibration_verifier_gateway.py \
   --port 8091
 ```
 
+```bash
+cloudflared tunnel --url http://127.0.0.1:8091
+```
+
 Open `http://172.22.224.93:8091`. Enter L1 to create the goal, accept the
 goal, then enter an L2 preference such as `Give every obstacle the widest
 practical berth.` The gateway applies its usual two-attempt refinement and

@@ -397,10 +397,11 @@ Omit `--qlora` only when intentionally not using 4-bit NF4.
 
 ## 9A. Train the structured waypoint transformer on NCSA
 
-This alternative trainer uses the same finalized DSS files as the LoRA job:
+This alternative trainer can use either the human-reviewed DSS files or the
+teacher-only CSVs. For teacher-only training, use these generated files:
 
-- `fine_tuning/datasets/dss/hrrt_sft_train.csv`
-- `fine_tuning/datasets/dss/hrrt_sft_validation.csv`
+- `fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv`
+- `fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv`
 
 It reads `preference_text`, parses start/goal/workspace/obstacles from
 `environment`, and reads the selected HRRT waypoint label from `completion`.
@@ -428,18 +429,29 @@ bash -n fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch
 python3 - <<'PY'
 from pathlib import Path
 import csv
-import yaml
 
 root = Path(".")
-config = yaml.safe_load((root / "fine_tuning/configs/hrrt_waypoint_transformer.yaml").read_text())
-for key in ("train_csv", "validation_csv"):
-    path = root / config["data"][key]
+for relative in (
+    "fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv",
+    "fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv",
+):
+    path = root / relative
     assert path.is_file() and path.stat().st_size > 0, path
     with path.open(newline="", encoding="utf-8") as stream:
         fields = set(csv.DictReader(stream).fieldnames or [])
     assert {"preference_text", "environment", "completion"} <= fields, (path, fields)
 print("Waypoint-transformer configuration and DSS datasets are compatible.")
 PY
+```
+
+Upload the teacher-only CSVs from the local workstation before submitting on
+NCSA:
+
+```bash
+ssh pgupta12@dtai-login.delta.ncsa.illinois.edu \
+  'mkdir -p /projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10'
+scp fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_{train,validation,test}.csv \
+  pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/
 ```
 
 First update the NCSA checkout from the committed branch. The currently
@@ -459,12 +471,13 @@ if [ -e src/llm_vision_planner/fine_tuning/configs/hrrt_waypoint_transformer.yam
     .local-backups/hrrt_waypoint_transformer.yaml.pre-b317370.$(date +%Y%m%d-%H%M%S)
 fi
 git pull --ff-only
-test -s src/llm_vision_planner/fine_tuning/datasets/dss/hrrt_sft_train.csv
-test -s src/llm_vision_planner/fine_tuning/datasets/dss/hrrt_sft_validation.csv
+mkdir -p src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10
+test -s src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv
+test -s src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv
 test -s src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer.py
 test -s src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch
 test -s src/llm_vision_planner/fine_tuning/configs/hrrt_waypoint_transformer.yaml
-JOB_ID=$(sbatch --parsable --export=ALL,SAFETY_RADIUS_THRESHOLD_M=0.40 src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch)
+JOB_ID=$(sbatch --parsable --export=ALL,TRAIN_CSV=/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv,VALIDATION_CSV=/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv,SAFETY_RADIUS_THRESHOLD_M=0.40 src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch)
 printf '%s\n' "$JOB_ID" | tee waypoint_transformer_job_id.txt
 ```
 

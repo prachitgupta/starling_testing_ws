@@ -32,8 +32,18 @@ python3 -m pip install torch transformers scipy numpy pyyaml sentencepiece
 
 PACKAGE_ROOT=src/llm_vision_planner
 SAFETY_RADIUS_THRESHOLD_M=${SAFETY_RADIUS_THRESHOLD_M:-0.40}
+TRAIN_CSV=${TRAIN_CSV:-}
+VALIDATION_CSV=${VALIDATION_CSV:-}
+DATASET_ARGS=()
+if [ -n "$TRAIN_CSV" ]; then
+  DATASET_ARGS+=(--train "$TRAIN_CSV")
+fi
+if [ -n "$VALIDATION_CSV" ]; then
+  DATASET_ARGS+=(--validation "$VALIDATION_CSV")
+fi
 python3 -u "$PACKAGE_ROOT/fine_tuning/scripts/train_hrrt_waypoint_transformer.py" \
   --config "$PACKAGE_ROOT/fine_tuning/configs/hrrt_waypoint_transformer.yaml" \
+  "${DATASET_ARGS[@]}" \
   --safety-radius-threshold-m "$SAFETY_RADIUS_THRESHOLD_M"
 
 OUTPUT="$PACKAGE_ROOT/fine_tuning/outputs/hrrt_waypoint_transformer"

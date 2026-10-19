@@ -269,14 +269,6 @@ PY
 ```
 
 ```bash
-python3 fine_tuning/scripts/train_hrrt_waypoint_transformer.py \
-  --config fine_tuning/configs/hrrt_waypoint_transformer.yaml \
-  --train fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv \
-  --validation fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv \
-  --output-dir fine_tuning/outputs/hrrt_waypoint_transformer_teacher_only
-```
-
-```bash
 # Recreate CSVs from the completed human-reviewed Luna labels.
 cd /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
 python3 fine_tuning/scripts/finalize_hrrt_sft_dataset.py \

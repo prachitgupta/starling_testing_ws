@@ -1,0 +1,48 @@
+data:
+  train_csv: fine_tuning/datasets/dss/hrrt_sft_train.csv
+  validation_csv: fine_tuning/datasets/dss/hrrt_sft_validation.csv
+  distillation_mode: dss
+  row_limit: null
+
+model:
+  # A 22M-parameter BERT-family encoder; every weight is fine-tuned.
+  text_encoder_name: sentence-transformers/all-MiniLM-L6-v2
+  max_text_length: 128
+  max_scene_tokens: 32
+  waypoint_count: 8
+  hidden_size: 256
+  attention_heads: 8
+  feedforward_size: 1024
+  fusion_layers: 3
+  decoder_layers: 3
+  dropout: 0.10
+
+training:
+  output_dir: fine_tuning/outputs/hrrt_waypoint_transformer
+  max_epochs: 30
+  batch_size: 32
+  validation_batch_size: 64
+  gradient_accumulation_steps: 2
+  # AdamW updates every parameter.  The pretrained encoder uses a smaller rate.
+  text_encoder_learning_rate: 0.00002
+  planner_learning_rate: 0.0001
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  max_gradient_norm: 1.0
+  num_workers: 4
+  seed: 42
+
+validation:
+  # This value never contributes gradients; it is only the stopping certificate.
+  safety_radius_threshold_m: 0.40
+  consecutive_checks: 3
+  conformal_delta: 0.10
+  clearance_m: 0.40
+  refinement_spacing_m: 1.0
+  nudge_epsilon_m: 0.02
+  cruise_speed_mps: 0.30
+  max_velocity_mps: 0.50
+  max_acceleration_mps2: 0.50
+  progress_tolerance_m: 0.001
+  qp_dt: 0.10
+  max_safety_samples: null

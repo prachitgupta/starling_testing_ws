@@ -323,6 +323,103 @@ python3 src/llm_vision_planner/fine_tuning/scripts/train_hrrt_peft.py \
 
 Omit `--qlora` only when intentionally not using 4-bit NF4.
 
+## 9A. Train the structured waypoint transformer on NCSA
+
+This alternative trainer uses the same finalized DSS files as the LoRA job:
+
+- `fine_tuning/datasets/dss/hrrt_sft_train.csv`
+- `fine_tuning/datasets/dss/hrrt_sft_validation.csv`
+
+It reads `preference_text`, parses start/goal/workspace/obstacles from
+`environment`, and reads the selected HRRT waypoint label from `completion`.
+Reasoning-only auxiliary rows are skipped because they do not contain waypoint
+labels. No new feature dataset is generated.
+
+The model fine-tunes every weight in the pretrained MiniLM text encoder and all
+new scene/fusion/decoder layers with AdamW. Mean Euclidean waypoint distance in
+metres is the only loss used for backpropagation. After each epoch, the
+validation predictions pass through offline refinement, verification, the
+shared ideal-double-integrator QP, residual scoring, and the contraction-radius
+calculation. The radius never contributes gradients. Training stops only after
+the radius is at most `0.40 m` for three consecutive epoch validations. If this
+never happens, training ends after 30 epochs and records the checkpoint with the
+smallest radius without claiming that the safety target passed. `0.40 m` is the
+configured default; the submission command below overrides it from the command
+line through `SAFETY_RADIUS_THRESHOLD_M`.
+
+Before submission, run this local compatibility check exactly:
+
+```bash
+cd /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
+python3 -m py_compile fine_tuning/scripts/train_hrrt_waypoint_transformer.py
+bash -n fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch
+python3 - <<'PY'
+from pathlib import Path
+import csv
+import yaml
+
+root = Path(".")
+config = yaml.safe_load((root / "fine_tuning/configs/hrrt_waypoint_transformer.yaml").read_text())
+for key in ("train_csv", "validation_csv"):
+    path = root / config["data"][key]
+    assert path.is_file() and path.stat().st_size > 0, path
+    with path.open(newline="", encoding="utf-8") as stream:
+        fields = set(csv.DictReader(stream).fieldnames or [])
+    assert {"preference_text", "environment", "completion"} <= fields, (path, fields)
+print("Waypoint-transformer configuration and DSS datasets are compatible.")
+PY
+```
+
+Submit from this local computer with the following block. It copies the exact
+trainer, YAML configuration, and batch file from this workspace, verifies that
+the existing DSS files are present on NCSA, submits the job, and saves the
+allocated job number remotely. It does not depend on an unpushed Git commit:
+
+```bash
+cd /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
+ssh pgupta12@dtai-login.delta.ncsa.illinois.edu 'mkdir -p /projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/scripts /projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/configs /projects/bhkj/pgupta12/starling_multiple_trajectory_idea/logs'
+rsync -avP \
+  fine_tuning/scripts/train_hrrt_waypoint_transformer.py \
+  fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch \
+  pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/scripts/
+rsync -avP \
+  fine_tuning/configs/hrrt_waypoint_transformer.yaml \
+  pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/configs/
+ssh pgupta12@dtai-login.delta.ncsa.illinois.edu <<'REMOTE'
+set -euo pipefail
+cd /projects/bhkj/pgupta12/starling_multiple_trajectory_idea
+test -s src/llm_vision_planner/fine_tuning/datasets/dss/hrrt_sft_train.csv
+test -s src/llm_vision_planner/fine_tuning/datasets/dss/hrrt_sft_validation.csv
+mkdir -p logs
+JOB_ID=$(sbatch --parsable --export=ALL,SAFETY_RADIUS_THRESHOLD_M=0.40 src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer.sbatch)
+printf '%s\n' "$JOB_ID" | tee waypoint_transformer_job_id.txt
+REMOTE
+```
+
+To request a different stopping radius, change only the numeric value in the
+submission command—for example, use
+`SAFETY_RADIUS_THRESHOLD_M=0.35` for a `0.35 m` threshold. For a direct Python
+run, pass `--safety-radius-threshold-m 0.35`.
+
+Monitor the submitted job with this copy-pasteable command:
+
+```bash
+ssh -t pgupta12@dtai-login.delta.ncsa.illinois.edu 'cd /projects/bhkj/pgupta12/starling_multiple_trajectory_idea && JOB_ID=$(cat waypoint_transformer_job_id.txt) && squeue -j "$JOB_ID" && while [ ! -f "logs/hrrt-waypoint-transformer-${JOB_ID}.out" ]; do sleep 2; done && tail -f "logs/hrrt-waypoint-transformer-${JOB_ID}.out"'
+```
+
+After the job finishes, copy the packaged model and its training summary back to
+this workspace:
+
+```bash
+mkdir -p /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs
+rsync -avP pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/hrrt_waypoint_transformer.tar.gz /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/
+tar -xzf /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/hrrt_waypoint_transformer.tar.gz -C /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs
+python3 -m json.tool /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/hrrt_waypoint_transformer/training_summary.json
+```
+
+The last command prints whether the requested stopping certificate was met, the
+configured threshold, best observed radius, best checkpoint, and completed epochs.
+
 ## 10. Evaluate the locked test split
 
 Request a GPU session:
@@ -566,6 +663,7 @@ python3 fine_tuning/scripts/build_hrrt_human_audit.py --help
 python3 fine_tuning/scripts/review_hrrt_labels.py --help
 python3 fine_tuning/scripts/finalize_hrrt_sft_dataset.py --help
 python3 fine_tuning/scripts/train_hrrt_peft.py --help
+python3 fine_tuning/scripts/train_hrrt_waypoint_transformer.py --help
 python3 fine_tuning/scripts/evaluate_hrrt_adapter.py --help
 python3 fine_tuning/scripts/calibration_verifier_gateway.py --help
 ```

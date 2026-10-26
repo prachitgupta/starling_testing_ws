@@ -389,6 +389,12 @@ Omit `--qlora` only when intentionally not using 4-bit NF4.
 
 ## 9A. Train the structured waypoint transformer on NCSA
 
+For the gated component-by-component verification sequence (dataset audit,
+tiny-set overfit, gradient checks, text/scene sensitivity, full training, and
+locked-test evaluation), use
+[`verification/README.md`](verification/README.md). Its DeltaAI batch job uses
+the teacher-only 80/10/10 CSVs and the same production trainer and YAML below.
+
 This alternative trainer can use either the human-reviewed DSS files or the
 teacher-only CSVs. For teacher-only training, use these generated files:
 

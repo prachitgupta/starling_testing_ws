@@ -968,15 +968,36 @@ Use the scripts in `fine_tuning/verification/scripts` to audit the local
 dataset, evaluate the best transferred checkpoint on validation and locked
 test scenes, and generate the HTML dashboard. `VERIFY_DEVICE=cpu` works on a
 CPU-only laptop; change it to `cuda:0` when a compatible local GPU is available.
+The command reads the recorded training path from the checkpoint and selects
+the matching local CSV directory automatically.
 
 ```bash
 set -euo pipefail
 PACKAGE_ROOT=/home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
 MODEL_OUTPUT=$PACKAGE_ROOT/fine_tuning/outputs/hrrt_waypoint_transformer_2_0
-DATASET_ROOT=$PACKAGE_ROOT/fine_tuning/datasets/calibrated_vertical_dss/teacher_only_80_10_10
 VERIFY_RUN=$PACKAGE_ROOT/fine_tuning/outputs/verification-transformer-2-0-local
 VERIFY_DEVICE=cpu
 CONFIG=$PACKAGE_ROOT/fine_tuning/configs/hrrt_waypoint_transformer_2_0.yaml
+
+DATASET_RELATIVE=$(python3 - "$MODEL_OUTPUT" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+configs = sorted(Path(sys.argv[1]).glob("checkpoint-epoch-*/config.json"))
+assert configs, "no transferred checkpoint configurations found"
+train_paths = {
+    str(json.loads(path.read_text(encoding="utf-8"))["data"]["train_csv"])
+    for path in configs
+}
+assert len(train_paths) == 1, f"checkpoints record different training datasets: {train_paths}"
+recorded = train_paths.pop()
+marker = "fine_tuning/datasets/"
+assert marker in recorded, f"checkpoint has an unsupported training path: {recorded}"
+print(Path(recorded.split(marker, 1)[1]).parent.as_posix())
+PY
+)
+DATASET_ROOT=$PACKAGE_ROOT/fine_tuning/datasets/$DATASET_RELATIVE
 
 mkdir -p "$VERIFY_RUN/reports" "$VERIFY_RUN/plots"
 test -s "$DATASET_ROOT/hrrt_sft_train.csv"
@@ -984,6 +1005,7 @@ test -s "$DATASET_ROOT/hrrt_sft_validation.csv"
 test -s "$DATASET_ROOT/hrrt_sft_test.csv"
 test -s "$MODEL_OUTPUT/training_history.json"
 test -s "$MODEL_OUTPUT/training_summary.json"
+printf 'Using checkpoint-matched dataset: %s\n' "$DATASET_ROOT"
 
 python3 "$PACKAGE_ROOT/fine_tuning/verification/scripts/verify_transformer_components.py" \
   --stage preflight \

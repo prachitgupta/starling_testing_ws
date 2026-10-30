@@ -275,12 +275,12 @@ PY
 
 ### Calibrated vertical person dataset for Transformer 2.0
 
-This generator keeps the raw-person collection convention: local NED workspace
-`x,y=[-3,3]`, fixed `z=-0.5`, forward travel along `+y`, and lateral variation
-along `x`. Starts are sampled near the measured observer pose. The goal is not
-sampled from language: it is deterministically grounded from labelled obstacle
-relations using the same `NEAR` / `FAR_FROM` distance contract as the mission
-gateway.
+This generator keeps the project-wide local NED workspace convention:
+`x=[-4,4]`, `y=[-3,3]`, fixed `z=-0.5`, forward travel along `+y`, and lateral
+variation along `x`. Starts are sampled near the measured observer pose. The
+goal is not sampled from language: it is deterministically grounded from
+labelled obstacle relations using the same `NEAR` / `FAR_FROM` distance
+contract as the mission gateway.
 
 The 4,000 layouts below generate exactly six labelled goal variants each, for a
 target of 24,000 raw records. Layout IDs are split as a group, so goal variants

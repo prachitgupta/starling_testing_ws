@@ -90,8 +90,8 @@ prompt_generator:
     llama_model_name: hrrt_planner
     single_shot: True
     initial_plan_id: 1
-    workspace_x_min: -3.0
-    workspace_x_max: 3.0
+    workspace_x_min: -4.0
+    workspace_x_max: 4.0
     workspace_y_min: -3.0
     workspace_y_max: 3.0
     fixed_z: -0.5
@@ -162,8 +162,8 @@ interactive_mission_gateway:
     passed_plan_topic: /llm_vision/plan_verified
     required_mission_state: HOLDING_FOR_PLAN
     require_mission_state: True
-    workspace_x_min: -3.0
-    workspace_x_max: 3.0
+    workspace_x_min: -4.0
+    workspace_x_max: 4.0
     workspace_y_min: -3.0
     workspace_y_max: 3.0
     fixed_z: -0.5
@@ -333,8 +333,8 @@ planner_visualizer:
     static_plot_dpi: 180
     static_plot_prefix: simulated_test
     fixed_z: -0.5
-    workspace_x_min: -3.0
-    workspace_x_max: 3.0
+    workspace_x_min: -4.0
+    workspace_x_max: 4.0
     workspace_y_min: -3.0
     workspace_y_max: 3.0
     show_rrt: True
@@ -353,8 +353,8 @@ verify_contraction:
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
     sim_obstacle_topic: /llm_vision/sim_obstacles
     pose_topic: /fmu/out/vehicle_odometry
-    workspace_x_min: -3.0
-    workspace_x_max: 3.0
+    workspace_x_min: -4.0
+    workspace_x_max: 4.0
     workspace_y_min: -3.0
     workspace_y_max: 3.0
     output_png: src/llm_vision_planner/plots/contraction/live_contraction.png

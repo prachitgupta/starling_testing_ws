@@ -42,7 +42,7 @@ PLAN_QOS = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1,
 )
-DEFAULT_WORKSPACE_X = (-3.0, 3.0)
+DEFAULT_WORKSPACE_X = (-4.0, 4.0)
 DEFAULT_WORKSPACE_Y = (-3.0, 3.0)
 
 

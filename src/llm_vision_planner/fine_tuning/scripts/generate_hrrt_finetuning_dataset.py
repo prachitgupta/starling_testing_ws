@@ -16,7 +16,7 @@ from hrrt_star import normalize_obstacles, plan_hrrt_star, segment_clear
 
 
 WORKSPACE = {"x": [-4.0, 4.0], "y": [-3.0, 3.0], "z": -0.5}
-CALIBRATED_VERTICAL_WORKSPACE = {"x": [-3.0, 3.0], "y": [-3.0, 3.0], "z": -0.5}
+CALIBRATED_VERTICAL_WORKSPACE = {"x": [-4.0, 4.0], "y": [-3.0, 3.0], "z": -0.5}
 LABELS = (
     "person",
     "chair",

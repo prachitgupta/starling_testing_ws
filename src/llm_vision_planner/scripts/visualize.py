@@ -75,8 +75,8 @@ class PlannerVisualizer(Node):
         self.declare_parameter("static_plot_dpi", 180)
         self.declare_parameter("static_plot_prefix", "simulated_test")
         self.declare_parameter("fixed_z", DEFAULT_Z)
-        self.declare_parameter("workspace_x_min", -3.0)
-        self.declare_parameter("workspace_x_max", 3.0)
+        self.declare_parameter("workspace_x_min", -4.0)
+        self.declare_parameter("workspace_x_max", 4.0)
         self.declare_parameter("workspace_y_min", -3.0)
         self.declare_parameter("workspace_y_max", 3.0)
         self.declare_parameter("show_rrt", True)
@@ -483,7 +483,7 @@ class PlannerVisualizer(Node):
         )
 
     def configure_axes(self, workspace, axis):
-        x_limits = workspace.get("x", [-3.0, 3.0])
+        x_limits = workspace.get("x", [-4.0, 4.0])
         y_limits = workspace.get("y", [-3.0, 3.0])
         axis.set_xlim(float(x_limits[0]) - 0.5, float(x_limits[1]) + 0.5)
         axis.set_ylim(float(y_limits[0]) - 0.5, float(y_limits[1]) + 0.5)

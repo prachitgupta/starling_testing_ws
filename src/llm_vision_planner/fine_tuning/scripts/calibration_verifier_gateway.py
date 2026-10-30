@@ -538,7 +538,7 @@ def plot_scene(scene):
         points.extend(((float(obstacle["min_corner"][0]), float(obstacle["min_corner"][1])), (float(obstacle["max_corner"][0]), float(obstacle["max_corner"][1]))))
     if not points:
         return "<p class='hint'>No geometry is available for this capture.</p>"
-    limits = scene.get("workspace", {"x": [-3.0, 3.0], "y": [-3.0, 3.0]})
+    limits = scene.get("workspace", {"x": [-4.0, 4.0], "y": [-3.0, 3.0]})
     min_x, max_x = float(limits["x"][0]), float(limits["x"][1])
     min_y, max_y = float(limits["y"][0]), float(limits["y"][1])
     width, height, pad = 900, 650, 62
@@ -588,7 +588,7 @@ def plot_svg(result):
         points += [(float(obstacle["min_corner"][0]), float(obstacle["min_corner"][1])), (float(obstacle["max_corner"][0]), float(obstacle["max_corner"][1]))]
     if not points:
         return ""
-    limits = result.get("workspace", {"x": [-3.0, 3.0], "y": [-3.0, 3.0]})
+    limits = result.get("workspace", {"x": [-4.0, 4.0], "y": [-3.0, 3.0]})
     min_x, max_x = float(limits["x"][0]), float(limits["x"][1])
     min_y, max_y = float(limits["y"][0]), float(limits["y"][1])
     width, height, pad = 900, 650, 62
@@ -953,7 +953,7 @@ def build_parser():
     parser.add_argument("--transcription-model", default="gpt-4o-mini-transcribe")
     parser.add_argument("--start-x", type=float, default=-3.5); parser.add_argument("--start-y", type=float, default=0.0)
     parser.add_argument("--fixed-z", type=float, default=-0.5)
-    parser.add_argument("--workspace-x-min", type=float, default=-3.0); parser.add_argument("--workspace-x-max", type=float, default=3.0)
+    parser.add_argument("--workspace-x-min", type=float, default=-4.0); parser.add_argument("--workspace-x-max", type=float, default=4.0)
     parser.add_argument("--workspace-y-min", type=float, default=-3.0); parser.add_argument("--workspace-y-max", type=float, default=3.0)
     parser.add_argument("--clearance-m", type=float, default=0.40); parser.add_argument("--dt", type=float, default=0.1)
     parser.add_argument("--default-standoff-m", type=float, default=0.60)

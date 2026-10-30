@@ -273,6 +273,134 @@ for split, expected_count in expected.items():
 PY
 ```
 
+### Calibrated vertical person dataset for Transformer 2.0
+
+This generator keeps the raw-person collection convention: local NED workspace
+`x,y=[-3,3]`, fixed `z=-0.5`, forward travel along `+y`, and lateral variation
+along `x`. Starts are sampled near the measured observer pose. The goal is not
+sampled from language: it is deterministically grounded from labelled obstacle
+relations using the same `NEAR` / `FAR_FROM` distance contract as the mission
+gateway.
+
+The 4,000 layouts below generate exactly six labelled goal variants each, for a
+target of 24,000 raw records. Layout IDs are split as a group, so goal variants
+of the same geometry never leak across train, validation, and test. The exact
+100-layout cycle is: person+chair 36%, person+chair+stop-sign 36%, person-only
+14%, chair-only 5%, stop-sign-only 5%, and person+stop-sign 4%.
+
+First run one no-API scene and inspect its relations and route cards:
+
+```bash
+cd /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
+VERTICAL_ROOT=fine_tuning/datasets/calibrated_vertical_dss
+mkdir -p "$VERTICAL_ROOT"
+
+python3 fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
+  --output "$VERTICAL_ROOT/hrrt_teacher_smoke.jsonl" \
+  --scenes 1 \
+  --teacher mock \
+  --distillation-mode dss \
+  --scene-layout calibrated_vertical \
+  --goal-variants-per-layout 1 \
+  --minimum-forward-progress-m 2.0 \
+  --hrrt-iterations 500 \
+  --max-total-nodes 5000 \
+  --max-nodes-per-key 180 \
+  --max-candidates 8 \
+  --min-routes 2 \
+  --scene-attempts 8 \
+  --clearance-m 0.40
+
+python3 - <<'PY'
+import json
+row = json.loads(open("fine_tuning/datasets/calibrated_vertical_dss/hrrt_teacher_smoke.jsonl").readline())
+print(row["environment"]["scene_profile"])
+print("start:", row["environment"]["start"], "goal:", row["environment"]["goal"])
+print("deterministic labelled relations:", row["goal_relations"])
+PY
+```
+
+Generate the full teacher-labelled dataset. In calibrated-vertical mode, one
+preference type is rotated across the six relation variants; it selects a route
+after the goal is fixed and never determines the goal itself.
+
+```bash
+export OPENAI_API_KEY=YOUR_KEY
+TEACHER_MODEL=gpt-6-luna
+
+python3 fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
+  --output "$VERTICAL_ROOT/hrrt_teacher_raw.jsonl" \
+  --scenes 4000 \
+  --teacher openai \
+  --teacher-model "$TEACHER_MODEL" \
+  --reasoning-effort medium \
+  --distillation-mode dss \
+  --scene-layout calibrated_vertical \
+  --goal-variants-per-layout 6 \
+  --goal-sample-resolution-m 0.10 \
+  --minimum-forward-progress-m 2.0 \
+  --hrrt-iterations 500 \
+  --max-total-nodes 5000 \
+  --max-nodes-per-key 180 \
+  --max-candidates 8 \
+  --min-routes 2 \
+  --scene-attempts 8 \
+  --clearance-m 0.40 \
+  --resume
+```
+
+Create human-audit assignments, review them in the existing visualiser, then
+create the train/validation/test CSVs. This is the reviewed path.
+
+```bash
+python3 fine_tuning/scripts/build_hrrt_human_audit.py \
+  --input "$VERTICAL_ROOT/hrrt_teacher_raw.jsonl" \
+  --output "$VERTICAL_ROOT/hrrt_human_audit.jsonl" \
+  --train-audit-ratio 0.10 \
+  --validation-scene-ratio 0.10 \
+  --test-scene-ratio 0.10 \
+  --seed 42
+
+python3 fine_tuning/scripts/review_hrrt_labels.py \
+  --raw "$VERTICAL_ROOT/hrrt_teacher_raw.jsonl" \
+  --audit "$VERTICAL_ROOT/hrrt_human_audit.jsonl" \
+  --reviews "$VERTICAL_ROOT/hrrt_human_reviews.jsonl" \
+  --host 127.0.0.1 --port 8090
+
+# After every assigned row is reviewed, stop the UI and run:
+python3 fine_tuning/scripts/finalize_hrrt_sft_dataset.py \
+  --raw "$VERTICAL_ROOT/hrrt_teacher_raw.jsonl" \
+  --audit "$VERTICAL_ROOT/hrrt_human_audit.jsonl" \
+  --reviews "$VERTICAL_ROOT/hrrt_human_reviews.jsonl" \
+  --output-dir "$VERTICAL_ROOT" \
+  --clearance-m 0.40 \
+  --distillation-mode dss \
+  --reasoning-aux-ratio 0.00 \
+  --counterfactual-aux-ratio 0.00
+```
+
+For direct Transformer 2.0 teacher imitation without human review, use the
+same raw file with the existing scene-isolated splitter instead:
+
+```bash
+python3 fine_tuning/scripts/finalize_hrrt_sft_dataset.py \
+  --raw "$VERTICAL_ROOT/hrrt_teacher_raw.jsonl" \
+  --output-dir "$VERTICAL_ROOT/teacher_only_80_10_10" \
+  --clearance-m 0.40 \
+  --distillation-mode dss \
+  --teacher-only \
+  --validation-scene-ratio 0.10 \
+  --test-scene-ratio 0.10 \
+  --split-seed 42 \
+  --reasoning-aux-ratio 0.00 \
+  --counterfactual-aux-ratio 0.00
+
+TRAIN_CSV="$VERTICAL_ROOT/teacher_only_80_10_10/hrrt_sft_train.csv"
+VALIDATION_CSV="$VERTICAL_ROOT/teacher_only_80_10_10/hrrt_sft_validation.csv"
+TEST_CSV="$VERTICAL_ROOT/teacher_only_80_10_10/hrrt_sft_test.csv"
+test -s "$TRAIN_CSV" && test -s "$VALIDATION_CSV" && test -s "$TEST_CSV"
+```
+
 ```bash
 # Recreate CSVs from the completed human-reviewed Luna labels.
 cd /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner

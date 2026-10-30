@@ -19,7 +19,13 @@ sys.path.insert(0, str(SCRIPTS))
 from build_hrrt_human_audit import build_manifest, read_jsonl  # noqa: E402
 from evaluate_hrrt_adapter import evaluate  # noqa: E402
 from finalize_hrrt_sft_dataset import finalize  # noqa: E402
-from generate_hrrt_finetuning_dataset import LABELS, prepare_resume_file  # noqa: E402
+from generate_hrrt_finetuning_dataset import (  # noqa: E402
+    LABELS,
+    calibrated_goal_relations,
+    deterministic_relation_goal,
+    prepare_resume_file,
+    sample_calibrated_vertical_scene,
+)
 from train_hrrt_peft import compatible_training_arguments, token_id_list  # noqa: E402
 
 
@@ -29,6 +35,21 @@ def write_jsonl(path, rows):
 
 def test_teacher_data_object_classes():
     assert LABELS == ("person", "chair", "stop_sign")
+
+
+def test_calibrated_vertical_goal_is_labelled_and_forward():
+    import random
+
+    scene = sample_calibrated_vertical_scene(random.Random(1701), 0)
+    relations = calibrated_goal_relations(scene, 0)
+    goal = deterministic_relation_goal(
+        scene["start"], relations, scene["obstacles"], scene["workspace"],
+        clearance_m=0.40, resolution_m=0.10, min_forward_progress_m=2.0,
+    )
+    obstacle_ids = {item["object_id"]: item["label"] for item in scene["obstacles"]}
+    assert relations[0]["relation"] == "NEAR"
+    assert all(obstacle_ids[item["object_id"]] == item["object_label"] for item in relations)
+    assert goal["y"] >= scene["start"]["y"] + 2.0
 
 
 def test_token_ids_accept_batch_encoding_and_list_shapes():

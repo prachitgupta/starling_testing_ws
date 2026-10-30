@@ -16,6 +16,7 @@ from hrrt_star import normalize_obstacles, plan_hrrt_star, segment_clear
 
 
 WORKSPACE = {"x": [-4.0, 4.0], "y": [-3.0, 3.0], "z": -0.5}
+CALIBRATED_VERTICAL_WORKSPACE = {"x": [-3.0, 3.0], "y": [-3.0, 3.0], "z": -0.5}
 LABELS = (
     "person",
     "chair",
@@ -90,6 +91,31 @@ SCENE_PROFILES = {
     "split_corridor": ((0.0, 0.0), (-1.55, 0.80), (1.55, 0.80), (0.85, -1.05)),
 }
 
+# The calibrated capture held the vehicle facing +NED-y.  These templates keep
+# that experimental convention: y is forward progress and x is cross-track.
+# The ratios are encoded in a 100-layout cycle so --scenes 4000 realizes the
+# requested 36/36/14/5/5/4 mixture exactly.
+VERTICAL_LAYOUT_MIX = (
+    ("person_chair", 36),
+    ("person_chair_stop_sign", 36),
+    ("person_only", 14),
+    ("chair_only", 5),
+    ("stop_sign_only", 5),
+    ("person_stop_sign", 4),
+)
+VERTICAL_TEMPLATES = {
+    "person_chair": (("person", 0.05, -0.05), ("chair", -0.80, 0.72)),
+    "person_chair_stop_sign": (
+        ("person", 0.05, -0.10),
+        ("chair", -0.78, 0.65),
+        ("stop_sign", 0.72, 1.20),
+    ),
+    "person_only": (("person", 0.0, 0.15),),
+    "chair_only": (("chair", 0.0, 0.15),),
+    "stop_sign_only": (("stop_sign", 0.0, 0.15),),
+    "person_stop_sign": (("person", 0.0, -0.05), ("stop_sign", 0.76, 0.82)),
+}
+
 
 def compact(value: object) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
@@ -114,6 +140,7 @@ def prepare_resume_file(
     path: Path,
     expected_per_scene: int,
     expected_distillation_mode: str | None = None,
+    exact_rows_per_scene: int | None = None,
 ) -> set[int]:
     """Drop partial scenes so resuming never duplicates or silently skips labels."""
     by_scene: Dict[int, List[Dict[str, object]]] = {}
@@ -133,8 +160,9 @@ def prepare_resume_file(
     complete = {
         scene_id
         for scene_id, rows in by_scene.items()
-        if len(rows) == expected_scene_rows(rows, expected_per_scene)
-        and len({str(row["sample_id"]) for row in rows}) == expected_scene_rows(rows, expected_per_scene)
+        if len(rows) == (exact_rows_per_scene or expected_scene_rows(rows, expected_per_scene))
+        and len({str(row["sample_id"]) for row in rows})
+        == (exact_rows_per_scene or expected_scene_rows(rows, expected_per_scene))
     }
     retained = [row for scene_id in sorted(complete) for row in by_scene[scene_id]]
     temporary = path.with_suffix(path.suffix + ".resume.tmp")
@@ -181,6 +209,173 @@ def sample_scene(rng: random.Random, scene_id: int, obstacle_count: int) -> Dict
         "workspace": WORKSPACE,
         "obstacles": obstacles,
     }
+
+
+def vertical_layout_name(scene_id: int) -> str:
+    """Choose a deterministic calibrated-layout family with the documented mix."""
+    index = scene_id % sum(count for _, count in VERTICAL_LAYOUT_MIX)
+    for name, count in VERTICAL_LAYOUT_MIX:
+        if index < count:
+            return name
+        index -= count
+    raise AssertionError("vertical layout mixture is empty")
+
+
+def sample_calibrated_vertical_scene(rng: random.Random, scene_id: int) -> Dict[str, object]:
+    """Create one fixed-layout, +y-forward NED scene from calibrated bounds."""
+    layout_name = vertical_layout_name(scene_id)
+    start = {
+        "x": round(rng.uniform(-0.60, -0.30), 4),
+        "y": round(rng.uniform(-1.90, -1.35), 4),
+        "z": -0.5,
+    }
+    obstacles = []
+    for index, (label, base_x, base_y) in enumerate(VERTICAL_TEMPLATES[layout_name], start=1):
+        width, depth = SIZES[label]
+        scale = rng.uniform(0.90, 1.10)
+        center_x = base_x + rng.uniform(-0.12, 0.12)
+        center_y = base_y + rng.uniform(-0.10, 0.10)
+        obstacles.append(
+            {
+                "object_id": f"{label}-{index}",
+                "label": label,
+                "min_corner": [round(center_x - width * scale / 2, 4), round(center_y - depth * scale / 2, 4), -1.0],
+                "max_corner": [round(center_x + width * scale / 2, 4), round(center_y + depth * scale / 2, 4), 0.0],
+            }
+        )
+    return {
+        "scene_id": scene_id,
+        "scene_profile": f"vertical_{layout_name}",
+        "start": start,
+        "workspace": dict(CALIBRATED_VERTICAL_WORKSPACE),
+        "obstacles": obstacles,
+    }
+
+
+def box_clearance(point: Mapping[str, float], obstacle: Mapping[str, object]) -> float:
+    minimum, maximum = obstacle["min_corner"], obstacle["max_corner"]
+    x, y = float(point["x"]), float(point["y"])
+    dx = max(float(minimum[0]) - x, 0.0, x - float(maximum[0]))
+    dy = max(float(minimum[1]) - y, 0.0, y - float(maximum[1]))
+    if dx == 0.0 and dy == 0.0:
+        return -min(x - float(minimum[0]), float(maximum[0]) - x, y - float(minimum[1]), float(maximum[1]) - y)
+    return math.hypot(dx, dy)
+
+
+def calibrated_goal_relations(scene: Mapping[str, object], variant: int) -> List[Dict[str, object]]:
+    """Return gateway-compatible object-ID/label relations without language parsing."""
+    obstacles = list(scene["obstacles"])
+    anchors = [item for item in obstacles if item["label"] in ("person", "chair", "stop_sign")]
+    anchor = anchors[variant % len(anchors)]
+    bands = (
+        ((0.55, 0.75), (0.85, 1.05), (1.15, 1.35), (1.45, 1.65), (1.75, 1.95), (2.05, 2.25))
+        if len(anchors) == 1
+        else ((0.55, 0.75), (0.85, 1.05), (1.15, 1.35))
+    )
+    minimum, maximum = bands[(variant // len(anchors)) % len(bands)]
+    relations = [
+        {
+            "object_id": str(anchor["object_id"]),
+            "object_label": str(anchor["label"]),
+            "relation": "NEAR",
+            "min_distance_m": minimum,
+            "max_distance_m": maximum,
+            "optimize": "NONE",
+        }
+    ]
+    # In multi-object scenes, a second labelled object creates a true
+    # relation-conditioned goal rather than an arbitrary coordinate sample.
+    if len(obstacles) > 1:
+        other = next(item for item in obstacles if item["object_id"] != anchor["object_id"])
+        relations.append(
+            {
+                "object_id": str(other["object_id"]),
+                "object_label": str(other["label"]),
+                "relation": "FAR_FROM",
+                "min_distance_m": 1.20,
+                "max_distance_m": None,
+                "optimize": "MAXIMIZE" if variant % 2 else "NONE",
+            }
+        )
+    return relations
+
+
+def validate_goal_relations(relations: Sequence[Mapping[str, object]], obstacles: Sequence[Mapping[str, object]]) -> List[Dict[str, object]]:
+    """Apply the gateway's ID/label/range contract without importing ROS nodes."""
+    by_id = {str(item["object_id"]): item for item in obstacles}
+    normalized = []
+    used_ids = set()
+    for relation in relations:
+        object_id = str(relation["object_id"])
+        obstacle = by_id.get(object_id)
+        if obstacle is None or str(obstacle["label"]) != str(relation["object_label"]):
+            raise ValueError("goal relation must reference an existing object ID and matching label")
+        if object_id in used_ids:
+            raise ValueError("an object may have only one deterministic goal relation")
+        used_ids.add(object_id)
+        minimum = relation.get("min_distance_m")
+        maximum = relation.get("max_distance_m")
+        minimum = None if minimum is None else float(minimum)
+        maximum = None if maximum is None else float(maximum)
+        kind = str(relation["relation"])
+        if kind == "NEAR" and (minimum is None or maximum is None):
+            raise ValueError("NEAR requires deterministic minimum and maximum distances")
+        if kind == "FAR_FROM" and minimum is None:
+            raise ValueError("FAR_FROM requires a deterministic minimum distance")
+        if kind not in ("NEAR", "FAR_FROM") or (maximum is not None and minimum is not None and minimum > maximum):
+            raise ValueError("invalid deterministic goal relation")
+        normalized.append({**dict(relation), "min_distance_m": minimum, "max_distance_m": maximum})
+    if not any(item["relation"] == "NEAR" for item in normalized):
+        raise ValueError("a deterministic goal needs one NEAR anchor")
+    return normalized
+
+
+def deterministic_relation_goal(
+    start: Mapping[str, float],
+    relations: Sequence[Mapping[str, object]],
+    obstacles: Sequence[Mapping[str, object]],
+    workspace: Mapping[str, object],
+    clearance_m: float,
+    resolution_m: float,
+    min_forward_progress_m: float,
+) -> Dict[str, float]:
+    """Grid-search the same bounded object-distance constraints as the gateway.
+
+    The forward-progress filter is dataset-specific: it prevents a NEAR target
+    behind the blocker from producing a trivial, non-routing episode.
+    """
+    relations = validate_goal_relations(relations, obstacles)
+    by_id = {str(item["object_id"]): item for item in obstacles}
+    candidates = []
+    x_min, x_max = (float(value) for value in workspace["x"])
+    y_min, y_max = (float(value) for value in workspace["y"])
+    for x_index in range(int(math.ceil((x_max - x_min) / resolution_m)) + 1):
+        x = min(x_max, x_min + x_index * resolution_m)
+        for y_index in range(int(math.ceil((y_max - y_min) / resolution_m)) + 1):
+            y = min(y_max, y_min + y_index * resolution_m)
+            if y < float(start["y"]) + min_forward_progress_m:
+                continue
+            point = {"x": round(x, 3), "y": round(y, 3), "z": float(workspace["z"])}
+            if any(box_clearance(point, obstacle) < clearance_m for obstacle in obstacles):
+                continue
+            distances = [(relation, box_clearance(point, by_id[str(relation["object_id"])])) for relation in relations]
+            if any(
+                distance < float(relation["min_distance_m"]) - 1e-9
+                or (relation["max_distance_m"] is not None and distance > float(relation["max_distance_m"]) + 1e-9)
+                for relation, distance in distances
+            ):
+                continue
+            maximize = sum(distance for relation, distance in distances if relation.get("optimize") == "MAXIMIZE")
+            range_error = sum(
+                abs(distance - 0.5 * (float(relation["min_distance_m"]) + float(relation["max_distance_m"])))
+                for relation, distance in distances
+                if relation["max_distance_m"] is not None
+            )
+            travel = math.hypot(point["x"] - float(start["x"]), point["y"] - float(start["y"]))
+            candidates.append(((maximize, -range_error, -travel), point))
+    if not candidates:
+        raise ValueError("no forward goal satisfies the labelled object relations and clearance")
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def route_cards(
@@ -622,8 +817,15 @@ def generate(args: argparse.Namespace) -> None:
         raise ValueError("--preferences-per-scene must be between 1 and 6")
     if not 0 <= args.min_obstacles <= args.max_obstacles <= 4:
         raise ValueError("obstacle counts must satisfy 0 <= min <= max <= 4")
+    if args.scene_layout == "calibrated_vertical" and args.goal_variants_per_layout < 1:
+        raise ValueError("--goal-variants-per-layout must be positive")
     completed = (
-        prepare_resume_file(args.output, args.preferences_per_scene, args.distillation_mode)
+        prepare_resume_file(
+            args.output,
+            args.preferences_per_scene,
+            args.distillation_mode,
+            args.goal_variants_per_layout if args.scene_layout == "calibrated_vertical" else None,
+        )
         if args.resume
         else set()
     )
@@ -634,98 +836,126 @@ def generate(args: argparse.Namespace) -> None:
         if scene_id in completed:
             continue
         scene_rng = random.Random(args.seed + scene_id * 7919)
+        scene_route_sets = []
         for attempt in range(args.scene_attempts):
-            scene = sample_scene(scene_rng, scene_id, scene_rng.randint(args.min_obstacles, args.max_obstacles))
-            try:
-                family = plan_hrrt_star(
-                    scene["start"],
-                    scene["goal"],
-                    scene["obstacles"],
-                    scene["workspace"],
-                    clearance_m=args.clearance_m,
-                    seed=args.seed + scene_id * 100 + attempt,
-                    max_iterations=args.hrrt_iterations,
-                    max_candidates=args.max_candidates,
-                    max_waypoints=8,
-                    max_total_nodes=args.max_total_nodes,
-                    max_nodes_per_key=args.max_nodes_per_key,
+            if args.scene_layout == "calibrated_vertical":
+                layout = sample_calibrated_vertical_scene(scene_rng, scene_id)
+                candidate_sets = []
+                for goal_variant in range(args.goal_variants_per_layout):
+                    relations = calibrated_goal_relations(layout, goal_variant)
+                    try:
+                        goal = deterministic_relation_goal(
+                            layout["start"], relations, layout["obstacles"], layout["workspace"],
+                            args.clearance_m, args.goal_sample_resolution_m, args.minimum_forward_progress_m,
+                        )
+                        scene = {**layout, "goal": goal}
+                        family = plan_hrrt_star(
+                            scene["start"], scene["goal"], scene["obstacles"], scene["workspace"],
+                            clearance_m=args.clearance_m, seed=args.seed + scene_id * 1000 + attempt * 10 + goal_variant,
+                            max_iterations=args.hrrt_iterations, max_candidates=args.max_candidates,
+                            max_waypoints=8, max_total_nodes=args.max_total_nodes, max_nodes_per_key=args.max_nodes_per_key,
+                        )
+                    except (RuntimeError, ValueError):
+                        candidate_sets = []
+                        break
+                    routes = list(family["routes"])
+                    signatures = {tuple(route["h_signature"]) for route in routes}
+                    direct_is_clear = segment_clear(
+                        (float(scene["start"]["x"]), float(scene["start"]["y"])),
+                        (float(scene["goal"]["x"]), float(scene["goal"]["y"])),
+                        normalize_obstacles(scene["obstacles"]), scene["workspace"], args.clearance_m,
+                    )
+                    if len(routes) < args.min_routes or len(signatures) < 2 or direct_is_clear:
+                        candidate_sets = []
+                        break
+                    candidate_sets.append((scene, routes, relations, goal_variant))
+                if len(candidate_sets) == args.goal_variants_per_layout:
+                    scene_route_sets = candidate_sets
+                    break
+            else:
+                scene = sample_scene(scene_rng, scene_id, scene_rng.randint(args.min_obstacles, args.max_obstacles))
+                try:
+                    family = plan_hrrt_star(
+                        scene["start"], scene["goal"], scene["obstacles"], scene["workspace"],
+                        clearance_m=args.clearance_m, seed=args.seed + scene_id * 100 + attempt,
+                        max_iterations=args.hrrt_iterations, max_candidates=args.max_candidates,
+                        max_waypoints=8, max_total_nodes=args.max_total_nodes, max_nodes_per_key=args.max_nodes_per_key,
+                    )
+                except (RuntimeError, ValueError):
+                    continue
+                routes = list(family["routes"])
+                signatures = {tuple(route["h_signature"]) for route in routes}
+                direct_is_clear = segment_clear(
+                    (float(scene["start"]["x"]), float(scene["start"]["y"])),
+                    (float(scene["goal"]["x"]), float(scene["goal"]["y"])),
+                    normalize_obstacles(scene["obstacles"]), scene["workspace"], args.clearance_m,
                 )
-            except (RuntimeError, ValueError):
-                continue
-            routes = list(family["routes"])
-            signatures = {tuple(route["h_signature"]) for route in routes}
-            direct_is_clear = segment_clear(
-                (float(scene["start"]["x"]), float(scene["start"]["y"])),
-                (float(scene["goal"]["x"]), float(scene["goal"]["y"])),
-                normalize_obstacles(scene["obstacles"]),
-                scene["workspace"],
-                args.clearance_m,
-            )
-            if len(routes) >= args.min_routes and len(signatures) >= 2 and not direct_is_clear:
-                break
-        else:
+                if len(routes) >= args.min_routes and len(signatures) >= 2 and not direct_is_clear:
+                    scene_route_sets = [(scene, routes, None, None)]
+                    break
+        if not scene_route_sets:
             print(f"scene {scene_id}: no route family after {args.scene_attempts} attempts", flush=True)
             continue
 
-        cards = route_cards(routes, scene["obstacles"], args.nominal_speed_mps)
-        preferences = preference_requests(scene, cards)[: args.preferences_per_scene]
-        for preference_index, preference in enumerate(preferences):
-            selection = (
-                mock_select(preference, cards)
-                if args.teacher == "mock"
-                else openai_select(
-                    scene,
-                    preference,
-                    cards,
-                    routes,
-                    args.teacher_model,
-                    args.reasoning_effort,
-                    args.distillation_mode,
-                    args.clearance_m,
-                )
+        labels_written = 0
+        for scene, routes, goal_relations, goal_variant in scene_route_sets:
+            cards = route_cards(routes, scene["obstacles"], args.nominal_speed_mps)
+            all_preferences = preference_requests(scene, cards)
+            preferences = (
+                [all_preferences[int(goal_variant) % len(all_preferences)]]
+                if goal_variant is not None
+                else all_preferences[: args.preferences_per_scene]
             )
-            selection = normalize_teacher_output(
-                selection, preference, cards, args.distillation_mode
-            )
-            route = selected_route(routes, selection["selected_route_id"])
-            record = {
-                "schema_version": "hrrt_sft_raw_v2",
-                "sample_id": f"scene-{scene_id:06d}-pref-{preference_index:02d}",
-                "scene_id": scene_id,
-                "distillation_mode": args.distillation_mode,
-                "environment": scene,
-                "preference": preference,
-                "route_cards": cards,
-                "routes": routes,
-                "teacher_provider": args.teacher,
-                "teacher_model": args.teacher_model if args.teacher == "openai" else "deterministic_mock",
-                "teacher_reasoning_effort": args.reasoning_effort,
-                "teacher_route_id": selection["selected_route_id"],
-                "teacher_reason": selection["trajectory_reasoning"],
-                "teacher_selection_reason": selection["audit_selection_reason"],
-                "teacher_trajectory_reasoning": selection["trajectory_reasoning"],
-                "teacher_trajectory_reasoning_raw": selection["trajectory_reasoning_raw"],
-                "selected_waypoints": route["waypoints"],
-            }
-            if args.distillation_mode == "dss_scott":
-                counterfactual = selected_route(routes, str(selection["counterfactual_route_id"]))
-                record.update(
-                    {
-                        "counterfactual_route_id": selection["counterfactual_route_id"],
-                        "counterfactual_waypoints": counterfactual["waypoints"],
-                        "counterfactual_trajectory_reasoning": selection[
-                            "counterfactual_trajectory_reasoning"
-                        ],
-                        "counterfactual_trajectory_reasoning_raw": selection[
-                            "counterfactual_trajectory_reasoning_raw"
-                        ],
-                        "counterfactual_conflict": selection["counterfactual_conflict"],
-                        "teacher_consistency_checks": selection["consistency_checks"],
-                    }
+            for preference_index, preference in enumerate(preferences):
+                selection = (
+                    mock_select(preference, cards)
+                    if args.teacher == "mock"
+                    else openai_select(
+                        scene, preference, cards, routes, args.teacher_model,
+                        args.reasoning_effort, args.distillation_mode, args.clearance_m,
+                    )
                 )
-            append_jsonl(args.output, record)
-            written += 1
-        print(f"scene {scene_id}: wrote {len(preferences)} labels", flush=True)
+                selection = normalize_teacher_output(selection, preference, cards, args.distillation_mode)
+                route = selected_route(routes, selection["selected_route_id"])
+                sample_suffix = (
+                    f"goal-{int(goal_variant):02d}" if goal_variant is not None else f"pref-{preference_index:02d}"
+                )
+                record = {
+                    "schema_version": "hrrt_sft_raw_v2",
+                    "sample_id": f"scene-{scene_id:06d}-{sample_suffix}",
+                    "scene_id": scene_id,
+                    "distillation_mode": args.distillation_mode,
+                    "environment": scene,
+                    "goal_relations": goal_relations or [],
+                    "preference": preference,
+                    "route_cards": cards,
+                    "routes": routes,
+                    "teacher_provider": args.teacher,
+                    "teacher_model": args.teacher_model if args.teacher == "openai" else "deterministic_mock",
+                    "teacher_reasoning_effort": args.reasoning_effort,
+                    "teacher_route_id": selection["selected_route_id"],
+                    "teacher_reason": selection["trajectory_reasoning"],
+                    "teacher_selection_reason": selection["audit_selection_reason"],
+                    "teacher_trajectory_reasoning": selection["trajectory_reasoning"],
+                    "teacher_trajectory_reasoning_raw": selection["trajectory_reasoning_raw"],
+                    "selected_waypoints": route["waypoints"],
+                }
+                if args.distillation_mode == "dss_scott":
+                    counterfactual = selected_route(routes, str(selection["counterfactual_route_id"]))
+                    record.update(
+                        {
+                            "counterfactual_route_id": selection["counterfactual_route_id"],
+                            "counterfactual_waypoints": counterfactual["waypoints"],
+                            "counterfactual_trajectory_reasoning": selection["counterfactual_trajectory_reasoning"],
+                            "counterfactual_trajectory_reasoning_raw": selection["counterfactual_trajectory_reasoning_raw"],
+                            "counterfactual_conflict": selection["counterfactual_conflict"],
+                            "teacher_consistency_checks": selection["consistency_checks"],
+                        }
+                    )
+                append_jsonl(args.output, record)
+                written += 1
+                labels_written += 1
+        print(f"scene {scene_id}: wrote {labels_written} labels", flush=True)
     print(f"Wrote {written} new records to {args.output}")
 
 
@@ -751,6 +981,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--min-obstacles", type=int, default=2)
     parser.add_argument("--max-obstacles", type=int, default=4)
+    parser.add_argument(
+        "--scene-layout", choices=("horizontal_legacy", "calibrated_vertical"), default="horizontal_legacy",
+        help="horizontal_legacy preserves the existing generator; calibrated_vertical uses the raw-person NED convention.",
+    )
+    parser.add_argument(
+        "--goal-variants-per-layout", type=int, default=6,
+        help="Label-aware deterministic NEAR/FAR goal variants per calibrated vertical layout.",
+    )
+    parser.add_argument("--goal-sample-resolution-m", type=float, default=0.10)
+    parser.add_argument(
+        "--minimum-forward-progress-m", type=float, default=2.0,
+        help="Calibrated vertical only: avoid trivial goals behind the forward obstacle field.",
+    )
     parser.add_argument("--min-routes", type=int, default=2)
     parser.add_argument("--max-candidates", type=int, default=8)
     parser.add_argument("--hrrt-iterations", type=int, default=500)

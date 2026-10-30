@@ -651,11 +651,13 @@ Its training objective is
 objective = mean interior Euclidean error
           + CORRIDOR_LOSS_WEIGHT * wrong-corridor hinge error
           + CLEARANCE_BIN_LOSS_WEIGHT * clearance-bin hinge error
+          + SQUARED_TAIL_LOSS_WEIGHT * mean(error²) / 1.0 m
 ```
 
 The committed defaults are `CORRIDOR_LOSS_WEIGHT=5.0`,
 `CLEARANCE_BIN_LOSS_WEIGHT=1.0`, `CORRIDOR_MARGIN_M=0.20`,
-`corridor_temperature_m=0.35`, and 100 epochs. The selected teacher route's
+`SQUARED_TAIL_LOSS_WEIGHT=1.0`, `corridor_temperature_m=0.35`, and 100 epochs.
+The selected teacher route's
 stored composite key `(h_signature, clearance_bins)` provides the corridor and
 spacing labels; teacher reasoning is not used.
 
@@ -699,7 +701,7 @@ test -s "$PACKAGE_ROOT/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.s
 test -s "$PACKAGE_ROOT/fine_tuning/configs/hrrt_waypoint_transformer_2_0.yaml"
 
 JOB_ID=$(sbatch --parsable \
-  --export=ALL,TRAIN_CSV=$DATASET_ROOT/hrrt_sft_train.csv,VALIDATION_CSV=$DATASET_ROOT/hrrt_sft_validation.csv,MAX_EPOCHS=100,CORRIDOR_LOSS_WEIGHT=5.0,CORRIDOR_MARGIN_M=0.20,CLEARANCE_BIN_LOSS_WEIGHT=1.0,SAFETY_RADIUS_THRESHOLD_M=0.40 \
+  --export=ALL,TRAIN_CSV=$DATASET_ROOT/hrrt_sft_train.csv,VALIDATION_CSV=$DATASET_ROOT/hrrt_sft_validation.csv,MAX_EPOCHS=100,CORRIDOR_LOSS_WEIGHT=5.0,CORRIDOR_MARGIN_M=0.20,CLEARANCE_BIN_LOSS_WEIGHT=1.0,SQUARED_TAIL_LOSS_WEIGHT=1.0,SAFETY_RADIUS_THRESHOLD_M=0.40 \
   "$PACKAGE_ROOT/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.sbatch")
 
 printf '%s\n' "$JOB_ID" | tee transformer_2_0_job_id.txt
@@ -733,6 +735,7 @@ for key in (
     "wrong_corridor_rate",
     "clearance_bin_hinge_loss_m",
     "clearance_bin_accuracy",
+    "squared_tail_loss_m",
     "validation_objective_loss_m",
 ):
     print(f"{key}: {last[key]}")
@@ -744,6 +747,7 @@ The batch script also creates
 overrides are `CONFIG`, `TRAIN_CSV`, `VALIDATION_CSV`, `OUTPUT_DIR`,
 `MAX_EPOCHS`, `CORRIDOR_LOSS_WEIGHT`, `CORRIDOR_MARGIN_M`,
 `CLEARANCE_BIN_LOSS_WEIGHT`,
+`SQUARED_TAIL_LOSS_WEIGHT`,
 `SAFETY_RADIUS_THRESHOLD_M`, `TRAIN_ENV_DIR`, and `HF_HOME`.
 
 ## 10. Evaluate the locked test split

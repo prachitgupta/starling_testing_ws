@@ -69,17 +69,26 @@ L_{bin}=\frac{1}{N_o}\sum_j\left[
 where the wide bin has `u_2 = infinity`. The complete objective is
 
 \[
-L=L_{Euc}+\lambda_{corr}L_{corr}+\lambda_{bin}L_{bin}.
+L_{tail}=\frac{1}{6B\,s}\sum_{b=1}^{B}\sum_{k=1}^{6}
+\lVert\hat p_{bk}-p^*_{bk}\rVert_2^2,
 \]
 
-The default values are a strong `lambda_corr = 5.0`, `lambda_bin = 1.0`, side
-margin `delta = 0.20 m`, and soft matching temperature `tau = 0.35 m`. A prediction
+\[
+L=L_{Euc}+\lambda_{corr}L_{corr}+\lambda_{bin}L_{bin}
++\lambda_{tail}L_{tail}.
+\]
+
+The scale is `s = 1.0 m`, so `L_tail` remains measured in metres. Squaring
+makes a `2 m` miss contribute 400 times as much as a `0.1 m` miss before
+averaging. The default values are `lambda_corr = 5.0`, `lambda_bin = 1.0`,
+`lambda_tail = 1.0`, side margin `delta = 0.20 m`, and soft matching
+temperature `tau = 0.35 m`. A prediction
 on the wrong side has `d_j < 0`, so its penalty is larger than `0.20 m` and is
 multiplied by five. The weights come from the fixed teacher route, preventing
 the model from evading the penalty by shifting which waypoint is matched to
 the obstacle. The training log reports Euclidean loss, corridor hinge loss,
-clearance-bin hinge and accuracy, the combined objective, and wrong-corridor
-rate separately. Bin thresholds exactly match HRRT: person `(0.80, 1.20) m`,
+clearance-bin hinge and accuracy, squared-tail loss, the combined objective,
+and wrong-corridor rate separately. Bin thresholds exactly match HRRT: person `(0.80, 1.20) m`,
 chair `(0.60, 0.80) m`, and stop sign `(0.70, 1.00) m`, with `0.40 m` as the
 minimum clearance for the close-bin interval.
 
@@ -106,7 +115,7 @@ git pull --ff-only
 mkdir -p logs
 
 JOB_ID=$(sbatch --parsable \
-  --export=ALL,TRAIN_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv,VALIDATION_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv,MAX_EPOCHS=100,CORRIDOR_LOSS_WEIGHT=5.0,CORRIDOR_MARGIN_M=0.20,CLEARANCE_BIN_LOSS_WEIGHT=1.0,SAFETY_RADIUS_THRESHOLD_M=0.40 \
+  --export=ALL,TRAIN_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv,VALIDATION_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv,MAX_EPOCHS=100,CORRIDOR_LOSS_WEIGHT=5.0,CORRIDOR_MARGIN_M=0.20,CLEARANCE_BIN_LOSS_WEIGHT=1.0,SQUARED_TAIL_LOSS_WEIGHT=1.0,SAFETY_RADIUS_THRESHOLD_M=0.40 \
   src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.sbatch)
 
 printf '%s\n' "$JOB_ID" | tee transformer_2_0_job_id.txt

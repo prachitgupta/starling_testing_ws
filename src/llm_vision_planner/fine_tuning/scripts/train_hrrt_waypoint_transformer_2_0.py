@@ -418,6 +418,16 @@ def euclidean_imitation_loss(predicted_xy, target_xy):
     ).mean()
 
 
+def squared_tail_loss(predicted_xy, target_xy, scale_m: float):
+    """Squared interior error, normalized to metres, emphasizing large misses."""
+    import torch
+
+    distances = torch.linalg.vector_norm(
+        predicted_xy[:, 1:-1] - target_xy[:, 1:-1], ord=2, dim=-1
+    )
+    return distances.square().mean() / float(scale_m)
+
+
 def full_route_euclidean_loss(predicted_xy, target_xy):
     import torch
 
@@ -661,6 +671,10 @@ def evaluate(model, loader, device, validation_config, loss_config):
         else 0.0
     )
     mean_interior_error = float(np.mean(merged_interior))
+    mean_squared_interior_error = float(np.mean(np.square(merged_interior)))
+    mean_squared_tail_loss = mean_squared_interior_error / float(
+        loss_config["squared_tail_scale_m"]
+    )
     safety = base.safety_radius_for_predictions(predictions, examples, validation_config)
     return {
         # Keep the old key so checkpoint selection and plotting remain compatible.
@@ -669,6 +683,8 @@ def evaluate(model, loader, device, validation_config, loss_config):
         "interior_median_waypoint_error_m": float(np.median(merged_interior)),
         "interior_p80_episode_error_m": float(np.quantile(merged_episodes, 0.80)),
         "interior_p95_waypoint_error_m": float(np.quantile(merged_interior, 0.95)),
+        "mean_squared_interior_error_m2": mean_squared_interior_error,
+        "squared_tail_loss_m": mean_squared_tail_loss,
         "full_route_euclidean_imitation_loss_m": float(np.mean(merged_full)),
         "corridor_hinge_loss_m": mean_corridor_penalty,
         "wrong_corridor_rate": corridor_wrong / corridor_decisions if corridor_decisions else 0.0,
@@ -680,7 +696,8 @@ def evaluate(model, loader, device, validation_config, loss_config):
         "clearance_bin_decision_count": clearance_bin_decisions,
         "validation_objective_loss_m": mean_interior_error
         + float(loss_config["corridor_weight"]) * mean_corridor_penalty
-        + float(loss_config["clearance_bin_weight"]) * mean_clearance_bin_penalty,
+        + float(loss_config["clearance_bin_weight"]) * mean_clearance_bin_penalty
+        + float(loss_config["squared_tail_weight"]) * mean_squared_tail_loss,
         **safety,
     }
 
@@ -696,6 +713,7 @@ def main() -> None:
     parser.add_argument("--corridor-loss-weight", type=float)
     parser.add_argument("--corridor-margin-m", type=float)
     parser.add_argument("--clearance-bin-loss-weight", type=float)
+    parser.add_argument("--squared-tail-loss-weight", type=float)
     parser.add_argument("--smoke-test", action="store_true")
     args = parser.parse_args()
 
@@ -726,12 +744,16 @@ def main() -> None:
         loss_config["corridor_margin_m"] = args.corridor_margin_m
     if args.clearance_bin_loss_weight is not None:
         loss_config["clearance_bin_weight"] = args.clearance_bin_loss_weight
+    if args.squared_tail_loss_weight is not None:
+        loss_config["squared_tail_weight"] = args.squared_tail_loss_weight
     for key in (
         "corridor_weight",
         "corridor_margin_m",
         "corridor_temperature_m",
         "clearance_bin_weight",
         "minimum_clearance_m",
+        "squared_tail_weight",
+        "squared_tail_scale_m",
     ):
         value = float(loss_config[key])
         if not math.isfinite(value) or value <= 0.0:
@@ -833,6 +855,7 @@ def main() -> None:
         train_euclidean_losses: List[float] = []
         train_corridor_losses: List[float] = []
         train_clearance_bin_losses: List[float] = []
+        train_squared_tail_losses: List[float] = []
         for step, batch in enumerate(train_loader, start=1):
             batch = move_batch(batch, device)
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
@@ -858,10 +881,16 @@ def main() -> None:
                     float(loss_config["minimum_clearance_m"]),
                     int(loss_config["clearance_samples_per_segment"]),
                 )
+                tail_loss = squared_tail_loss(
+                    predicted,
+                    batch["target_xy"],
+                    float(loss_config["squared_tail_scale_m"]),
+                )
                 loss = (
                     euclidean_loss
                     + float(loss_config["corridor_weight"]) * corridor_loss
                     + float(loss_config["clearance_bin_weight"]) * bin_loss
+                    + float(loss_config["squared_tail_weight"]) * tail_loss
                 )
                 scaled_loss = loss / accumulation
             scaler.scale(scaled_loss).backward()
@@ -869,6 +898,7 @@ def main() -> None:
             train_euclidean_losses.append(float(euclidean_loss.item()))
             train_corridor_losses.append(float(corridor_loss.item()))
             train_clearance_bin_losses.append(float(bin_loss.item()))
+            train_squared_tail_losses.append(float(tail_loss.item()))
             if step % accumulation == 0 or step == len(train_loader):
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(
@@ -889,6 +919,7 @@ def main() -> None:
                 "train_clearance_bin_hinge_loss_m": float(
                     np.mean(train_clearance_bin_losses)
                 ),
+                "train_squared_tail_loss_m": float(np.mean(train_squared_tail_losses)),
                 "learned_waypoint_count": int(model_config["interior_waypoint_count"]),
             }
         )

@@ -168,3 +168,20 @@ def test_clearance_bin_hinge_matches_teacher_bin_and_backpropagates():
     close_loss.backward()
     assert close_route.grad is not None
     assert torch.sum(close_route.grad[0, :, 1]).item() < 0.0
+
+
+def test_squared_tail_loss_penalizes_large_waypoint_errors_more_strongly():
+    import torch
+
+    target = torch.zeros((1, 8, 2), dtype=torch.float32)
+    predicted = target.clone()
+    predicted[:, 1:-1, 0] = 0.1
+    predicted[:, 3, 0] = 2.0
+    predicted.requires_grad_(True)
+
+    loss = transformer_2.squared_tail_loss(predicted, target, scale_m=1.0)
+    expected = (5 * 0.1**2 + 2.0**2) / 6
+    assert abs(loss.item() - expected) < 1e-6
+    loss.backward()
+    assert predicted.grad is not None
+    assert predicted.grad[0, 3, 0].abs() > 10 * predicted.grad[0, 2, 0].abs()

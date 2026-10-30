@@ -44,6 +44,9 @@ loss:
   clearance_bin_weight: 1.0
   minimum_clearance_m: 0.40
   clearance_samples_per_segment: 8
+  # mean(error^2) / scale keeps units in metres and emphasizes large errors.
+  squared_tail_weight: 1.0
+  squared_tail_scale_m: 1.0
 
 validation:
   safety_radius_threshold_m: 0.40

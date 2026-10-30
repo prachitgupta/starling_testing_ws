@@ -23,6 +23,7 @@ MAX_EPOCHS=${MAX_EPOCHS:-100}
 CORRIDOR_LOSS_WEIGHT=${CORRIDOR_LOSS_WEIGHT:-5.0}
 CORRIDOR_MARGIN_M=${CORRIDOR_MARGIN_M:-0.20}
 CLEARANCE_BIN_LOSS_WEIGHT=${CLEARANCE_BIN_LOSS_WEIGHT:-1.0}
+SQUARED_TAIL_LOSS_WEIGHT=${SQUARED_TAIL_LOSS_WEIGHT:-1.0}
 TRAIN_ENV_DIR=${TRAIN_ENV_DIR:-/projects/bhkj/$USER/hrrt_waypoint_transformer_env}
 
 cd "$PROJECT_ROOT"
@@ -54,6 +55,7 @@ python3 -u "$PACKAGE_ROOT/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_
   --corridor-loss-weight "$CORRIDOR_LOSS_WEIGHT" \
   --corridor-margin-m "$CORRIDOR_MARGIN_M" \
   --clearance-bin-loss-weight "$CLEARANCE_BIN_LOSS_WEIGHT" \
+  --squared-tail-loss-weight "$SQUARED_TAIL_LOSS_WEIGHT" \
   --safety-radius-threshold-m "$SAFETY_RADIUS_THRESHOLD_M"
 
 tar -czf "$OUTPUT_DIR.tar.gz" -C "$(dirname "$OUTPUT_DIR")" "$(basename "$OUTPUT_DIR")"

@@ -920,6 +920,113 @@ overrides are `CONFIG`, `TRAIN_CSV`, `VALIDATION_CSV`, `OUTPUT_DIR`,
 `SQUARED_TAIL_LOSS_WEIGHT`,
 `SAFETY_RADIUS_THRESHOLD_M`, `TRAIN_ENV_DIR`, and `HF_HOME`.
 
+### Transfer Transformer 2.0 and build the local verification website
+
+Run this on the laptop only after the NCSA job has finished. It copies the
+complete output directory, including every checkpoint, tokenizer, shared text
+encoder, metrics file, training history, and training summary. It does not
+delete any local files.
+
+```bash
+set -euo pipefail
+LOCAL_PROJECT=/home/prachit/Desktop/starling_multiple_trajectory_idea
+LOCAL_OUTPUT=$LOCAL_PROJECT/src/llm_vision_planner/fine_tuning/outputs/hrrt_waypoint_transformer_2_0
+NCSA_OUTPUT=/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/hrrt_waypoint_transformer_2_0
+
+mkdir -p "$LOCAL_OUTPUT"
+rsync -avP --partial \
+  "pgupta12@dtai-login.delta.ncsa.illinois.edu:$NCSA_OUTPUT/" \
+  "$LOCAL_OUTPUT/"
+```
+
+Confirm that the transfer is complete and that every copied checkpoint is a
+Transformer 2.0 checkpoint:
+
+```bash
+python3 - "$LOCAL_OUTPUT" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+assert (root / "training_history.json").is_file()
+assert (root / "training_summary.json").is_file()
+assert (root / "text_encoder").is_dir()
+checkpoints = sorted(root.glob("checkpoint-epoch-*"))
+assert checkpoints, "no checkpoint directories were transferred"
+for checkpoint in checkpoints:
+    config = json.loads((checkpoint / "config.json").read_text(encoding="utf-8"))
+    assert config["model"]["architecture_version"] == "transformer_2_0", checkpoint
+    assert (checkpoint / "model.pt").is_file(), checkpoint
+    assert (checkpoint / "metrics.json").is_file(), checkpoint
+    assert (checkpoint / "tokenizer").is_dir(), checkpoint
+print(f"verified {len(checkpoints)} Transformer 2.0 checkpoints in {root}")
+PY
+```
+
+Use the scripts in `fine_tuning/verification/scripts` to audit the local
+dataset, evaluate the best transferred checkpoint on validation and locked
+test scenes, and generate the HTML dashboard. `VERIFY_DEVICE=cpu` works on a
+CPU-only laptop; change it to `cuda:0` when a compatible local GPU is available.
+
+```bash
+set -euo pipefail
+PACKAGE_ROOT=/home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
+MODEL_OUTPUT=$PACKAGE_ROOT/fine_tuning/outputs/hrrt_waypoint_transformer_2_0
+DATASET_ROOT=$PACKAGE_ROOT/fine_tuning/datasets/calibrated_vertical_dss/teacher_only_80_10_10
+VERIFY_RUN=$PACKAGE_ROOT/fine_tuning/outputs/verification-transformer-2-0-local
+VERIFY_DEVICE=cpu
+CONFIG=$PACKAGE_ROOT/fine_tuning/configs/hrrt_waypoint_transformer_2_0.yaml
+
+mkdir -p "$VERIFY_RUN/reports" "$VERIFY_RUN/plots"
+test -s "$DATASET_ROOT/hrrt_sft_train.csv"
+test -s "$DATASET_ROOT/hrrt_sft_validation.csv"
+test -s "$DATASET_ROOT/hrrt_sft_test.csv"
+test -s "$MODEL_OUTPUT/training_history.json"
+test -s "$MODEL_OUTPUT/training_summary.json"
+
+python3 "$PACKAGE_ROOT/fine_tuning/verification/scripts/verify_transformer_components.py" \
+  --stage preflight \
+  --config "$CONFIG" \
+  --train "$DATASET_ROOT/hrrt_sft_train.csv" \
+  --validation "$DATASET_ROOT/hrrt_sft_validation.csv" \
+  --test "$DATASET_ROOT/hrrt_sft_test.csv" \
+  --output "$VERIFY_RUN/reports/preflight.json" \
+  --device "$VERIFY_DEVICE" \
+  --tiny-samples 8 \
+  --tiny-updates 250 \
+  --tiny-lr-multiplier 5.0 \
+  --required-overfit-reduction 0.50
+
+python3 "$PACKAGE_ROOT/fine_tuning/verification/scripts/verify_transformer_components.py" \
+  --stage postflight \
+  --config "$CONFIG" \
+  --train "$DATASET_ROOT/hrrt_sft_train.csv" \
+  --validation "$DATASET_ROOT/hrrt_sft_validation.csv" \
+  --test "$DATASET_ROOT/hrrt_sft_test.csv" \
+  --model-output "$MODEL_OUTPUT" \
+  --output "$VERIFY_RUN/reports/postflight.json" \
+  --device "$VERIFY_DEVICE"
+
+python3 "$PACKAGE_ROOT/fine_tuning/verification/scripts/plot_verification_results.py" \
+  --run-root "$VERIFY_RUN" \
+  --model-output "$MODEL_OUTPUT" \
+  --output-dir "$VERIFY_RUN/plots"
+```
+
+Serve the generated website locally and open
+`http://127.0.0.1:8092/index.html`:
+
+```bash
+python3 -m http.server 8092 \
+  --directory /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/verification-transformer-2-0-local/plots
+```
+
+The website contains the training curves, gradient and text/scene sensitivity
+diagnostics, validation/test error distribution, and six locked-test route
+comparisons. The orange routes are raw Transformer 2.0 predictions; the green
+routes are teacher HRRT targets.
+
 ## 10. Evaluate the locked test split
 
 Request a GPU session:

@@ -34,9 +34,9 @@ def finite_series(values):
     return [float(value) if math.isfinite(float(value)) else np.nan for value in values]
 
 
-def plot_training(run_root: Path, output_dir: Path) -> Path:
-    history = read_json(run_root / "model" / "training_history.json")
-    summary = read_json(run_root / "model" / "training_summary.json")
+def plot_training(model_output: Path, output_dir: Path) -> Path:
+    history = read_json(model_output / "training_history.json")
+    summary = read_json(model_output / "training_summary.json")
     epochs = [int(row["epoch"]) for row in history]
     train = [float(row["train_euclidean_imitation_loss_m"]) for row in history]
     validation = [float(row["euclidean_imitation_loss_m"]) for row in history]
@@ -169,13 +169,19 @@ def write_dashboard(run_root: Path, output_dir: Path, images: list[Path]) -> Pat
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-root", type=Path, required=True)
+    parser.add_argument(
+        "--model-output",
+        type=Path,
+        help="Completed trainer output. Defaults to RUN_ROOT/model for verification batch jobs.",
+    )
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     run_root = args.run_root.resolve()
+    model_output = (args.model_output or run_root / "model").resolve()
     output_dir = (args.output_dir or run_root / "plots").resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     images = [
-        plot_training(run_root, output_dir),
+        plot_training(model_output, output_dir),
         plot_diagnostics(run_root, output_dir),
         plot_routes(run_root, output_dir),
     ]

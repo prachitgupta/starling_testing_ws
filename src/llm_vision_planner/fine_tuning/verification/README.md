@@ -121,6 +121,20 @@ RUN_ROOT="$PWD/src/llm_vision_planner/fine_tuning/outputs/verification-${JOB_ID}
 python3 src/llm_vision_planner/fine_tuning/verification/scripts/plot_verification_results.py --run-root "$RUN_ROOT"
 ```
 
+For a Transformer 2.0 model trained separately from this verification batch
+job, pass its completed output directory explicitly:
+
+```bash
+python3 fine_tuning/verification/scripts/plot_verification_results.py \
+  --run-root fine_tuning/outputs/verification-transformer-2-0-local \
+  --model-output fine_tuning/outputs/hrrt_waypoint_transformer_2_0
+```
+
+The run root must contain `reports/preflight.json` and
+`reports/postflight.json`. The complete laptop transfer, report-generation,
+and local web-server commands are in the main
+[`README.md`](../README.md#transfer-transformer-20-and-build-the-local-verification-website).
+
 Copy the visual report to this laptop:
 
 ```bash

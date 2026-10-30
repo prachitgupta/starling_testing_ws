@@ -117,7 +117,7 @@ git pull --ff-only
 mkdir -p logs
 
 JOB_ID=$(sbatch --parsable \
-  --export=ALL,TRAIN_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv,VALIDATION_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv,MAX_EPOCHS=100,CORRIDOR_LOSS_WEIGHT=5.0,CORRIDOR_MARGIN_M=0.20,CLEARANCE_BIN_LOSS_WEIGHT=1.0,SQUARED_TAIL_LOSS_WEIGHT=1.0,SAFETY_RADIUS_THRESHOLD_M=0.40 \
+  --export=ALL,TRAIN_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/calibrated_vertical_dss/teacher_only_80_10_10/hrrt_sft_train.csv,VALIDATION_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/calibrated_vertical_dss/teacher_only_80_10_10/hrrt_sft_validation.csv,MAX_EPOCHS=100,CORRIDOR_LOSS_WEIGHT=5.0,CORRIDOR_MARGIN_M=0.20,CLEARANCE_BIN_LOSS_WEIGHT=1.0,SQUARED_TAIL_LOSS_WEIGHT=1.0,SAFETY_RADIUS_THRESHOLD_M=0.40 \
   src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.sbatch)
 
 printf '%s\n' "$JOB_ID" | tee transformer_2_0_job_id.txt
@@ -134,3 +134,11 @@ tail -f "logs/hrrt-transformer-2-0-${JOB_ID}.out"
 The checkpoint configuration records `architecture_version:
 transformer_2_0`, allowing the calibration gateway to load the correct model
 implementation automatically.
+
+## Transfer and HTML verification report
+
+After the NCSA job completes, follow the copy-and-verify commands in
+[`README.md`](README.md#transfer-transformer-20-and-build-the-local-verification-website).
+They transfer the complete `hrrt_waypoint_transformer_2_0` output to this
+laptop, run the Transformer-aware scripts under `fine_tuning/verification`,
+and serve the generated dashboard at `http://127.0.0.1:8092/index.html`.

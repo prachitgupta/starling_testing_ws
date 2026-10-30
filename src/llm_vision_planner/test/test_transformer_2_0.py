@@ -53,10 +53,10 @@ def tiny_config():
 
 def test_scene_tokens_include_numeric_obstacle_label():
     encoded = transformer_2.encode_scene(environment())
-    assert encoded.shape == (4, transformer_2.SCENE_FEATURE_SIZE)
-    obstacle = encoded[3]
-    assert obstacle[:4].tolist() == [0.0, 0.0, 0.0, 1.0]
-    assert obstacle[4:7].tolist() == [0.0, 1.0, 0.0]
+    assert encoded.shape == (3, transformer_2.SCENE_FEATURE_SIZE)
+    obstacle = encoded[2]
+    assert obstacle[:3].tolist() == [0.0, 0.0, 1.0]
+    assert obstacle[3:6].tolist() == [0.0, 1.0, 0.0]
 
 
 def test_model_learns_six_points_and_copies_endpoints():
@@ -84,8 +84,8 @@ def test_model_learns_six_points_and_copies_endpoints():
     )
     assert tuple(output.shape) == (1, 8, 2)
     assert model.route_queries.shape[0] == 6
-    assert torch.equal(output[:, 0], encoded[:, 0, 7:9])
-    assert torch.equal(output[:, -1], encoded[:, 1, 7:9])
+    assert torch.equal(output[:, 0], encoded[:, 0, 6:8])
+    assert torch.equal(output[:, -1], encoded[:, 1, 6:8])
 
     target = output.detach().clone()
     target[:, 1:-1] += 0.2

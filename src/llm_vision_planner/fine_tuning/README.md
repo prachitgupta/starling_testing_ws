@@ -282,11 +282,15 @@ goal is not sampled from language: it is deterministically grounded from
 labelled obstacle relations using the same `NEAR` / `FAR_FROM` distance
 contract as the mission gateway.
 
-The 4,000 layouts below generate exactly six labelled goal variants each, for a
-target of 24,000 raw records. Layout IDs are split as a group, so goal variants
-of the same geometry never leak across train, validation, and test. The exact
-100-layout cycle is: person+chair 36%, person+chair+stop-sign 36%, person-only
-14%, chair-only 5%, stop-sign-only 5%, and person+stop-sign 4%.
+Each layout receives one deterministic goal relation, rotated across six
+relation variants by layout ID, and all six preference labels for that fixed
+scene and goal. A deterministic 10% of layouts receives a second distinct
+goal, again with all six preferences. Therefore 4,000 layouts target 26,400
+raw records: 3,600 x 6 plus 400 x 12. Layout IDs are split as a group, so both
+goals and every preference from the same geometry stay in the same train,
+validation, or test split. The exact 100-layout cycle is: person+chair 36%,
+person+chair+stop-sign 36%, person-only 14%, chair-only 5%, stop-sign-only 5%,
+and person+stop-sign 4%.
 
 First run one no-API scene and inspect its relations and route cards:
 
@@ -301,7 +305,8 @@ python3 fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
   --teacher mock \
   --distillation-mode dss \
   --scene-layout calibrated_vertical \
-  --goal-variants-per-layout 1 \
+  --preferences-per-scene 6 \
+  --multi-goal-layout-ratio 0.0 \
   --minimum-forward-progress-m 2.0 \
   --hrrt-iterations 500 \
   --max-total-nodes 5000 \
@@ -320,9 +325,10 @@ print("deterministic labelled relations:", row["goal_relations"])
 PY
 ```
 
-Generate the full teacher-labelled dataset. In calibrated-vertical mode, one
-preference type is rotated across the six relation variants; it selects a route
-after the goal is fixed and never determines the goal itself.
+Generate the full teacher-labelled dataset. In calibrated-vertical mode, the
+goal relation rotates across layouts; each fixed layout-goal pair is evaluated
+under all six preferences. Preferences select among verified routes only and
+never determine the goal itself.
 
 ```bash
 export OPENAI_API_KEY=YOUR_KEY
@@ -336,7 +342,8 @@ python3 fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
   --reasoning-effort medium \
   --distillation-mode dss \
   --scene-layout calibrated_vertical \
-  --goal-variants-per-layout 6 \
+  --preferences-per-scene 6 \
+  --multi-goal-layout-ratio 0.10 \
   --goal-sample-resolution-m 0.10 \
   --minimum-forward-progress-m 2.0 \
   --hrrt-iterations 500 \
@@ -768,10 +775,11 @@ the displayed HRRT routes.
 
 Transformer 2.0 is separate from the Llama/QLoRA and original structured
 transformer runs. Its input is the preference text plus numeric start, goal,
-workspace, and obstacle tokens. Obstacle labels are one-hot encoded in the
-scene token as `[person, chair, stop_sign]`: person is `[1,0,0]`, chair is
-`[0,1,0]`, and stop sign is `[0,0,1]`. It predicts only six interior points;
-the exact scene start and goal are copied into the returned eight-point route.
+and obstacle tokens. The fixed workspace bounds are used only for coordinate
+normalization; they are not a scene token. Obstacle labels are one-hot encoded
+as `[person, chair, stop_sign]`: person is `[1,0,0]`, chair is `[0,1,0]`, and
+stop sign is `[0,0,1]`. It predicts only six interior points; the exact scene
+start and goal are copied into the returned eight-point route.
 
 Its training objective is
 

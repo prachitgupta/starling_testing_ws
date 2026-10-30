@@ -22,6 +22,7 @@ from finalize_hrrt_sft_dataset import finalize  # noqa: E402
 from generate_hrrt_finetuning_dataset import (  # noqa: E402
     LABELS,
     calibrated_goal_relations,
+    calibrated_goal_variants,
     deterministic_relation_goal,
     prepare_resume_file,
     sample_calibrated_vertical_scene,
@@ -50,6 +51,13 @@ def test_calibrated_vertical_goal_is_labelled_and_forward():
     assert relations[0]["relation"] == "NEAR"
     assert all(obstacle_ids[item["object_id"]] == item["object_label"] for item in relations)
     assert goal["y"] >= scene["start"]["y"] + 2.0
+
+
+def test_calibrated_goals_rotate_and_exactly_ten_percent_are_multi_goal():
+    assert [calibrated_goal_variants(scene_id, 0.10)[0] for scene_id in range(6)] == list(range(6))
+    variants = [calibrated_goal_variants(scene_id, 0.10) for scene_id in range(4000)]
+    assert sum(len(item) == 2 for item in variants) == 400
+    assert all(len(item) in (1, 2) and len(set(item)) == len(item) for item in variants)
 
 
 def test_token_ids_accept_batch_encoding_and_list_shapes():
@@ -159,10 +167,18 @@ def test_resume_removes_partial_scene(tmp):
 
 def test_resume_retains_complete_one_obstacle_scene(tmp):
     output = tmp / "raw.jsonl"
-    rows = [raw_row(0, preference) for preference in range(5)]
+    rows = [raw_row(0, preference) for preference in range(6)]
     write_jsonl(output, rows)
     assert prepare_resume_file(output, 6) == {0}
-    assert len(read_jsonl(output)) == 5
+    assert len(read_jsonl(output)) == 6
+
+
+def test_resume_uses_per_layout_goal_count(tmp):
+    output = tmp / "raw.jsonl"
+    rows = [raw_row(0, preference) for preference in range(12)]
+    write_jsonl(output, rows)
+    assert prepare_resume_file(output, 6, exact_rows_per_scene={0: 12}) == {0}
+    assert len(read_jsonl(output)) == 12
 
 
 def test_human_review_and_finalization(tmp):
@@ -214,6 +230,10 @@ def test_human_review_and_finalization(tmp):
             output_dir=output_dir,
             clearance_m=0.40,
             distillation_mode="dss",
+            teacher_only=False,
+            validation_scene_ratio=0.10,
+            test_scene_ratio=0.10,
+            split_seed=42,
             reasoning_aux_ratio=1.0,
             counterfactual_aux_ratio=0.0,
             auxiliary_seed=42,
@@ -272,6 +292,10 @@ def test_dss_scott_auxiliary_rows(tmp):
             output_dir=output_dir,
             clearance_m=0.40,
             distillation_mode="dss_scott",
+            teacher_only=False,
+            validation_scene_ratio=0.10,
+            test_scene_ratio=0.10,
+            split_seed=42,
             reasoning_aux_ratio=0.0,
             counterfactual_aux_ratio=1.0,
             auxiliary_seed=42,
@@ -312,12 +336,16 @@ def test_offline_evaluation_metrics():
 
 def main():
     test_teacher_data_object_classes()
+    test_calibrated_vertical_goal_is_labelled_and_forward()
+    test_calibrated_goals_rotate_and_exactly_ten_percent_are_multi_goal()
     test_token_ids_accept_batch_encoding_and_list_shapes()
     with tempfile.TemporaryDirectory() as directory:
         tmp = Path(directory)
         test_resume_removes_partial_scene(tmp)
     with tempfile.TemporaryDirectory() as directory:
         test_resume_retains_complete_one_obstacle_scene(Path(directory))
+    with tempfile.TemporaryDirectory() as directory:
+        test_resume_uses_per_layout_goal_count(Path(directory))
     with tempfile.TemporaryDirectory() as directory:
         test_human_review_and_finalization(Path(directory))
     with tempfile.TemporaryDirectory() as directory:

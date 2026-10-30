@@ -27,7 +27,7 @@ import train_hrrt_waypoint_transformer as base
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = PACKAGE_ROOT / "fine_tuning/configs/hrrt_waypoint_transformer_2_0.yaml"
-SCENE_FEATURE_SIZE = 13
+SCENE_FEATURE_SIZE = 12
 LABELS = ("person", "chair", "stop_sign")
 LABEL_TO_INDEX = {label: index for index, label in enumerate(LABELS)}
 
@@ -52,7 +52,7 @@ set_seed = base.set_seed
 
 def scene_token(token_type: int, label: str | None, bounds: Sequence[float]) -> List[float]:
     """Return [token type, object label, normalized geometry]."""
-    token_one_hot = [0.0] * 4
+    token_one_hot = [0.0] * 3
     token_one_hot[token_type] = 1.0
     label_one_hot = [0.0] * len(LABELS)
     if label in LABEL_TO_INDEX:
@@ -61,7 +61,11 @@ def scene_token(token_type: int, label: str | None, bounds: Sequence[float]) -> 
 
 
 def encode_scene(environment: Mapping[str, Any]) -> np.ndarray:
-    """Encode start, goal, workspace, geometry, and obstacle identity numerically."""
+    """Encode start, goal, obstacle geometry, and obstacle identity numerically.
+
+    Workspace bounds are used only to normalize geometry.  They are constant
+    for this dataset and are therefore not emitted as a learnable scene token.
+    """
     workspace = environment["workspace"]
     x0, x1 = map(float, workspace["x"])
     y0, y1 = map(float, workspace["y"])
@@ -78,7 +82,6 @@ def encode_scene(environment: Mapping[str, Any]) -> np.ndarray:
     tokens = [
         scene_token(0, None, [nx(start["x"]), ny(start["y"]), nx(start["x"]), ny(start["y"]), 0.0, 0.0]),
         scene_token(1, None, [nx(goal["x"]), ny(goal["y"]), nx(goal["x"]), ny(goal["y"]), 0.0, 0.0]),
-        scene_token(2, None, [-1.0, -1.0, 1.0, 1.0, 0.0, 0.0]),
     ]
     for obstacle in environment.get("obstacles", []):
         minimum, maximum = obstacle["min_corner"], obstacle["max_corner"]
@@ -86,7 +89,7 @@ def encode_scene(environment: Mapping[str, Any]) -> np.ndarray:
         depth = max(0.0, float(maximum[1]) - float(minimum[1])) / sy
         tokens.append(
             scene_token(
-                3,
+                2,
                 str(obstacle.get("label", "")).strip().lower(),
                 [nx(minimum[0]), ny(minimum[1]), nx(maximum[0]), ny(maximum[1]), width, depth],
             )
@@ -396,10 +399,10 @@ def build_model(config: Mapping[str, Any]):
             )
             interior = self.coordinate_head(decoded)
 
-            # Geometry starts after 4 token-type and 3 label values.  These
+            # Geometry starts after 3 token-type and 3 label values.  These
             # normalized coordinates are copied, not predicted by a query.
-            start = scene_tokens[:, 0, 7:9].unsqueeze(1)
-            goal = scene_tokens[:, 1, 7:9].unsqueeze(1)
+            start = scene_tokens[:, 0, 6:8].unsqueeze(1)
+            goal = scene_tokens[:, 1, 6:8].unsqueeze(1)
             return torch.cat((start, interior, goal), dim=1)
 
     return PreferenceWaypointTransformer2()

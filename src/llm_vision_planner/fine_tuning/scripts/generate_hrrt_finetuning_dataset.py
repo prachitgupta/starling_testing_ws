@@ -132,15 +132,17 @@ def expected_scene_rows(rows: Sequence[Mapping[str, object]], requested: int) ->
     environment = rows[0].get("environment", {}) if rows else {}
     obstacles = environment.get("obstacles", []) if isinstance(environment, Mapping) else []
     obstacle_count = len(obstacles) if isinstance(obstacles, list) else 2
-    # shortest, widest, balanced, deadline; then far-from first and close-to second.
-    return min(requested, 4 + min(obstacle_count, 2))
+    # Every obstacle scene supports shortest, widest, balanced, far, close,
+    # and deadline preferences.  A one-object scene uses that object for both
+    # the safe far-from and safe close-to preference labels.
+    return min(requested, 6 if obstacle_count else 4)
 
 
 def prepare_resume_file(
     path: Path,
     expected_per_scene: int,
     expected_distillation_mode: str | None = None,
-    exact_rows_per_scene: int | None = None,
+    exact_rows_per_scene: int | Mapping[int, int] | None = None,
 ) -> set[int]:
     """Drop partial scenes so resuming never duplicates or silently skips labels."""
     by_scene: Dict[int, List[Dict[str, object]]] = {}
@@ -157,13 +159,18 @@ def prepare_resume_file(
                         f"or resume with --distillation-mode {row_mode}"
                     )
                 by_scene.setdefault(int(row["scene_id"]), []).append(row)
-    complete = {
-        scene_id
-        for scene_id, rows in by_scene.items()
-        if len(rows) == (exact_rows_per_scene or expected_scene_rows(rows, expected_per_scene))
-        and len({str(row["sample_id"]) for row in rows})
-        == (exact_rows_per_scene or expected_scene_rows(rows, expected_per_scene))
-    }
+    def required_rows(scene_id: int, rows: Sequence[Mapping[str, object]]) -> int:
+        if isinstance(exact_rows_per_scene, Mapping):
+            return exact_rows_per_scene[scene_id]
+        if exact_rows_per_scene is not None:
+            return exact_rows_per_scene
+        return expected_scene_rows(rows, expected_per_scene)
+
+    complete = set()
+    for scene_id, rows in by_scene.items():
+        required = required_rows(scene_id, rows)
+        if len(rows) == required and len({str(row["sample_id"]) for row in rows}) == required:
+            complete.add(scene_id)
     retained = [row for scene_id in sorted(complete) for row in by_scene[scene_id]]
     temporary = path.with_suffix(path.suffix + ".resume.tmp")
     with temporary.open("w", encoding="utf-8") as stream:
@@ -250,6 +257,21 @@ def sample_calibrated_vertical_scene(rng: random.Random, scene_id: int) -> Dict[
         "workspace": dict(CALIBRATED_VERTICAL_WORKSPACE),
         "obstacles": obstacles,
     }
+
+
+def calibrated_goal_variants(scene_id: int, multi_goal_layout_ratio: float) -> List[int]:
+    """Rotate one primary goal across layouts and add a second for a fixed subset.
+
+    Multiplication by 7919 permutes each 1000-layout block, so a ratio of 0.10
+    selects exactly 100 layouts per block without depending on process hashing.
+    """
+    if not 0.0 <= multi_goal_layout_ratio <= 1.0:
+        raise ValueError("--multi-goal-layout-ratio must be between 0 and 1")
+    primary = scene_id % 6
+    threshold = int(round(multi_goal_layout_ratio * 1000))
+    if (scene_id * 7919) % 1000 < threshold:
+        return [primary, (primary + 3) % 6]
+    return [primary]
 
 
 def box_clearance(point: Mapping[str, float], obstacle: Mapping[str, object]) -> float:
@@ -454,8 +476,8 @@ def preference_requests(scene: Mapping[str, object], cards: Sequence[Mapping[str
                 )[variant],
             }
         )
-    if len(obstacles) > 1:
-        obstacle = obstacles[1]
+    if obstacles:
+        obstacle = obstacles[1] if len(obstacles) > 1 else obstacles[0]
         requests.append(
             {
                 "preference_type": "close_to_object",
@@ -817,14 +839,21 @@ def generate(args: argparse.Namespace) -> None:
         raise ValueError("--preferences-per-scene must be between 1 and 6")
     if not 0 <= args.min_obstacles <= args.max_obstacles <= 4:
         raise ValueError("obstacle counts must satisfy 0 <= min <= max <= 4")
-    if args.scene_layout == "calibrated_vertical" and args.goal_variants_per_layout < 1:
-        raise ValueError("--goal-variants-per-layout must be positive")
+    exact_rows = None
+    if args.scene_layout == "calibrated_vertical":
+        if not 0.0 <= args.multi_goal_layout_ratio <= 1.0:
+            raise ValueError("--multi-goal-layout-ratio must be between 0 and 1")
+        exact_rows = {
+            scene_id: len(calibrated_goal_variants(scene_id, args.multi_goal_layout_ratio))
+            * args.preferences_per_scene
+            for scene_id in range(args.scenes)
+        }
     completed = (
         prepare_resume_file(
             args.output,
             args.preferences_per_scene,
             args.distillation_mode,
-            args.goal_variants_per_layout if args.scene_layout == "calibrated_vertical" else None,
+            exact_rows,
         )
         if args.resume
         else set()
@@ -841,7 +870,8 @@ def generate(args: argparse.Namespace) -> None:
             if args.scene_layout == "calibrated_vertical":
                 layout = sample_calibrated_vertical_scene(scene_rng, scene_id)
                 candidate_sets = []
-                for goal_variant in range(args.goal_variants_per_layout):
+                goal_variants = calibrated_goal_variants(scene_id, args.multi_goal_layout_ratio)
+                for goal_slot, goal_variant in enumerate(goal_variants):
                     relations = calibrated_goal_relations(layout, goal_variant)
                     try:
                         goal = deterministic_relation_goal(
@@ -851,7 +881,7 @@ def generate(args: argparse.Namespace) -> None:
                         scene = {**layout, "goal": goal}
                         family = plan_hrrt_star(
                             scene["start"], scene["goal"], scene["obstacles"], scene["workspace"],
-                            clearance_m=args.clearance_m, seed=args.seed + scene_id * 1000 + attempt * 10 + goal_variant,
+                            clearance_m=args.clearance_m, seed=args.seed + scene_id * 1000 + attempt * 10 + goal_slot,
                             max_iterations=args.hrrt_iterations, max_candidates=args.max_candidates,
                             max_waypoints=8, max_total_nodes=args.max_total_nodes, max_nodes_per_key=args.max_nodes_per_key,
                         )
@@ -868,8 +898,8 @@ def generate(args: argparse.Namespace) -> None:
                     if len(routes) < args.min_routes or len(signatures) < 2 or direct_is_clear:
                         candidate_sets = []
                         break
-                    candidate_sets.append((scene, routes, relations, goal_variant))
-                if len(candidate_sets) == args.goal_variants_per_layout:
+                    candidate_sets.append((scene, routes, relations, goal_variant, goal_slot))
+                if len(candidate_sets) == len(goal_variants):
                     scene_route_sets = candidate_sets
                     break
             else:
@@ -891,21 +921,17 @@ def generate(args: argparse.Namespace) -> None:
                     normalize_obstacles(scene["obstacles"]), scene["workspace"], args.clearance_m,
                 )
                 if len(routes) >= args.min_routes and len(signatures) >= 2 and not direct_is_clear:
-                    scene_route_sets = [(scene, routes, None, None)]
+                    scene_route_sets = [(scene, routes, None, None, None)]
                     break
         if not scene_route_sets:
             print(f"scene {scene_id}: no route family after {args.scene_attempts} attempts", flush=True)
             continue
 
         labels_written = 0
-        for scene, routes, goal_relations, goal_variant in scene_route_sets:
+        for scene, routes, goal_relations, goal_variant, goal_slot in scene_route_sets:
             cards = route_cards(routes, scene["obstacles"], args.nominal_speed_mps)
             all_preferences = preference_requests(scene, cards)
-            preferences = (
-                [all_preferences[int(goal_variant) % len(all_preferences)]]
-                if goal_variant is not None
-                else all_preferences[: args.preferences_per_scene]
-            )
+            preferences = all_preferences[: args.preferences_per_scene]
             for preference_index, preference in enumerate(preferences):
                 selection = (
                     mock_select(preference, cards)
@@ -918,7 +944,9 @@ def generate(args: argparse.Namespace) -> None:
                 selection = normalize_teacher_output(selection, preference, cards, args.distillation_mode)
                 route = selected_route(routes, selection["selected_route_id"])
                 sample_suffix = (
-                    f"goal-{int(goal_variant):02d}" if goal_variant is not None else f"pref-{preference_index:02d}"
+                    f"goal-{int(goal_slot):02d}-pref-{preference_index:02d}"
+                    if goal_slot is not None
+                    else f"pref-{preference_index:02d}"
                 )
                 record = {
                     "schema_version": "hrrt_sft_raw_v2",
@@ -940,6 +968,9 @@ def generate(args: argparse.Namespace) -> None:
                     "teacher_trajectory_reasoning_raw": selection["trajectory_reasoning_raw"],
                     "selected_waypoints": route["waypoints"],
                 }
+                if goal_variant is not None:
+                    record["goal_variant"] = int(goal_variant)
+                    record["goal_slot"] = int(goal_slot)
                 if args.distillation_mode == "dss_scott":
                     counterfactual = selected_route(routes, str(selection["counterfactual_route_id"]))
                     record.update(
@@ -986,8 +1017,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="horizontal_legacy preserves the existing generator; calibrated_vertical uses the raw-person NED convention.",
     )
     parser.add_argument(
-        "--goal-variants-per-layout", type=int, default=6,
-        help="Label-aware deterministic NEAR/FAR goal variants per calibrated vertical layout.",
+        "--multi-goal-layout-ratio", type=float, default=0.10,
+        help="Calibrated vertical only: fraction of layouts receiving a second deterministic goal.",
     )
     parser.add_argument("--goal-sample-resolution-m", type=float, default=0.10)
     parser.add_argument(

@@ -9,12 +9,12 @@ used by the verifier, refinement, QP, and calibration gateway.
 ```text
 preference text -> MiniLM -> 320-dimensional text tokens
 
-start / goal / workspace / obstacles
-    -> 13-value numeric scene tokens
-       4 token-type values
+start / goal / obstacles
+    -> 12-value numeric scene tokens
+       3 token-type values
        3 obstacle-label values: person, chair, stop_sign
        6 normalized geometry values
-    -> 13 -> 320 input projection
+    -> 12 -> 320 input projection
     -> two residual 320 -> 640 -> 320 scene MLP blocks
     -> learned scene-summary token
     -> two scene-only Transformer encoder layers
@@ -33,6 +33,8 @@ final route = exact start + six predictions + exact goal
 
 Start and goal are copied from the numeric scene input. They are not learned
 queries and do not contribute error to the Euclidean part of the loss. For
+the fixed dataset workspace, the bounds are used to normalize and denormalize
+coordinates but are no longer emitted as a scene token. For
 obstacle `j`, let `h_j` be the selected teacher route's HRRT homotopy sign,
 `u` the start-to-goal unit vector, and `n = (-u_y, u_x)` its left normal. The
 teacher route fixes soft weights around that obstacle:

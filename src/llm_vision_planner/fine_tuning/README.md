@@ -1,7 +1,12 @@
-# HRRT preference-conditioned Llama fine-tuning
+# HRRT preference-conditioned planner fine-tuning
 
 Distill HRRT-star route preferences into a Llama waypoint planner. The deployed
 model receives scene geometry, human preference, and safety constraints only.
+
+The repository also contains the structured Transformer 2.0 path, which reads
+the same finalized CSV data, predicts six interior waypoints, copies the exact
+start and goal, and trains with Euclidean plus wrong-corridor loss. See
+[section 9B](#9b-train-transformer-20-on-ncsa) for its commands.
 
 Two dataset modes are available:
 
@@ -630,6 +635,111 @@ practical berth.` The gateway applies its usual two-attempt refinement and
 verification procedure. The transformer receives the scene, generated goal,
 and L2 preference on each attempt; it does not receive teacher reasoning or
 the displayed HRRT routes.
+
+## 9B. Train Transformer 2.0 on NCSA
+
+Transformer 2.0 is separate from the Llama/QLoRA and original structured
+transformer runs. Its input is the preference text plus numeric start, goal,
+workspace, and obstacle tokens. Obstacle labels are one-hot encoded in the
+scene token as `[person, chair, stop_sign]`: person is `[1,0,0]`, chair is
+`[0,1,0]`, and stop sign is `[0,0,1]`. It predicts only six interior points;
+the exact scene start and goal are copied into the returned eight-point route.
+
+Its training objective is
+
+```text
+objective = mean interior Euclidean error
+          + CORRIDOR_LOSS_WEIGHT * wrong-corridor hinge error
+```
+
+The committed defaults are `CORRIDOR_LOSS_WEIGHT=5.0`,
+`CORRIDOR_MARGIN_M=0.20`, `corridor_temperature_m=0.35`, and 100 epochs.
+The selected teacher route's stored HRRT `h_signature` provides the corridor
+label; teacher reasoning is not used.
+
+Before uploading or submitting, verify the committed trainer locally:
+
+```bash
+cd /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
+python3 -m py_compile fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.py
+bash -n fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.sbatch
+python3 -m pytest -q test/test_transformer_2_0.py
+```
+
+If the teacher-only CSVs are not already on NCSA, upload them from the local
+repository:
+
+```bash
+ssh pgupta12@dtai-login.delta.ncsa.illinois.edu \
+  'mkdir -p /projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10'
+scp fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_{train,validation,test}.csv \
+  pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/
+```
+
+Then paste this block at the NCSA login prompt. It updates the branch, checks
+the exact inputs and Transformer 2.0 files, submits one GPU job, and saves the
+job ID:
+
+```bash
+set -euo pipefail
+cd /projects/bhkj/pgupta12/starling_multiple_trajectory_idea
+git checkout starling_multiple_trajectory_idea
+git pull --ff-only
+mkdir -p logs
+
+PACKAGE_ROOT=$PWD/src/llm_vision_planner
+DATASET_ROOT=$PACKAGE_ROOT/fine_tuning/datasets/dss_teacher_only_80_10_10
+
+test -s "$DATASET_ROOT/hrrt_sft_train.csv"
+test -s "$DATASET_ROOT/hrrt_sft_validation.csv"
+test -s "$PACKAGE_ROOT/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.py"
+test -s "$PACKAGE_ROOT/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.sbatch"
+test -s "$PACKAGE_ROOT/fine_tuning/configs/hrrt_waypoint_transformer_2_0.yaml"
+
+JOB_ID=$(sbatch --parsable \
+  --export=ALL,TRAIN_CSV=$DATASET_ROOT/hrrt_sft_train.csv,VALIDATION_CSV=$DATASET_ROOT/hrrt_sft_validation.csv,MAX_EPOCHS=100,CORRIDOR_LOSS_WEIGHT=5.0,CORRIDOR_MARGIN_M=0.20,SAFETY_RADIUS_THRESHOLD_M=0.40 \
+  "$PACKAGE_ROOT/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.sbatch")
+
+printf '%s\n' "$JOB_ID" | tee transformer_2_0_job_id.txt
+```
+
+Monitor the job:
+
+```bash
+cd /projects/bhkj/pgupta12/starling_multiple_trajectory_idea
+JOB_ID=$(cat transformer_2_0_job_id.txt)
+squeue -j "$JOB_ID"
+tail -f "logs/hrrt-transformer-2-0-${JOB_ID}.out"
+```
+
+After completion, inspect the training summary and final validation history:
+
+```bash
+cd /projects/bhkj/pgupta12/starling_multiple_trajectory_idea
+OUTPUT=src/llm_vision_planner/fine_tuning/outputs/hrrt_waypoint_transformer_2_0
+python3 -m json.tool "$OUTPUT/training_summary.json"
+python3 - "$OUTPUT/training_history.json" <<'PY'
+import json
+import sys
+
+history = json.load(open(sys.argv[1], encoding="utf-8"))
+last = history[-1]
+for key in (
+    "euclidean_imitation_loss_m",
+    "interior_p80_episode_error_m",
+    "corridor_hinge_loss_m",
+    "wrong_corridor_rate",
+    "validation_objective_loss_m",
+):
+    print(f"{key}: {last[key]}")
+PY
+```
+
+The batch script also creates
+`fine_tuning/outputs/hrrt_waypoint_transformer_2_0.tar.gz`. Supported submission
+overrides are `CONFIG`, `TRAIN_CSV`, `VALIDATION_CSV`, `OUTPUT_DIR`,
+`MAX_EPOCHS`, `CORRIDOR_LOSS_WEIGHT`, `CORRIDOR_MARGIN_M`,
+`SAFETY_RADIUS_THRESHOLD_M`, `TRAIN_ENV_DIR`, and `HF_HOME`.
 
 ## 10. Evaluate the locked test split
 

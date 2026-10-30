@@ -1027,6 +1027,56 @@ diagnostics, validation/test error distribution, and six locked-test route
 comparisons. The orange routes are raw Transformer 2.0 predictions; the green
 routes are teacher HRRT targets.
 
+### Run the calibration verifier with Transformer 2.0
+
+After transferring the completed output, run the gateway from the laptop. This
+selects the best finite-radius checkpoint, or the lowest Euclidean-error
+checkpoint when no finite radius exists:
+
+```bash
+set -euo pipefail
+PACKAGE_ROOT=/home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
+MODEL_OUTPUT=$PACKAGE_ROOT/fine_tuning/outputs/hrrt_waypoint_transformer_2_0
+
+CHECKPOINT=$(python3 - "$MODEL_OUTPUT" <<'PY'
+import json
+import math
+from pathlib import Path
+import sys
+
+candidates = []
+for metrics_path in Path(sys.argv[1]).glob("checkpoint-epoch-*/metrics.json"):
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    radius = float(metrics.get("safety_radius_m", math.inf))
+    error = float(metrics["euclidean_imitation_loss_m"])
+    key = (0, radius, error) if math.isfinite(radius) else (1, error, 0.0)
+    candidates.append((key, metrics_path.parent))
+assert candidates, "no transferred Transformer 2.0 checkpoints found"
+print(min(candidates, key=lambda item: item[0])[1])
+PY
+)
+
+cd "$PACKAGE_ROOT"
+python3 fine_tuning/scripts/calibration_verifier_gateway.py \
+  --dataset fine_tuning/datasets/calibration_residual_raw_person.csv \
+  --row 2 \
+  --intent-provider mock \
+  --planner-provider transformer \
+  --transformer-checkpoint "$CHECKPOINT" \
+  --transformer-device auto \
+  --clearance-m 0.40 \
+  --host 0.0.0.0 \
+  --port 8091
+```
+
+Keep the gateway running. In a second terminal, start the Cloudflare tunnel;
+`grep` prints the public website address as soon as Cloudflare creates it:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8091 2>&1 \
+  | grep --line-buffered -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com'
+```
+
 ## 10. Evaluate the locked test split
 
 Request a GPU session:

@@ -32,11 +32,37 @@ final route = exact start + six predictions + exact goal
 ```
 
 Start and goal are copied from the numeric scene input. They are not learned
-queries and do not contribute error to the backpropagated loss:
+queries and do not contribute error to the Euclidean part of the loss. For
+obstacle `j`, let `h_j` be the selected teacher route's HRRT homotopy sign,
+`u` the start-to-goal unit vector, and `n = (-u_y, u_x)` its left normal. The
+teacher route fixes soft weights around that obstacle:
 
-```text
-loss = mean(norm(predicted[:, 1:-1] - target[:, 1:-1], 2))
-```
+\[
+w^*_{kj}=\operatorname{softmax}_k\left(
+-\frac{|(p^*_k-c_j)^\top u|}{\tau}\right), \qquad
+d_j(\hat p)=(-h_j)\sum_k w^*_{kj}(\hat p_k-c_j)^\top n .
+\]
+
+`d_j` is positive only when the prediction passes on the same side as the
+teacher. The wrong-corridor hinge and total objective are
+
+\[
+L_{corr}=\frac{1}{N_o}\sum_j\max(0,\delta-d_j), \qquad
+L=L_{Euc}+\lambda_{corr}L_{corr},
+\]
+
+\[
+L_{Euc}=\frac{1}{6B}\sum_{b=1}^{B}\sum_{k=1}^{6}
+\lVert\hat p_{bk}-p^*_{bk}\rVert_2 .
+\]
+
+The default values are a strong `lambda_corr = 5.0`, side margin
+`delta = 0.20 m`, and soft matching temperature `tau = 0.35 m`. A prediction
+on the wrong side has `d_j < 0`, so its penalty is larger than `0.20 m` and is
+multiplied by five. The weights come from the fixed teacher route, preventing
+the model from evading the penalty by shifting which waypoint is matched to
+the obstacle. The training log reports Euclidean loss, corridor hinge loss,
+the combined objective, and wrong-corridor rate separately.
 
 Scene dependence is strengthened in four independent ways: object identities
 are numeric scene features rather than text-only information; the scene has its
@@ -55,7 +81,7 @@ git pull --ff-only
 mkdir -p logs
 
 JOB_ID=$(sbatch --parsable \
-  --export=ALL,TRAIN_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv,VALIDATION_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv,MAX_EPOCHS=100,SAFETY_RADIUS_THRESHOLD_M=0.40 \
+  --export=ALL,TRAIN_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv,VALIDATION_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv,MAX_EPOCHS=100,CORRIDOR_LOSS_WEIGHT=5.0,CORRIDOR_MARGIN_M=0.20,SAFETY_RADIUS_THRESHOLD_M=0.40 \
   src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.sbatch)
 
 printf '%s\n' "$JOB_ID" | tee transformer_2_0_job_id.txt

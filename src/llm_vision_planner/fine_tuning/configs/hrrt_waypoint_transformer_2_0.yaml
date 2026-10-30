@@ -36,6 +36,12 @@ training:
   num_workers: 4
   seed: 42
 
+loss:
+  # L = mean interior Euclidean distance + corridor_weight * corridor hinge.
+  corridor_weight: 5.0
+  corridor_margin_m: 0.20
+  corridor_temperature_m: 0.35
+
 validation:
   safety_radius_threshold_m: 0.40
   consecutive_checks: 3

@@ -96,3 +96,36 @@ def test_model_learns_six_points_and_copies_endpoints():
         for parameter in model.scene_encoder.parameters()
     )
     assert model.route_queries.grad is not None
+
+
+def test_wrong_corridor_hinge_is_strong_and_differentiable():
+    import numpy as np
+    import torch
+
+    scene = environment()
+    scene["start"] = {"x": -2.0, "y": 0.0, "z": -0.5}
+    scene["goal"] = {"x": 2.0, "y": 0.0, "z": -0.5}
+    target = torch.tensor(
+        [[[-2.0, 0.0], [-1.4, 0.6], [-0.8, 1.0], [-0.2, 1.0],
+          [0.2, 1.0], [0.8, 1.0], [1.4, 0.6], [2.0, 0.0]]]
+    )
+    wrong = target.clone()
+    wrong[:, 1:-1, 1] *= -1.0
+    wrong.requires_grad_(True)
+    example = transformer_2.PlanningExample(
+        sample_id="corridor-test",
+        preference="pass above the chair",
+        environment=scene,
+        expert_waypoints=[],
+        target_xy=target[0].numpy(),
+        scene_tokens=transformer_2.encode_scene(scene),
+        teacher_h_signature=np.asarray([-1], dtype=np.int8),
+    )
+
+    wrong_loss = transformer_2.corridor_side_loss(wrong, target, [example], 0.20, 0.35)
+    right_loss = transformer_2.corridor_side_loss(target, target, [example], 0.20, 0.35)
+    assert wrong_loss.item() > 1.0
+    assert right_loss.item() == 0.0
+    wrong_loss.backward()
+    assert wrong.grad is not None
+    assert torch.sum(wrong.grad[0, 1:-1, 1]).item() < 0.0

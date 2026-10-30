@@ -4,13 +4,15 @@
 Transformer 2.0 keeps the existing CSV/checkpoint interface and eight-point
 route contract, but learns only the six interior waypoints.  Start and goal
 are copied exactly from numeric scene tokens.  The backpropagated objective is
-the mean Euclidean distance over the six learned interior points.
+the mean Euclidean distance over the six learned interior points plus a
+teacher-labelled wrong-corridor penalty.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import dataclass
 import json
 import math
 from pathlib import Path
@@ -28,7 +30,13 @@ LABELS = ("person", "chair", "stop_sign")
 LABEL_TO_INDEX = {label: index for index, label in enumerate(LABELS)}
 
 
-PlanningExample = base.PlanningExample
+@dataclass
+class PlanningExample(base.PlanningExample):
+    """Existing training example plus the selected teacher route topology."""
+
+    teacher_h_signature: np.ndarray | None = None
+
+
 WaypointDataset = base.WaypointDataset
 compact_json = base.compact_json
 load_yaml = base.load_yaml
@@ -83,6 +91,52 @@ def encode_scene(environment: Mapping[str, Any]) -> np.ndarray:
     return np.asarray(tokens, dtype=np.float32)
 
 
+def obstacle_center(obstacle: Mapping[str, Any]) -> np.ndarray:
+    minimum = obstacle["min_corner"]
+    maximum = obstacle["max_corner"]
+    return np.asarray(
+        [
+            (float(minimum[0]) + float(maximum[0])) / 2.0,
+            (float(minimum[1]) + float(maximum[1])) / 2.0,
+        ],
+        dtype=np.float32,
+    )
+
+
+def infer_teacher_h_signature(
+    row: Mapping[str, Any], environment: Mapping[str, Any], target_xy: np.ndarray
+) -> np.ndarray:
+    """Read the selected HRRT topology, with a geometric fallback for older CSVs."""
+    obstacles = environment.get("obstacles", [])
+    selected_route_id = str(row.get("selected_route_id", ""))
+    try:
+        candidates = json.loads(str(row.get("candidate_routes") or "[]"))
+    except (json.JSONDecodeError, TypeError):
+        candidates = []
+    for route in candidates if isinstance(candidates, list) else []:
+        if str(route.get("route_id", "")) != selected_route_id:
+            continue
+        signature = route.get("h_signature")
+        if isinstance(signature, list) and len(signature) >= len(obstacles):
+            return np.asarray(signature[: len(obstacles)], dtype=np.int8)
+
+    # Compatibility fallback: HRRT's sign convention is the negative of the
+    # path's signed lateral side in the start-to-goal frame.
+    direction = target_xy[-1] - target_xy[0]
+    norm = float(np.linalg.norm(direction))
+    if norm <= 1e-9:
+        return np.zeros(len(obstacles), dtype=np.int8)
+    unit = direction / norm
+    normal = np.asarray([-unit[1], unit[0]], dtype=np.float32)
+    signature = []
+    for obstacle in obstacles:
+        center = obstacle_center(obstacle)
+        nearest = int(np.argmin(np.abs((target_xy - center) @ unit)))
+        lateral = float((target_xy[nearest] - center) @ normal)
+        signature.append(-int(np.sign(lateral)))
+    return np.asarray(signature, dtype=np.int8)
+
+
 def read_examples(
     path: Path,
     distillation_mode: str,
@@ -121,6 +175,7 @@ def read_examples(
                     ],
                     target_xy=target,
                     scene_tokens=encode_scene(environment),
+                    teacher_h_signature=infer_teacher_h_signature(row, environment, target),
                 )
             )
             if limit is not None and len(examples) >= limit:
@@ -345,7 +400,72 @@ def full_route_euclidean_loss(predicted_xy, target_xy):
     return torch.linalg.vector_norm(predicted_xy - target_xy, ord=2, dim=-1).mean()
 
 
-def evaluate(model, loader, device, validation_config):
+def corridor_side_terms(
+    predicted_xy,
+    target_xy,
+    examples: Sequence[PlanningExample],
+    margin_m: float,
+    temperature_m: float,
+):
+    """Return one differentiable hinge term per teacher-labelled obstacle side."""
+    import torch
+
+    penalties = []
+    signed_laterals = []
+    temperature = max(float(temperature_m), 1e-6)
+    for batch_index, example in enumerate(examples):
+        signature = example.teacher_h_signature
+        if signature is None:
+            continue
+        target = target_xy[batch_index].detach()
+        direction = target[-1] - target[0]
+        direction_norm = torch.linalg.vector_norm(direction).clamp_min(1e-9)
+        unit = direction / direction_norm
+        normal = torch.stack((-unit[1], unit[0]))
+        obstacles = example.environment.get("obstacles", [])
+        for obstacle_index, obstacle in enumerate(obstacles):
+            if obstacle_index >= len(signature):
+                break
+            h_value = int(signature[obstacle_index])
+            if h_value == 0:
+                continue
+            center = torch.as_tensor(
+                obstacle_center(obstacle), device=predicted_xy.device, dtype=predicted_xy.dtype
+            )
+            # Fix the soft correspondence weights from the teacher route so
+            # the prediction cannot reduce the penalty by changing which
+            # waypoint is considered closest to the obstacle.
+            teacher_longitudinal = torch.abs(torch.sum((target - center) * unit, dim=-1))
+            weights = torch.softmax(-teacher_longitudinal / temperature, dim=0)
+            predicted_lateral = torch.sum(
+                weights * torch.sum((predicted_xy[batch_index] - center) * normal, dim=-1)
+            )
+            desired_side = predicted_lateral.new_tensor(float(-h_value))
+            signed_lateral = desired_side * predicted_lateral
+            signed_laterals.append(signed_lateral)
+            penalties.append(torch.relu(float(margin_m) - signed_lateral))
+    if not penalties:
+        empty = predicted_xy.new_empty((0,))
+        return empty, empty
+    return torch.stack(penalties), torch.stack(signed_laterals)
+
+
+def corridor_side_loss(
+    predicted_xy,
+    target_xy,
+    examples: Sequence[PlanningExample],
+    margin_m: float,
+    temperature_m: float,
+):
+    penalties, _ = corridor_side_terms(
+        predicted_xy, target_xy, examples, margin_m, temperature_m
+    )
+    if penalties.numel() == 0:
+        return predicted_xy.sum() * 0.0
+    return penalties.mean()
+
+
+def evaluate(model, loader, device, validation_config, loss_config):
     import torch
 
     model.eval()
@@ -354,6 +474,9 @@ def evaluate(model, loader, device, validation_config):
     full_distances: List[np.ndarray] = []
     predictions: List[np.ndarray] = []
     examples: List[PlanningExample] = []
+    corridor_penalties: List[np.ndarray] = []
+    corridor_wrong = 0
+    corridor_decisions = 0
     with torch.no_grad():
         for batch in loader:
             batch = move_batch(batch, device)
@@ -369,20 +492,40 @@ def evaluate(model, loader, device, validation_config):
             interior_distances.append(interior.detach().cpu().numpy().reshape(-1))
             episode_interior_losses.append(interior.mean(dim=-1).detach().cpu().numpy())
             full_distances.append(distances.detach().cpu().numpy().reshape(-1))
+            penalties, signed_laterals = corridor_side_terms(
+                predicted,
+                batch["target_xy"],
+                batch["examples"],
+                float(loss_config["corridor_margin_m"]),
+                float(loss_config["corridor_temperature_m"]),
+            )
+            if penalties.numel():
+                corridor_penalties.append(penalties.detach().cpu().numpy())
+                corridor_wrong += int(torch.count_nonzero(signed_laterals <= 0.0).item())
+                corridor_decisions += int(signed_laterals.numel())
             predictions.extend(predicted.detach().cpu().numpy())
             examples.extend(batch["examples"])
     merged_interior = np.concatenate(interior_distances)
     merged_episodes = np.concatenate(episode_interior_losses)
     merged_full = np.concatenate(full_distances)
+    mean_corridor_penalty = (
+        float(np.mean(np.concatenate(corridor_penalties))) if corridor_penalties else 0.0
+    )
+    mean_interior_error = float(np.mean(merged_interior))
     safety = base.safety_radius_for_predictions(predictions, examples, validation_config)
     return {
         # Keep the old key so checkpoint selection and plotting remain compatible.
-        "euclidean_imitation_loss_m": float(np.mean(merged_interior)),
-        "interior_euclidean_imitation_loss_m": float(np.mean(merged_interior)),
+        "euclidean_imitation_loss_m": mean_interior_error,
+        "interior_euclidean_imitation_loss_m": mean_interior_error,
         "interior_median_waypoint_error_m": float(np.median(merged_interior)),
         "interior_p80_episode_error_m": float(np.quantile(merged_episodes, 0.80)),
         "interior_p95_waypoint_error_m": float(np.quantile(merged_interior, 0.95)),
         "full_route_euclidean_imitation_loss_m": float(np.mean(merged_full)),
+        "corridor_hinge_loss_m": mean_corridor_penalty,
+        "wrong_corridor_rate": corridor_wrong / corridor_decisions if corridor_decisions else 0.0,
+        "corridor_decision_count": corridor_decisions,
+        "validation_objective_loss_m": mean_interior_error
+        + float(loss_config["corridor_weight"]) * mean_corridor_penalty,
         **safety,
     }
 
@@ -395,6 +538,8 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--max-epochs", type=int)
     parser.add_argument("--safety-radius-threshold-m", type=float)
+    parser.add_argument("--corridor-loss-weight", type=float)
+    parser.add_argument("--corridor-margin-m", type=float)
     parser.add_argument("--smoke-test", action="store_true")
     args = parser.parse_args()
 
@@ -407,6 +552,7 @@ def main() -> None:
     data_config = dict(require_section(config, "data"))
     model_config = dict(require_section(config, "model"))
     training_config = dict(require_section(config, "training"))
+    loss_config = dict(require_section(config, "loss"))
     validation_config = dict(require_section(config, "validation"))
     if model_config.get("architecture_version") != "transformer_2_0":
         parser.error("model.architecture_version must be 'transformer_2_0'")
@@ -418,6 +564,14 @@ def main() -> None:
         training_config["output_dir"] = str(args.output_dir)
     if args.max_epochs:
         training_config["max_epochs"] = args.max_epochs
+    if args.corridor_loss_weight is not None:
+        loss_config["corridor_weight"] = args.corridor_loss_weight
+    if args.corridor_margin_m is not None:
+        loss_config["corridor_margin_m"] = args.corridor_margin_m
+    for key in ("corridor_weight", "corridor_margin_m", "corridor_temperature_m"):
+        value = float(loss_config[key])
+        if not math.isfinite(value) or value <= 0.0:
+            parser.error(f"loss.{key} must be a positive finite value")
     if args.safety_radius_threshold_m is not None:
         if not math.isfinite(args.safety_radius_threshold_m) or args.safety_radius_threshold_m <= 0.0:
             parser.error("--safety-radius-threshold-m must be a positive finite value")
@@ -430,6 +584,7 @@ def main() -> None:
         "data": data_config,
         "model": model_config,
         "training": training_config,
+        "loss": loss_config,
         "validation": validation_config,
     }
 
@@ -508,7 +663,9 @@ def main() -> None:
     optimizer.zero_grad(set_to_none=True)
     for epoch in range(1, max_epochs + 1):
         model.train()
-        train_losses: List[float] = []
+        train_objective_losses: List[float] = []
+        train_euclidean_losses: List[float] = []
+        train_corridor_losses: List[float] = []
         for step, batch in enumerate(train_loader, start=1):
             batch = move_batch(batch, device)
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
@@ -519,10 +676,20 @@ def main() -> None:
                     batch["scene_padding_mask"],
                 )
                 predicted = denormalize_predictions(normalized, batch["examples"])
-                loss = euclidean_imitation_loss(predicted, batch["target_xy"])
+                euclidean_loss = euclidean_imitation_loss(predicted, batch["target_xy"])
+                corridor_loss = corridor_side_loss(
+                    predicted,
+                    batch["target_xy"],
+                    batch["examples"],
+                    float(loss_config["corridor_margin_m"]),
+                    float(loss_config["corridor_temperature_m"]),
+                )
+                loss = euclidean_loss + float(loss_config["corridor_weight"]) * corridor_loss
                 scaled_loss = loss / accumulation
             scaler.scale(scaled_loss).backward()
-            train_losses.append(float(loss.item()))
+            train_objective_losses.append(float(loss.item()))
+            train_euclidean_losses.append(float(euclidean_loss.item()))
+            train_corridor_losses.append(float(corridor_loss.item()))
             if step % accumulation == 0 or step == len(train_loader):
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(
@@ -533,11 +700,13 @@ def main() -> None:
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
 
-        metrics = evaluate(model, validation_loader, device, validation_config)
+        metrics = evaluate(model, validation_loader, device, validation_config, loss_config)
         metrics.update(
             {
                 "epoch": epoch,
-                "train_euclidean_imitation_loss_m": float(np.mean(train_losses)),
+                "train_objective_loss_m": float(np.mean(train_objective_losses)),
+                "train_euclidean_imitation_loss_m": float(np.mean(train_euclidean_losses)),
+                "train_corridor_hinge_loss_m": float(np.mean(train_corridor_losses)),
                 "learned_waypoint_count": int(model_config["interior_waypoint_count"]),
             }
         )
@@ -546,7 +715,7 @@ def main() -> None:
             model, tokenizer, output_dir, epoch, metrics, effective_config
         )
         radius = float(metrics["safety_radius_m"])
-        validation_loss = float(metrics["euclidean_imitation_loss_m"])
+        validation_loss = float(metrics["validation_objective_loss_m"])
         checkpoint_key = (
             (0.0, radius, validation_loss)
             if math.isfinite(radius)

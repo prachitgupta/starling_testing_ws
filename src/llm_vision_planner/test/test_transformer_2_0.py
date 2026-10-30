@@ -120,6 +120,7 @@ def test_wrong_corridor_hinge_is_strong_and_differentiable():
         target_xy=target[0].numpy(),
         scene_tokens=transformer_2.encode_scene(scene),
         teacher_h_signature=np.asarray([-1], dtype=np.int8),
+        teacher_clearance_bins=np.asarray([2], dtype=np.int8),
     )
 
     wrong_loss = transformer_2.corridor_side_loss(wrong, target, [example], 0.20, 0.35)
@@ -129,3 +130,41 @@ def test_wrong_corridor_hinge_is_strong_and_differentiable():
     wrong_loss.backward()
     assert wrong.grad is not None
     assert torch.sum(wrong.grad[0, 1:-1, 1]).item() < 0.0
+
+
+def test_clearance_bin_hinge_matches_teacher_bin_and_backpropagates():
+    import numpy as np
+    import torch
+
+    scene = environment()
+    # The chair occupies y=[-0.2, 0.2]. A route at y=1.0 has 0.8 m
+    # clearance, the lower edge of the chair's wide bin.
+    wide_route = torch.tensor(
+        [[[-2.0, 1.0], [-1.4, 1.0], [-0.8, 1.0], [-0.2, 1.0],
+          [0.2, 1.0], [0.8, 1.0], [1.4, 1.0], [2.0, 1.0]]]
+    )
+    close_route = wide_route.clone()
+    close_route[:, :, 1] = 0.5
+    close_route.requires_grad_(True)
+    example = transformer_2.PlanningExample(
+        sample_id="bin-test",
+        preference="take a wide route around the chair",
+        environment=scene,
+        expert_waypoints=[],
+        target_xy=wide_route[0].numpy(),
+        scene_tokens=transformer_2.encode_scene(scene),
+        teacher_h_signature=np.asarray([-1], dtype=np.int8),
+        teacher_clearance_bins=np.asarray([2], dtype=np.int8),
+    )
+
+    correct_loss = transformer_2.clearance_bin_loss(
+        wide_route, wide_route, [example], 0.40, 8
+    )
+    close_loss = transformer_2.clearance_bin_loss(
+        close_route, wide_route, [example], 0.40, 8
+    )
+    assert correct_loss.item() < 1e-6
+    assert abs(close_loss.item() - 0.5) < 1e-6
+    close_loss.backward()
+    assert close_route.grad is not None
+    assert torch.sum(close_route.grad[0, :, 1]).item() < 0.0

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 import math
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 
 import numpy as np
 
+import hrrt_star
 import train_hrrt_waypoint_transformer as base
 
 
@@ -35,6 +37,7 @@ class PlanningExample(base.PlanningExample):
     """Existing training example plus the selected teacher route topology."""
 
     teacher_h_signature: np.ndarray | None = None
+    teacher_clearance_bins: np.ndarray | None = None
 
 
 WaypointDataset = base.WaypointDataset
@@ -103,10 +106,10 @@ def obstacle_center(obstacle: Mapping[str, Any]) -> np.ndarray:
     )
 
 
-def infer_teacher_h_signature(
+def infer_teacher_route_key(
     row: Mapping[str, Any], environment: Mapping[str, Any], target_xy: np.ndarray
-) -> np.ndarray:
-    """Read the selected HRRT topology, with a geometric fallback for older CSVs."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """Read the selected teacher's composite (h-signature, clearance-bin) key."""
     obstacles = environment.get("obstacles", [])
     selected_route_id = str(row.get("selected_route_id", ""))
     try:
@@ -117,15 +120,27 @@ def infer_teacher_h_signature(
         if str(route.get("route_id", "")) != selected_route_id:
             continue
         signature = route.get("h_signature")
-        if isinstance(signature, list) and len(signature) >= len(obstacles):
-            return np.asarray(signature[: len(obstacles)], dtype=np.int8)
+        bins = route.get("clearance_bins")
+        if (
+            isinstance(signature, list)
+            and len(signature) >= len(obstacles)
+            and isinstance(bins, list)
+            and len(bins) >= len(obstacles)
+        ):
+            return (
+                np.asarray(signature[: len(obstacles)], dtype=np.int8),
+                np.asarray(bins[: len(obstacles)], dtype=np.int8),
+            )
 
     # Compatibility fallback: HRRT's sign convention is the negative of the
     # path's signed lateral side in the start-to-goal frame.
     direction = target_xy[-1] - target_xy[0]
     norm = float(np.linalg.norm(direction))
     if norm <= 1e-9:
-        return np.zeros(len(obstacles), dtype=np.int8)
+        return (
+            np.zeros(len(obstacles), dtype=np.int8),
+            np.full(len(obstacles), -1, dtype=np.int8),
+        )
     unit = direction / norm
     normal = np.asarray([-unit[1], unit[0]], dtype=np.float32)
     signature = []
@@ -134,7 +149,12 @@ def infer_teacher_h_signature(
         nearest = int(np.argmin(np.abs((target_xy - center) @ unit)))
         lateral = float((target_xy[nearest] - center) @ normal)
         signature.append(-int(np.sign(lateral)))
-    return np.asarray(signature, dtype=np.int8)
+    # Older CSVs without the stored teacher bin retain corridor supervision;
+    # -1 explicitly masks their unavailable clearance-bin target.
+    return (
+        np.asarray(signature, dtype=np.int8),
+        np.full(len(obstacles), -1, dtype=np.int8),
+    )
 
 
 def read_examples(
@@ -160,6 +180,9 @@ def read_examples(
             if not isinstance(waypoints, list) or len(waypoints) < 2:
                 continue
             target = resample_waypoints(waypoints, waypoint_count)
+            teacher_h_signature, teacher_clearance_bins = infer_teacher_route_key(
+                row, environment, target
+            )
             examples.append(
                 PlanningExample(
                     sample_id=str(row.get("sample_id", len(examples))),
@@ -175,7 +198,8 @@ def read_examples(
                     ],
                     target_xy=target,
                     scene_tokens=encode_scene(environment),
-                    teacher_h_signature=infer_teacher_h_signature(row, environment, target),
+                    teacher_h_signature=teacher_h_signature,
+                    teacher_clearance_bins=teacher_clearance_bins,
                 )
             )
             if limit is not None and len(examples) >= limit:
@@ -465,6 +489,112 @@ def corridor_side_loss(
     return penalties.mean()
 
 
+def interpolate_route(route_xy, samples_per_segment: int):
+    """Densely sample each predicted segment for differentiable clearance."""
+    import torch
+
+    samples = max(int(samples_per_segment), 1)
+    alpha = torch.arange(
+        samples, device=route_xy.device, dtype=route_xy.dtype
+    ).view(1, samples, 1) / samples
+    starts = route_xy[:-1].unsqueeze(1)
+    ends = route_xy[1:].unsqueeze(1)
+    dense = starts + alpha * (ends - starts)
+    return torch.cat((dense.reshape(-1, 2), route_xy[-1:].reshape(1, 2)), dim=0)
+
+
+@lru_cache(maxsize=32)
+def clearance_bin_interval(label: str, bin_value: int, minimum_clearance_m: float):
+    thresholds = hrrt_star.normalized_bin_thresholds(None, minimum_clearance_m)
+    first, second = thresholds.get(hrrt_star.normalize_label(label), thresholds["default"])
+    if bin_value == 0:
+        return float(minimum_clearance_m), float(first)
+    if bin_value == 1:
+        return float(first), float(second)
+    if bin_value == 2:
+        return float(second), None
+    raise ValueError(f"unsupported clearance bin {bin_value}")
+
+
+def clearance_bin_terms(
+    predicted_xy,
+    target_xy,
+    examples: Sequence[PlanningExample],
+    minimum_clearance_m: float,
+    samples_per_segment: int,
+):
+    """Return hinge error and correctness for every teacher clearance bin."""
+    import torch
+
+    penalties = []
+    correct = []
+    target_is_representable = []
+    for batch_index, example in enumerate(examples):
+        bins = example.teacher_clearance_bins
+        if bins is None:
+            continue
+        obstacles = example.environment.get("obstacles", [])
+        dense_route = interpolate_route(predicted_xy[batch_index], samples_per_segment)
+        dense_target = interpolate_route(target_xy[batch_index].detach(), samples_per_segment)
+        for obstacle_index, obstacle in enumerate(obstacles):
+            if obstacle_index >= len(bins):
+                break
+            bin_value = int(bins[obstacle_index])
+            if bin_value not in (0, 1, 2):
+                continue
+            minimum = torch.as_tensor(
+                obstacle["min_corner"][:2],
+                device=predicted_xy.device,
+                dtype=predicted_xy.dtype,
+            )
+            maximum = torch.as_tensor(
+                obstacle["max_corner"][:2],
+                device=predicted_xy.device,
+                dtype=predicted_xy.dtype,
+            )
+            delta = torch.relu(minimum - dense_route) + torch.relu(dense_route - maximum)
+            clearance = torch.linalg.vector_norm(delta, ord=2, dim=-1).amin()
+            target_delta = (
+                torch.relu(minimum - dense_target) + torch.relu(dense_target - maximum)
+            )
+            target_clearance = torch.linalg.vector_norm(
+                target_delta, ord=2, dim=-1
+            ).amin()
+            lower, upper = clearance_bin_interval(
+                str(obstacle.get("label", "default")), bin_value, minimum_clearance_m
+            )
+            penalty = torch.relu(clearance.new_tensor(lower) - clearance)
+            is_correct = clearance >= lower
+            target_valid = target_clearance >= lower
+            if upper is not None:
+                penalty = penalty + torch.relu(clearance - clearance.new_tensor(upper))
+                is_correct = is_correct & (clearance < upper)
+                target_valid = target_valid & (target_clearance < upper)
+            penalties.append(penalty)
+            correct.append(is_correct)
+            target_is_representable.append(target_valid)
+    if not penalties:
+        empty = predicted_xy.new_empty((0,))
+        return empty, empty.to(dtype=torch.bool)
+    representable = torch.stack(target_is_representable)
+    return torch.stack(penalties)[representable], torch.stack(correct)[representable]
+
+
+def clearance_bin_loss(
+    predicted_xy,
+    target_xy,
+    examples: Sequence[PlanningExample],
+    minimum_clearance_m: float,
+    samples_per_segment: int,
+):
+    penalties, _ = clearance_bin_terms(
+        predicted_xy, target_xy, examples, minimum_clearance_m, samples_per_segment
+    )
+    if penalties.numel() == 0:
+        return predicted_xy.sum() * 0.0
+    return penalties.mean()
+
+
 def evaluate(model, loader, device, validation_config, loss_config):
     import torch
 
@@ -477,6 +607,9 @@ def evaluate(model, loader, device, validation_config, loss_config):
     corridor_penalties: List[np.ndarray] = []
     corridor_wrong = 0
     corridor_decisions = 0
+    clearance_bin_penalties: List[np.ndarray] = []
+    clearance_bin_correct = 0
+    clearance_bin_decisions = 0
     with torch.no_grad():
         for batch in loader:
             batch = move_batch(batch, device)
@@ -503,6 +636,17 @@ def evaluate(model, loader, device, validation_config, loss_config):
                 corridor_penalties.append(penalties.detach().cpu().numpy())
                 corridor_wrong += int(torch.count_nonzero(signed_laterals <= 0.0).item())
                 corridor_decisions += int(signed_laterals.numel())
+            bin_penalties, bin_correct = clearance_bin_terms(
+                predicted,
+                batch["target_xy"],
+                batch["examples"],
+                float(loss_config["minimum_clearance_m"]),
+                int(loss_config["clearance_samples_per_segment"]),
+            )
+            if bin_penalties.numel():
+                clearance_bin_penalties.append(bin_penalties.detach().cpu().numpy())
+                clearance_bin_correct += int(torch.count_nonzero(bin_correct).item())
+                clearance_bin_decisions += int(bin_correct.numel())
             predictions.extend(predicted.detach().cpu().numpy())
             examples.extend(batch["examples"])
     merged_interior = np.concatenate(interior_distances)
@@ -510,6 +654,11 @@ def evaluate(model, loader, device, validation_config, loss_config):
     merged_full = np.concatenate(full_distances)
     mean_corridor_penalty = (
         float(np.mean(np.concatenate(corridor_penalties))) if corridor_penalties else 0.0
+    )
+    mean_clearance_bin_penalty = (
+        float(np.mean(np.concatenate(clearance_bin_penalties)))
+        if clearance_bin_penalties
+        else 0.0
     )
     mean_interior_error = float(np.mean(merged_interior))
     safety = base.safety_radius_for_predictions(predictions, examples, validation_config)
@@ -524,8 +673,14 @@ def evaluate(model, loader, device, validation_config, loss_config):
         "corridor_hinge_loss_m": mean_corridor_penalty,
         "wrong_corridor_rate": corridor_wrong / corridor_decisions if corridor_decisions else 0.0,
         "corridor_decision_count": corridor_decisions,
+        "clearance_bin_hinge_loss_m": mean_clearance_bin_penalty,
+        "clearance_bin_accuracy": (
+            clearance_bin_correct / clearance_bin_decisions if clearance_bin_decisions else 0.0
+        ),
+        "clearance_bin_decision_count": clearance_bin_decisions,
         "validation_objective_loss_m": mean_interior_error
-        + float(loss_config["corridor_weight"]) * mean_corridor_penalty,
+        + float(loss_config["corridor_weight"]) * mean_corridor_penalty
+        + float(loss_config["clearance_bin_weight"]) * mean_clearance_bin_penalty,
         **safety,
     }
 
@@ -540,6 +695,7 @@ def main() -> None:
     parser.add_argument("--safety-radius-threshold-m", type=float)
     parser.add_argument("--corridor-loss-weight", type=float)
     parser.add_argument("--corridor-margin-m", type=float)
+    parser.add_argument("--clearance-bin-loss-weight", type=float)
     parser.add_argument("--smoke-test", action="store_true")
     args = parser.parse_args()
 
@@ -568,10 +724,20 @@ def main() -> None:
         loss_config["corridor_weight"] = args.corridor_loss_weight
     if args.corridor_margin_m is not None:
         loss_config["corridor_margin_m"] = args.corridor_margin_m
-    for key in ("corridor_weight", "corridor_margin_m", "corridor_temperature_m"):
+    if args.clearance_bin_loss_weight is not None:
+        loss_config["clearance_bin_weight"] = args.clearance_bin_loss_weight
+    for key in (
+        "corridor_weight",
+        "corridor_margin_m",
+        "corridor_temperature_m",
+        "clearance_bin_weight",
+        "minimum_clearance_m",
+    ):
         value = float(loss_config[key])
         if not math.isfinite(value) or value <= 0.0:
             parser.error(f"loss.{key} must be a positive finite value")
+    if int(loss_config["clearance_samples_per_segment"]) < 1:
+        parser.error("loss.clearance_samples_per_segment must be at least 1")
     if args.safety_radius_threshold_m is not None:
         if not math.isfinite(args.safety_radius_threshold_m) or args.safety_radius_threshold_m <= 0.0:
             parser.error("--safety-radius-threshold-m must be a positive finite value")
@@ -666,6 +832,7 @@ def main() -> None:
         train_objective_losses: List[float] = []
         train_euclidean_losses: List[float] = []
         train_corridor_losses: List[float] = []
+        train_clearance_bin_losses: List[float] = []
         for step, batch in enumerate(train_loader, start=1):
             batch = move_batch(batch, device)
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
@@ -684,12 +851,24 @@ def main() -> None:
                     float(loss_config["corridor_margin_m"]),
                     float(loss_config["corridor_temperature_m"]),
                 )
-                loss = euclidean_loss + float(loss_config["corridor_weight"]) * corridor_loss
+                bin_loss = clearance_bin_loss(
+                    predicted,
+                    batch["target_xy"],
+                    batch["examples"],
+                    float(loss_config["minimum_clearance_m"]),
+                    int(loss_config["clearance_samples_per_segment"]),
+                )
+                loss = (
+                    euclidean_loss
+                    + float(loss_config["corridor_weight"]) * corridor_loss
+                    + float(loss_config["clearance_bin_weight"]) * bin_loss
+                )
                 scaled_loss = loss / accumulation
             scaler.scale(scaled_loss).backward()
             train_objective_losses.append(float(loss.item()))
             train_euclidean_losses.append(float(euclidean_loss.item()))
             train_corridor_losses.append(float(corridor_loss.item()))
+            train_clearance_bin_losses.append(float(bin_loss.item()))
             if step % accumulation == 0 or step == len(train_loader):
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(
@@ -707,6 +886,9 @@ def main() -> None:
                 "train_objective_loss_m": float(np.mean(train_objective_losses)),
                 "train_euclidean_imitation_loss_m": float(np.mean(train_euclidean_losses)),
                 "train_corridor_hinge_loss_m": float(np.mean(train_corridor_losses)),
+                "train_clearance_bin_hinge_loss_m": float(
+                    np.mean(train_clearance_bin_losses)
+                ),
                 "learned_waypoint_count": int(model_config["interior_waypoint_count"]),
             }
         )

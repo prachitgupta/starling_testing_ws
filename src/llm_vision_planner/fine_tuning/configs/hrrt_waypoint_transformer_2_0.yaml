@@ -37,10 +37,13 @@ training:
   seed: 42
 
 loss:
-  # L = mean interior Euclidean distance + corridor_weight * corridor hinge.
+  # L = Euclidean + corridor_weight * side hinge + bin_weight * clearance hinge.
   corridor_weight: 5.0
   corridor_margin_m: 0.20
   corridor_temperature_m: 0.35
+  clearance_bin_weight: 1.0
+  minimum_clearance_m: 0.40
+  clearance_samples_per_segment: 8
 
 validation:
   safety_radius_threshold_m: 0.40

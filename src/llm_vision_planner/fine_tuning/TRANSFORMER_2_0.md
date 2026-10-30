@@ -44,11 +44,10 @@ d_j(\hat p)=(-h_j)\sum_k w^*_{kj}(\hat p_k-c_j)^\top n .
 \]
 
 `d_j` is positive only when the prediction passes on the same side as the
-teacher. The wrong-corridor hinge and total objective are
+teacher. The wrong-corridor hinge is
 
 \[
-L_{corr}=\frac{1}{N_o}\sum_j\max(0,\delta-d_j), \qquad
-L=L_{Euc}+\lambda_{corr}L_{corr},
+L_{corr}=\frac{1}{N_o}\sum_j\max(0,\delta-d_j).
 \]
 
 \[
@@ -56,13 +55,39 @@ L_{Euc}=\frac{1}{6B}\sum_{b=1}^{B}\sum_{k=1}^{6}
 \lVert\hat p_{bk}-p^*_{bk}\rVert_2 .
 \]
 
-The default values are a strong `lambda_corr = 5.0`, side margin
-`delta = 0.20 m`, and soft matching temperature `tau = 0.35 m`. A prediction
+The selected route also supplies clearance bin `b_j` for every obstacle:
+`0=close`, `1=medium`, and `2=wide`. Let `c_hat_j` be the minimum sampled
+distance from the predicted polyline to obstacle box `j`, and let
+`[l_b, u_b]` be that object class's HRRT bin interval. Then
+
+\[
+L_{bin}=\frac{1}{N_o}\sum_j\left[
+\max(0,l_{b_j}-\hat c_j)+\max(0,\hat c_j-u_{b_j})
+\right],
+\]
+
+where the wide bin has `u_2 = infinity`. The complete objective is
+
+\[
+L=L_{Euc}+\lambda_{corr}L_{corr}+\lambda_{bin}L_{bin}.
+\]
+
+The default values are a strong `lambda_corr = 5.0`, `lambda_bin = 1.0`, side
+margin `delta = 0.20 m`, and soft matching temperature `tau = 0.35 m`. A prediction
 on the wrong side has `d_j < 0`, so its penalty is larger than `0.20 m` and is
 multiplied by five. The weights come from the fixed teacher route, preventing
 the model from evading the penalty by shifting which waypoint is matched to
 the obstacle. The training log reports Euclidean loss, corridor hinge loss,
-the combined objective, and wrong-corridor rate separately.
+clearance-bin hinge and accuracy, the combined objective, and wrong-corridor
+rate separately. Bin thresholds exactly match HRRT: person `(0.80, 1.20) m`,
+chair `(0.60, 0.80) m`, and stop sign `(0.70, 1.00) m`, with `0.40 m` as the
+minimum clearance for the close-bin interval.
+
+The original teacher path may change bins when it is resampled to the model's
+eight-point target. A bin decision is therefore used only when that eight-point
+teacher target still belongs to the stored bin. This prevents the bin loss from
+conflicting with the Euclidean target; the logged decision count shows how many
+bin labels were representable.
 
 Scene dependence is strengthened in four independent ways: object identities
 are numeric scene features rather than text-only information; the scene has its
@@ -81,7 +106,7 @@ git pull --ff-only
 mkdir -p logs
 
 JOB_ID=$(sbatch --parsable \
-  --export=ALL,TRAIN_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv,VALIDATION_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv,MAX_EPOCHS=100,CORRIDOR_LOSS_WEIGHT=5.0,CORRIDOR_MARGIN_M=0.20,SAFETY_RADIUS_THRESHOLD_M=0.40 \
+  --export=ALL,TRAIN_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv,VALIDATION_CSV=$PWD/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv,MAX_EPOCHS=100,CORRIDOR_LOSS_WEIGHT=5.0,CORRIDOR_MARGIN_M=0.20,CLEARANCE_BIN_LOSS_WEIGHT=1.0,SAFETY_RADIUS_THRESHOLD_M=0.40 \
   src/llm_vision_planner/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.sbatch)
 
 printf '%s\n' "$JOB_ID" | tee transformer_2_0_job_id.txt

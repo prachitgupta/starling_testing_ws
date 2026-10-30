@@ -1,0 +1,51 @@
+data:
+  train_csv: fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_train.csv
+  validation_csv: fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_validation.csv
+  distillation_mode: dss
+  row_limit: null
+
+model:
+  architecture_version: transformer_2_0
+  text_encoder_name: sentence-transformers/all-MiniLM-L6-v2
+  max_text_length: 128
+  max_scene_tokens: 32
+  # The route remains [start, six learned interior points, goal].
+  waypoint_count: 8
+  interior_waypoint_count: 6
+  hidden_size: 320
+  attention_heads: 8
+  scene_mlp_layers: 2
+  scene_encoder_layers: 2
+  scene_feedforward_size: 640
+  feedforward_size: 1280
+  fusion_layers: 4
+  decoder_layers: 3
+  dropout: 0.10
+
+training:
+  output_dir: fine_tuning/outputs/hrrt_waypoint_transformer_2_0
+  max_epochs: 100
+  batch_size: 32
+  validation_batch_size: 64
+  gradient_accumulation_steps: 2
+  text_encoder_learning_rate: 0.00002
+  planner_learning_rate: 0.00008
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  max_gradient_norm: 1.0
+  num_workers: 4
+  seed: 42
+
+validation:
+  safety_radius_threshold_m: 0.40
+  consecutive_checks: 3
+  conformal_delta: 0.10
+  clearance_m: 0.40
+  refinement_spacing_m: 1.0
+  nudge_epsilon_m: 0.02
+  cruise_speed_mps: 0.30
+  max_velocity_mps: 0.50
+  max_acceleration_mps2: 0.50
+  progress_tolerance_m: 0.001
+  qp_dt: 0.10
+  max_safety_samples: null

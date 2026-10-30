@@ -29,6 +29,15 @@ RUN_ROOT=${RUN_ROOT:-$PACKAGE_ROOT/fine_tuning/outputs/$RUN_NAME}
 MODEL_OUTPUT=$RUN_ROOT/model
 REPORT_DIR=$RUN_ROOT/reports
 TRAIN_ENV_DIR=${TRAIN_ENV_DIR:-/projects/bhkj/$USER/hrrt_waypoint_transformer_env}
+TRAINER_SCRIPT=${TRAINER_SCRIPT:-}
+
+if [ -z "$TRAINER_SCRIPT" ]; then
+  if grep -q 'architecture_version: transformer_2_0' "$CONFIG"; then
+    TRAINER_SCRIPT=$PACKAGE_ROOT/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.py
+  else
+    TRAINER_SCRIPT=$PACKAGE_ROOT/fine_tuning/scripts/train_hrrt_waypoint_transformer.py
+  fi
+fi
 
 cd "$PROJECT_ROOT"
 mkdir -p logs "$REPORT_DIR"
@@ -59,7 +68,7 @@ python3 -u "$PACKAGE_ROOT/fine_tuning/verification/scripts/verify_transformer_co
   --tiny-lr-multiplier "$TINY_LR_MULTIPLIER" \
   --required-overfit-reduction "$REQUIRED_OVERFIT_REDUCTION"
 
-python3 -u "$PACKAGE_ROOT/fine_tuning/scripts/train_hrrt_waypoint_transformer.py" \
+python3 -u "$TRAINER_SCRIPT" \
   --config "$CONFIG" \
   --train "$TRAIN_CSV" \
   --validation "$VALIDATION_CSV" \

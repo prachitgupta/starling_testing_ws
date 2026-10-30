@@ -189,7 +189,10 @@ class WaypointTransformerPlanner:
         shared_encoder = checkpoint.parent / "text_encoder"
         if shared_encoder.is_dir():
             model_config["text_encoder_name"] = str(shared_encoder)
-        from train_hrrt_waypoint_transformer import build_model, encode_scene
+        if model_config.get("architecture_version") == "transformer_2_0":
+            from train_hrrt_waypoint_transformer_2_0 import build_model, encode_scene
+        else:
+            from train_hrrt_waypoint_transformer import build_model, encode_scene
 
         if device_name == "auto":
             device_name = "cuda" if torch.cuda.is_available() else "cpu"

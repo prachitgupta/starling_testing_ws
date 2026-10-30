@@ -25,19 +25,39 @@ TRAINER_DIR = PACKAGE_ROOT / "fine_tuning" / "scripts"
 if str(TRAINER_DIR) not in sys.path:
     sys.path.insert(0, str(TRAINER_DIR))
 
-from train_hrrt_waypoint_transformer import (  # noqa: E402
-    BatchCollator,
-    PlanningExample,
-    WaypointDataset,
-    build_model,
-    denormalize_predictions,
-    euclidean_imitation_loss,
-    load_yaml,
-    move_batch,
-    read_examples,
-    require_section,
-    set_seed,
-)
+import train_hrrt_waypoint_transformer as trainer_v1  # noqa: E402
+import train_hrrt_waypoint_transformer_2_0 as trainer_v2  # noqa: E402
+
+
+BatchCollator = trainer_v1.BatchCollator
+PlanningExample = trainer_v1.PlanningExample
+WaypointDataset = trainer_v1.WaypointDataset
+build_model = trainer_v1.build_model
+denormalize_predictions = trainer_v1.denormalize_predictions
+euclidean_imitation_loss = trainer_v1.euclidean_imitation_loss
+load_yaml = trainer_v1.load_yaml
+move_batch = trainer_v1.move_batch
+read_examples = trainer_v1.read_examples
+require_section = trainer_v1.require_section
+set_seed = trainer_v1.set_seed
+
+
+def select_trainer(model_config: Mapping[str, Any]) -> None:
+    """Select the checkpoint-compatible trainer without duplicating verification."""
+    global BatchCollator, PlanningExample, WaypointDataset, build_model
+    global denormalize_predictions, euclidean_imitation_loss, read_examples
+    trainer = (
+        trainer_v2
+        if model_config.get("architecture_version") == "transformer_2_0"
+        else trainer_v1
+    )
+    BatchCollator = trainer.BatchCollator
+    PlanningExample = trainer.PlanningExample
+    WaypointDataset = trainer.WaypointDataset
+    build_model = trainer.build_model
+    denormalize_predictions = trainer.denormalize_predictions
+    euclidean_imitation_loss = trainer.euclidean_imitation_loss
+    read_examples = trainer.read_examples
 
 
 REQUIRED_COLUMNS = {"scene_id", "preference_text", "environment", "completion"}
@@ -170,6 +190,8 @@ def grouped_gradient_norms(model: Any) -> dict[str, float]:
         "waypoint_decoder": model.waypoint_decoder,
         "coordinate_head": model.coordinate_head,
     }
+    if hasattr(model, "scene_encoder"):
+        groups["scene_encoder"] = model.scene_encoder
     result: dict[str, float] = {}
     for name, module in groups.items():
         squared = 0.0
@@ -319,6 +341,8 @@ def imitation_metrics(model: Any, loader: Any, device: Any) -> dict[str, float]:
             )
             predicted = denormalize_predictions(normalized, batch["examples"])
             values = torch.linalg.vector_norm(predicted - batch["target_xy"], ord=2, dim=-1)
+            if hasattr(model, "interior_waypoint_count"):
+                values = values[:, 1:-1]
             distances.append(values.detach().cpu().numpy().reshape(-1))
     merged = np.concatenate(distances)
     return {
@@ -436,6 +460,7 @@ def main() -> None:
 
     config = load_yaml(args.config)
     model_config = dict(require_section(config, "model"))
+    select_trainer(model_config)
     training_config = dict(require_section(config, "training"))
     data_config = dict(require_section(config, "data"))
     device_name = args.device

@@ -119,7 +119,7 @@ python3 fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
 ```
 
 If interrupted, rerun the same command. Resume removes only an incomplete scene;
-one-obstacle scenes may contain five valid preferences.
+one-obstacle scenes contain all six valid preferences.
 
 Create scene-isolated review assignments:
 
@@ -354,6 +354,36 @@ python3 fine_tuning/scripts/generate_hrrt_finetuning_dataset.py \
   --scene-attempts 8 \
   --clearance-m 0.40 \
   --resume
+```
+
+Verify the completed calibrated dataset before starting human review or
+creating CSVs:
+
+```bash
+python3 - "$VERTICAL_ROOT/hrrt_teacher_raw.jsonl" <<'PY'
+from collections import Counter, defaultdict
+import json
+import sys
+
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+rows_per_layout = Counter(int(row["scene_id"]) for row in rows)
+preferences_per_goal = defaultdict(set)
+goals_per_layout = defaultdict(set)
+
+for row in rows:
+    scene_id = int(row["scene_id"])
+    goal_slot = int(row["goal_slot"])
+    goals_per_layout[scene_id].add(goal_slot)
+    preferences_per_goal[(scene_id, goal_slot)].add(row["preference"]["preference_type"])
+
+assert len(rows) == 26400, len(rows)
+assert len(rows_per_layout) == 4000, len(rows_per_layout)
+assert Counter(rows_per_layout.values()) == {6: 3600, 12: 400}, Counter(rows_per_layout.values())
+assert Counter(len(value) for value in goals_per_layout.values()) == {1: 3600, 2: 400}
+assert all(len(value) == 6 for value in preferences_per_goal.values())
+assert all(row["environment"]["workspace"] == {"x": [-4.0, 4.0], "y": [-3.0, 3.0], "z": -0.5} for row in rows)
+print("verified: 26,400 rows, 4,000 layouts, 400 multi-goal layouts, 6 preferences per goal")
+PY
 ```
 
 Create human-audit assignments, review them in the existing visualiser, then
@@ -810,10 +840,13 @@ If the teacher-only CSVs are not already on NCSA, upload them from the local
 repository:
 
 ```bash
+LOCAL_DATASET_ROOT=fine_tuning/datasets/calibrated_vertical_dss/teacher_only_80_10_10
+REMOTE_DATASET_ROOT=/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/calibrated_vertical_dss/teacher_only_80_10_10
+
 ssh pgupta12@dtai-login.delta.ncsa.illinois.edu \
-  'mkdir -p /projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10'
-scp fine_tuning/datasets/dss_teacher_only_80_10_10/hrrt_sft_{train,validation,test}.csv \
-  pgupta12@dtai-login.delta.ncsa.illinois.edu:/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10/
+  "mkdir -p '$REMOTE_DATASET_ROOT'"
+scp "$LOCAL_DATASET_ROOT"/hrrt_sft_{train,validation,test}.csv \
+  "pgupta12@dtai-login.delta.ncsa.illinois.edu:$REMOTE_DATASET_ROOT/"
 ```
 
 Then paste this block at the NCSA login prompt. It updates the branch, checks
@@ -828,10 +861,11 @@ git pull --ff-only
 mkdir -p logs
 
 PACKAGE_ROOT=$PWD/src/llm_vision_planner
-DATASET_ROOT=$PACKAGE_ROOT/fine_tuning/datasets/dss_teacher_only_80_10_10
+DATASET_ROOT=$PACKAGE_ROOT/fine_tuning/datasets/calibrated_vertical_dss/teacher_only_80_10_10
 
 test -s "$DATASET_ROOT/hrrt_sft_train.csv"
 test -s "$DATASET_ROOT/hrrt_sft_validation.csv"
+test -s "$DATASET_ROOT/hrrt_sft_test.csv"
 test -s "$PACKAGE_ROOT/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.py"
 test -s "$PACKAGE_ROOT/fine_tuning/scripts/train_hrrt_waypoint_transformer_2_0.sbatch"
 test -s "$PACKAGE_ROOT/fine_tuning/configs/hrrt_waypoint_transformer_2_0.yaml"

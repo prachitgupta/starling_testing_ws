@@ -140,7 +140,13 @@ def plot_routes(run_root: Path, output_dir: Path) -> Path:
         axis.plot(expert[:, 0], expert[:, 1], "o-", color=COLORS["expert"], linewidth=2.2, label="HRRT target")
         axis.plot(predicted[:, 0], predicted[:, 1], "o--", color=COLORS["prediction"], linewidth=2.2, label="Transformer")
         workspace = environment["workspace"]
-        axis.set(xlim=workspace["x"], ylim=workspace["y"], aspect="equal", title=f"{example['sample_id']}\n{example['preference'][:55]}")
+        error = float(example.get("interior_mean_error_m", np.linalg.norm(predicted[1:-1] - expert[1:-1], axis=-1).mean()))
+        axis.set(
+            xlim=workspace["x"],
+            ylim=workspace["y"],
+            aspect="equal",
+            title=f"{example['sample_id']} · interior mean {error:.3f} m\n{example['preference'][:55]}",
+        )
         axis.grid(alpha=0.2)
     for axis in axes.flat[len(examples) :]:
         axis.set_visible(False)
@@ -154,13 +160,47 @@ def plot_routes(run_root: Path, output_dir: Path) -> Path:
 def write_dashboard(run_root: Path, output_dir: Path, images: list[Path]) -> Path:
     postflight = read_json(run_root / "reports" / "postflight.json")
     checkpoint = html.escape(postflight["selected_checkpoint"])
+    route_rows = []
+    for example in postflight.get("route_examples", []):
+        preference = html.escape(str(example["preference"]))
+        sample_id = html.escape(str(example["sample_id"]))
+        expert_array = np.asarray(example["expert_xy"], dtype=float)
+        predicted_array = np.asarray(example["predicted_xy"], dtype=float)
+        waypoint_errors = np.linalg.norm(predicted_array - expert_array, axis=-1)
+        interior_error = float(
+            example.get("interior_mean_error_m", waypoint_errors[1:-1].mean())
+        )
+        full_error = float(example.get("full_route_mean_error_m", waypoint_errors.mean()))
+        expert = html.escape(json.dumps(example["expert_xy"], separators=(",", ":")))
+        predicted = html.escape(json.dumps(example["predicted_xy"], separators=(",", ":")))
+        route_rows.append(
+            f"<tr><td><code>{sample_id}</code></td><td>{preference}</td>"
+            f"<td>{interior_error:.3f}</td><td>{full_error:.3f}</td>"
+            f"<td><details><summary>Waypoints</summary><b>Teacher</b><pre>{expert}</pre>"
+            f"<b>Transformer</b><pre>{predicted}</pre></details></td></tr>"
+        )
+    route_table = (
+        "<section><h2>Same Scene, Different Preferences</h2>"
+        "<p>Each row uses the same scene, start, and goal. Only the preference changes. "
+        "The displayed coordinates are raw model outputs before refinement, verification, or QP.</p>"
+        "<table><thead><tr><th>Sample</th><th>Preference</th><th>Interior mean (m)</th>"
+        "<th>Full-route mean (m)</th><th>Actual coordinates</th></tr></thead><tbody>"
+        + "".join(route_rows)
+        + "</tbody></table></section>"
+    )
+    image_titles = {
+        "route_examples": "Same-Scene Preference Route Comparison",
+        "training_curves": "Training Curves",
+        "component_diagnostics": "Component Diagnostics",
+    }
     image_tags = "".join(
-        f"<section><h2>{html.escape(image.stem.replace('_', ' ').title())}</h2><img src='{html.escape(image.name)}'></section>"
+        f"<section><h2>{html.escape(image_titles.get(image.stem, image.stem.replace('_', ' ').title()))}</h2>"
+        f"<img src='{html.escape(image.name)}'></section>"
         for image in images
     )
     document = f"""<!doctype html><html><head><meta charset='utf-8'><title>Transformer verification</title>
-<style>body{{font-family:Inter,system-ui,sans-serif;background:#f8fafc;color:#0f172a;max-width:1500px;margin:auto;padding:28px}}section{{background:white;border:1px solid #cbd5e1;border-radius:14px;padding:18px;margin:18px 0;box-shadow:0 8px 28px #0f172a12}}img{{display:block;width:100%;height:auto}}code{{background:#e2e8f0;padding:3px 6px;border-radius:5px}}</style></head><body>
-<h1>HRRT waypoint-transformer verification</h1><p>Selected checkpoint: <code>{checkpoint}</code></p>{image_tags}</body></html>"""
+<style>body{{font-family:Inter,system-ui,sans-serif;background:#f8fafc;color:#0f172a;max-width:1500px;margin:auto;padding:28px}}section{{background:white;border:1px solid #cbd5e1;border-radius:14px;padding:18px;margin:18px 0;box-shadow:0 8px 28px #0f172a12}}img{{display:block;width:100%;height:auto}}code{{background:#e2e8f0;padding:3px 6px;border-radius:5px}}table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;border-bottom:1px solid #e2e8f0;padding:10px;vertical-align:top}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;max-width:620px;font-size:12px}}</style></head><body>
+<h1>HRRT waypoint-transformer verification</h1><p>Selected checkpoint: <code>{checkpoint}</code></p>{route_table}{image_tags}</body></html>"""
     output = output_dir / "index.html"
     output.write_text(document, encoding="utf-8")
     return output

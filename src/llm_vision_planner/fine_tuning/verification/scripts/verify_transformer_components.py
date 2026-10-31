@@ -190,8 +190,10 @@ def grouped_gradient_norms(model: Any) -> dict[str, float]:
         "waypoint_decoder": model.waypoint_decoder,
         "coordinate_head": model.coordinate_head,
     }
-    if hasattr(model, "scene_encoder"):
-        groups["scene_encoder"] = model.scene_encoder
+    for name in ("text_projection", "scene_input_projection", "scene_encoder",
+                 "scene_position_embedding", "modality_embedding", "progress_projection", "scene_to_query"):
+        if hasattr(model, name):
+            groups[name] = getattr(model, name)
     result: dict[str, float] = {}
     for name, module in groups.items():
         squared = 0.0
@@ -201,6 +203,9 @@ def grouped_gradient_norms(model: Any) -> dict[str, float]:
         result[name] = math.sqrt(squared)
     route_gradient = model.route_queries.grad
     result["route_queries"] = float(route_gradient.detach().float().norm().item()) if route_gradient is not None else 0.0
+    if hasattr(model, "scene_summary_token"):
+        gradient = model.scene_summary_token.grad
+        result["scene_summary_token"] = float(gradient.detach().float().norm().item()) if gradient is not None else 0.0
     return result
 
 
@@ -362,7 +367,15 @@ def route_examples(
 ) -> list[dict[str, Any]]:
     import torch
 
-    selected = list(examples[:limit])
+    # Pick preferences for one identical environment so route changes can be
+    # attributed to the preference rather than a different scene or goal.
+    groups: dict[str, list[PlanningExample]] = {}
+    for example in examples:
+        scene_key = json.dumps(example.environment, sort_keys=True, separators=(",", ":"))
+        group = groups.setdefault(scene_key, [])
+        if all(item.preference != example.preference for item in group):
+            group.append(example)
+    selected = list(max(groups.values(), key=len)[:limit])
     batch = move_batch(collator(selected), device)
     model.eval()
     with torch.no_grad():
@@ -375,13 +388,18 @@ def route_examples(
         predicted = denormalize_predictions(normalized, selected).detach().cpu().numpy()
     result = []
     for example, predicted_xy in zip(selected, predicted):
+        target_xy = np.asarray(example.target_xy, dtype=np.float32)
+        errors = np.linalg.norm(predicted_xy - target_xy, axis=-1)
         result.append(
             {
                 "sample_id": example.sample_id,
+                "scene_id": example.environment.get("scene_id"),
                 "preference": example.preference,
                 "environment": example.environment,
                 "expert_xy": example.target_xy.tolist(),
                 "predicted_xy": predicted_xy.tolist(),
+                "full_route_mean_error_m": float(np.mean(errors)),
+                "interior_mean_error_m": float(np.mean(errors[1:-1])),
             }
         )
     return result

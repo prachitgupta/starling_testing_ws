@@ -246,6 +246,10 @@ def build_model(config: Mapping[str, Any]):
         def __init__(self) -> None:
             super().__init__()
             self.waypoint_count = int(config["waypoint_count"])
+            self.fixed_endpoints = bool(config.get("fixed_endpoints", False))
+            query_count = self.waypoint_count - 2 if self.fixed_endpoints else self.waypoint_count
+            if self.fixed_endpoints:
+                self.interior_waypoint_count = query_count
             d_model = int(config["hidden_size"])
             heads = int(config["attention_heads"])
             dropout = float(config["dropout"])
@@ -281,7 +285,7 @@ def build_model(config: Mapping[str, Any]):
             self.waypoint_decoder = nn.TransformerDecoder(
                 decoder_layer, num_layers=int(config["decoder_layers"]), norm=nn.LayerNorm(d_model)
             )
-            self.route_queries = nn.Parameter(torch.randn(self.waypoint_count, d_model) * 0.02)
+            self.route_queries = nn.Parameter(torch.randn(query_count, d_model) * 0.02)
             self.coordinate_head = nn.Sequential(
                 nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 2), nn.Tanh()
             )
@@ -304,7 +308,12 @@ def build_model(config: Mapping[str, Any]):
             memory = self.fusion_transformer(memory, src_key_padding_mask=padding_mask)
             queries = self.route_queries.unsqueeze(0).expand(input_ids.shape[0], -1, -1)
             decoded = self.waypoint_decoder(queries, memory, memory_key_padding_mask=padding_mask)
-            return self.coordinate_head(decoded)
+            predicted = self.coordinate_head(decoded)
+            if self.fixed_endpoints:
+                # V1 start/goal tokens store normalized x,y at columns 4:6.
+                predicted = torch.cat((scene_tokens[:, 0:1, 4:6], predicted,
+                                       scene_tokens[:, 1:2, 4:6]), dim=1)
+            return predicted
 
     return PreferenceWaypointTransformer()
 

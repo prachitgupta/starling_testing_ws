@@ -230,13 +230,20 @@ Run in a **laptop terminal**, not inside SSH:
 export STUDY_REMOTE=pgupta12@dtai-login.delta.ncsa.illinois.edu
 export REMOTE_STUDY=/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/loss-ablation-001
 export LOCAL_STUDY=/home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/loss-ablation-001
+export LOCAL_PACKAGE=/home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
 mkdir -p "$LOCAL_STUDY/dashboard"
 rsync -avP "$STUDY_REMOTE:$REMOTE_STUDY/dashboard/" "$LOCAL_STUDY/dashboard/"
 rsync -avP "$STUDY_REMOTE:$REMOTE_STUDY/state.json" "$LOCAL_STUDY/"
+python3 "$LOCAL_PACKAGE/fine_tuning/verification/scripts/add_local_dashboard_model_table.py" \
+  "$LOCAL_STUDY/dashboard/index.html"
 xdg-open "$LOCAL_STUDY/dashboard/index.html"
 ```
 
-Repeat the transfer and refresh the page whenever you want updated results.
+Repeat the transfer, local table command, and refresh whenever you want updated
+results. NCSA regenerates the dashboard during the study, so `rsync` replaces
+the locally patched HTML each time. The helper changes only that downloaded
+HTML; it does not write to NCSA or alter training, checkpoints, logs, or study
+state.
 The HTML embeds all available charts and scene data: it works offline with no
 CDN or account. Select **Model A, Model B, then Scene** to compare the same
 scene across all its preferences. Expand a card for actual teacher/predicted

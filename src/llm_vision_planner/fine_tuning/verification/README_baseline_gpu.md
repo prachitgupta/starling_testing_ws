@@ -92,7 +92,7 @@ Run this block on the laptop:
 
 ```bash
 set -euo pipefail
-export STUDY_REMOTE=prachit2@hiroyasu-serv-01
+export STUDY_REMOTE=prachit2@172.22.224.93
 export LOCAL_PACKAGE=/home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
 export REMOTE_PACKAGE=/home/prachit2/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
 cd /home/prachit/Desktop/starling_multiple_trajectory_idea
@@ -102,12 +102,18 @@ git pull --ff-only origin starling_multiple_trajectory_idea
 ssh "$STUDY_REMOTE" 'bash -s' <<'REMOTE'
 set -euo pipefail
 PROJECT_ROOT=/home/prachit2/Desktop/starling_multiple_trajectory_idea
-if [ ! -d "$PROJECT_ROOT/.git" ]; then
+if [ ! -e "$PROJECT_ROOT" ]; then
   mkdir -p /home/prachit2/Desktop
   git clone --branch starling_multiple_trajectory_idea https://github.com/prachitgupta/starling_testing_ws.git "$PROJECT_ROOT"
 fi
 cd "$PROJECT_ROOT"
-git switch starling_multiple_trajectory_idea
+git rev-parse --show-toplevel
+git fetch origin refs/heads/starling_multiple_trajectory_idea:refs/remotes/origin/starling_multiple_trajectory_idea
+if git show-ref --verify --quiet refs/heads/starling_multiple_trajectory_idea; then
+  git switch starling_multiple_trajectory_idea
+else
+  git switch --create starling_multiple_trajectory_idea --track origin/starling_multiple_trajectory_idea
+fi
 git pull --ff-only origin starling_multiple_trajectory_idea
 mkdir -p src/llm_vision_planner/fine_tuning/datasets/dss_teacher_only_80_10_10
 mkdir -p src/llm_vision_planner/fine_tuning/outputs/overfitted/hrrt_waypoint_transformer
@@ -233,7 +239,7 @@ Run on the laptop, outside SSH. These are the existing transfer commands with
 the Hiroyasu server and separate output paths:
 
 ```bash
-export STUDY_REMOTE=prachit2@hiroyasu-serv-01
+export STUDY_REMOTE=prachit2@172.22.224.93
 export REMOTE_STUDY=/home/prachit2/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/baseline-eight-loss-001
 export LOCAL_STUDY=/home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/baseline-eight-loss-001
 mkdir -p "$LOCAL_STUDY/dashboard"

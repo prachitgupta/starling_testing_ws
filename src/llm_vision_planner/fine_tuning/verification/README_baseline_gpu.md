@@ -160,8 +160,10 @@ export CUDA_VISIBLE_DEVICES=0
 if [ ! -x "$TRAIN_ENV_DIR/bin/python3" ]; then
   /usr/bin/python3 -m venv "$TRAIN_ENV_DIR"
 fi
-"$TRAIN_ENV_DIR/bin/python3" -m pip install torch transformers numpy scipy pyyaml sentencepiece matplotlib
-"$TRAIN_ENV_DIR/bin/python3" -c 'import torch; assert torch.cuda.is_available(), "CUDA unavailable: check GPU visibility, driver and PyTorch installation"; print(torch.__version__, torch.cuda.get_device_name(0))'
+"$TRAIN_ENV_DIR/bin/python3" -m pip install transformers numpy scipy pyyaml sentencepiece matplotlib
+"$TRAIN_ENV_DIR/bin/python3" -m pip install torch==2.10.0 \
+  --index-url https://download.pytorch.org/whl/cu126
+"$TRAIN_ENV_DIR/bin/python3" -c 'import torch; print("PyTorch:", torch.__version__); print("Compiled CUDA:", torch.version.cuda); print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "unavailable"); assert torch.cuda.is_available(), "CUDA unavailable: check GPU visibility, driver and PyTorch installation"'
 
 "$TRAIN_ENV_DIR/bin/python3" "$PACKAGE_ROOT/fine_tuning/verification/scripts/run_baseline_loss_ablation.py" init \
   --study-root "$STUDY_ROOT" \

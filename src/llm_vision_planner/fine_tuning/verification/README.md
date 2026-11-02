@@ -1,4 +1,11 @@
-# Automated loss-ablation study — NCSA copy-paste guide
+# Transformer verification and loss-ablation workflows
+
+For **Hiroyasu's GPU server: original eight-waypoint Transformer 1 and historical
+training settings**, follow [the baseline GPU-server guide](README_baseline_gpu.md).
+It includes setup, independent loss runs, resume, dashboard download, and HTTP
+viewing. Its output directory is separate from the NCSA study below.
+
+## Automated loss-ablation study — NCSA copy-paste guide
 
 This is the new multi-run workflow. The older single-run verification guide is
 retained below. **Do not submit the old `run_transformer_verification.sbatch`

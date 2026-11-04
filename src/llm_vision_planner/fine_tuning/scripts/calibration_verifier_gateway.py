@@ -104,8 +104,20 @@ def scene_setup(rows, args):
     return ground_truth, perceived, start, workspace
 
 
+def requested_mode(args, value="env_uncertainty"):
+    if getattr(args, "strict_e_vs_ehat", False):
+        return "env_uncertainty"
+    return value if value in ("env_uncertainty", "planner_only") else "env_uncertainty"
+
+
+def transformer_environment_pairs(args, ground_truth, perceived):
+    if getattr(args, "strict_e_vs_ehat", False):
+        return (("env_uncertainty", perceived),)
+    return (("env_uncertainty", perceived), ("planner_only", ground_truth))
+
+
 def derive_goal(l1, planning_obstacles, start, workspace, intent_parser, args):
-    """Parse and ground the L1 goal against the mode's obstacle snapshot."""
+    """Parse and ground the L1 goal against the selected obstacle snapshot."""
     intent = intent_parser.parse(l1, obstacle_catalog(planning_obstacles), [])
     if intent.status != "READY":
         raise ValueError(intent.clarifying_question or f"intent parser returned {intent.status}")
@@ -447,13 +459,20 @@ def html_page(state, args, message=""):
         if result else ""
     )
     if results:
-        score_block += "<h3>Both uncertainty modes</h3>" + "".join(
+        score_block += ("<h3>Fixed E/Ē contract</h3>" if getattr(args, "strict_e_vs_ehat", False) else "<h3>Both uncertainty modes</h3>") + "".join(
             f"<p><b>{html.escape(name)}</b>: <span class='metric'>{item['score']:.5f} m</span> "
             f"(q = {item['tube_quantile']:.5f} m)</p>"
             for name, item in results.items()
         )
     stage_hint = "" if view_error else (f"Final view: verified HRRT and refined {planner_label} trajectories with QP-optimized samples and score tubes." if result else ("Select an HRRT route above; all generated candidates are shown in the plot." if routes else "Dataset scene loaded: red is ground truth, orange is perceived, and the blue marker is the drone pose."))
+    strict_contract = getattr(args, "strict_e_vs_ehat", False)
     obstacle_legend = "Red: ground-truth obstacle only." if state.get("mode") == "planner_only" else "Red: ground-truth obstacle · orange dashed box: perceived obstacle."
+    mode_control = (
+        "<input type='hidden' id='mode-select' name='mode' value='env_uncertainty'>"
+        "<p class='hint'><b>Fixed E/Ē contract:</b> GPT goal grounding and HRRT use ground-truth E; Transformer uses perceived Ē.</p>"
+        if strict_contract
+        else f"<label>Mode</label><select id='mode-select' name='mode'><option value='env_uncertainty'{' selected' if state.get('mode','env_uncertainty') == 'env_uncertainty' else ''}>With environment uncertainty ({planner_label} uses perceived E-hat)</option><option value='planner_only'{' selected' if state.get('mode') == 'planner_only' else ''}>Planner uncertainty only (both use ground-truth E)</option></select>"
+    )
     legend = "" if view_error else f"{stage_hint} {obstacle_legend} Green: HRRT · orange dashed path: raw {planner_label} · blue: refined {planner_label} · blue marker: drone · gold marker: goal."
     message_block = f"<p class='error'>{html.escape(message)}</p>" if message.startswith("Error:") else f"<p class='hint'>{html.escape(message)}</p>"
     goal = state.get("goal")
@@ -466,7 +485,7 @@ def html_page(state, args, message=""):
 <div class='grid'><section>
 <form class='card' method='post' action='/propose'><h2>1. Environment and language</h2>
 <label>Refined calibration row</label><select name='row' onchange="window.location='/?row='+this.value">{capture_options}</select>
-<label>Mode</label><select id='mode-select' name='mode'><option value='env_uncertainty'{' selected' if state.get('mode','env_uncertainty') == 'env_uncertainty' else ''}>With environment uncertainty ({planner_label} uses perceived E-hat)</option><option value='planner_only'{' selected' if state.get('mode') == 'planner_only' else ''}>Planner uncertainty only (both use ground-truth E)</option></select>
+{mode_control}
 <label>L1 — object-relative goal instruction</label><div class='speech-row'><textarea id='l1' name='l1'>{l1_value}</textarea><button id='speech-l1' type='button' title='Record L1 prompt' aria-label='Record L1 prompt'>●</button></div><input id='speech-file-l1' type='file' accept='audio/webm,audio/ogg,audio/mp4,audio/x-m4a,audio/mpeg,audio/wav' capture hidden><p id='speech-status-l1' class='hint'>Speak or type L1, then propose a goal.</p>
 <button>Propose goal</button></form>
 {goal_card}
@@ -650,7 +669,7 @@ def run_scoring_job(state, args, form):
         row_number = int(form.get("row", state["row_number"]))
         capture_id, rows = choose_capture(state["captures"], row_number)
         gt, perceived, start, workspace = scene_setup(rows, args)
-        mode = form.get("mode", "env_uncertainty")
+        mode = requested_mode(args, form.get("mode", "env_uncertainty"))
         l1 = form.get("l1", "").strip()
         l2 = form.get("l2", "").strip()
         routes = state.get("route_data", [])
@@ -695,7 +714,7 @@ def run_scoring_job(state, args, form):
         last_plot = plot_scene(selected_scene)
         set_progress(state, "HRRT verification", f"Selected {expert['route_id']} passed sanity verification ({expert_reason}).", last_plot, f"Green: verified {planner_label}-selected HRRT expert route.")
         results = {}
-        for mode_name, mode_obstacles in (("env_uncertainty", perceived), ("planner_only", gt)):
+        for mode_name, mode_obstacles in transformer_environment_pairs(args, gt, perceived):
             set_progress(state, f"Trial 1/2 · {planner_label} generation", f"Generating the first {mode_name} {planner_label} prediction.", last_plot, f"Green: selected HRRT expert route. Trial 1 prediction will appear in orange.")
             base_prompt = planner_prompt(start, goal, mode_obstacles, workspace, args.clearance_m, l1=l1)
             raw_predicted = planner_waypoints(start, goal, mode_obstacles, workspace, planner_preference, args, prompt_text=base_prompt)
@@ -740,6 +759,10 @@ def run_scoring_job(state, args, form):
             result_expert = dict(expert, waypoints=expert_waypoints)
             item = public_result(capture_id, rows, mode_name, l1, l2, result_expert, raw_predicted, predicted, scored, (gt, mode_obstacles), start, goal, perceived, workspace, {"hrrt": expert_reason, "hrrt_metrics": expert_metrics, "llm_trials": trial_records, "llm_refinement": refinement})
             item["planner_display_name"] = planner_label
+            item["environment_contract"] = {
+                "goal_and_hrrt": "ground_truth_E" if getattr(args, "strict_e_vs_ehat", False) else "mode_dependent",
+                "transformer": "perceived_E_hat" if mode_name == "env_uncertainty" else "ground_truth_E",
+            }
             item.update({"expert_selector": "openai" if args.intent_provider == "openai" else "mock", "expert_model": args.expert_model if args.intent_provider == "openai" else "", "selection_reason": selection.reason})
             results[mode_name] = item
         with state["lock"]:
@@ -756,7 +779,7 @@ def run_scoring_job(state, args, form):
         set_progress(
             state,
             "Complete",
-            f"Selected {expert['route_id']} and scored both uncertainty modes. Final view is locked until the row changes.",
+            f"Selected {expert['route_id']} and scored {'the fixed E/Ē contract' if getattr(args, 'strict_e_vs_ehat', False) else 'both uncertainty modes'}. Final view is locked until the row changes.",
             final_plot,
             f"Green: HRRT expert · orange dashed: raw {planner_label} · blue: refined {planner_label} · translucent green/blue: score tubes.",
             done=True,
@@ -783,9 +806,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers(); self.wfile.write(body)
             return
         if parsed.path == "/api/preview":
-            mode = query.get("mode", ["env_uncertainty"])[-1]
-            if mode not in ("env_uncertainty", "planner_only"):
-                mode = "env_uncertainty"
+            mode = requested_mode(self.args, query.get("mode", ["env_uncertainty"])[-1])
             with self.state["lock"]:
                 self.state["mode"] = mode
             preview = dict(scene_preview(self.state, self.args), mode=mode)
@@ -887,8 +908,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             row_number = int(form.get("row", self.state["row_number"]))
             capture_id, rows = choose_capture(self.state["captures"], row_number)
             gt, perceived, start, workspace = scene_setup(rows, self.args)
-            mode = form.get("mode", "env_uncertainty")
-            planning = perceived if mode == "env_uncertainty" else gt
+            mode = requested_mode(self.args, form.get("mode", "env_uncertainty"))
+            planning = gt if self.args.strict_e_vs_ehat else (perceived if mode == "env_uncertainty" else gt)
             if self.path in ("/propose", "/prepare"):
                 intent, relations, relation_results, goal = derive_goal(
                     form.get("l1", ""), planning, start, workspace,
@@ -933,6 +954,11 @@ def build_parser():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8091)
     parser.add_argument("--planner-provider", choices=("mock", "vllm", "transformer"), default="mock")
+    parser.add_argument(
+        "--strict-e-vs-ehat",
+        action="store_true",
+        help="Fix GPT goal grounding and HRRT to ground-truth E, and run the Transformer only on perceived E-hat.",
+    )
     parser.add_argument("--intent-provider", choices=("openai", "mock"), default="openai")
     parser.add_argument("--intent-model", default="gpt-5.4-nano")
     parser.add_argument("--expert-model", default="gpt-6.1-sol")
@@ -971,6 +997,8 @@ def main():
         if args.transformer_checkpoint is None:
             build_parser().error("--transformer-checkpoint is required for --planner-provider transformer")
         args.transformer_planner = WaypointTransformerPlanner(args.transformer_checkpoint, args.transformer_device)
+    elif args.strict_e_vs_ehat:
+        build_parser().error("--strict-e-vs-ehat requires --planner-provider transformer")
     captures = load_captures(args.dataset)
     choose_capture(captures, args.row)
     intent_parser = MockIntentParser() if args.intent_provider == "mock" else OpenAIIntentParser(args.intent_model)

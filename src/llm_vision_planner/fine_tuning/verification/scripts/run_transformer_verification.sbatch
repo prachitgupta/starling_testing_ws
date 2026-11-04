@@ -24,6 +24,7 @@ TINY_SAMPLES=${TINY_SAMPLES:-8}
 TINY_UPDATES=${TINY_UPDATES:-250}
 TINY_LR_MULTIPLIER=${TINY_LR_MULTIPLIER:-5.0}
 REQUIRED_OVERFIT_REDUCTION=${REQUIRED_OVERFIT_REDUCTION:-0.50}
+CHECKPOINT_SELECTION=${CHECKPOINT_SELECTION:-safety_radius}
 RUN_NAME=${RUN_NAME:-verification-${SLURM_JOB_ID}}
 RUN_ROOT=${RUN_ROOT:-$PACKAGE_ROOT/fine_tuning/outputs/$RUN_NAME}
 MODEL_OUTPUT=$RUN_ROOT/model
@@ -84,6 +85,7 @@ python3 -u "$PACKAGE_ROOT/fine_tuning/verification/scripts/verify_transformer_co
   --test "$TEST_CSV" \
   --model-output "$MODEL_OUTPUT" \
   --output "$REPORT_DIR/postflight.json" \
+  --checkpoint-selection "$CHECKPOINT_SELECTION" \
   --device cuda:0
 
 python3 "$PACKAGE_ROOT/fine_tuning/verification/scripts/plot_verification_results.py" \

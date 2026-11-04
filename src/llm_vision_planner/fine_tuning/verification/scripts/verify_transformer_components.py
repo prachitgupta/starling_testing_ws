@@ -320,13 +320,16 @@ def tiny_overfit(
     }
 
 
-def best_checkpoint(model_output: Path) -> Path:
+def best_checkpoint(model_output: Path, selection: str = "safety_radius") -> Path:
     candidates: list[tuple[tuple[float, ...], Path]] = []
     for metrics_path in model_output.glob("checkpoint-epoch-*/metrics.json"):
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
         radius = float(metrics.get("safety_radius_m", math.inf))
         imitation = float(metrics["euclidean_imitation_loss_m"])
-        key = (0.0, radius, imitation) if math.isfinite(radius) else (1.0, imitation, 0.0)
+        if selection == "euclidean":
+            key = (imitation,)
+        else:
+            key = (0.0, radius, imitation) if math.isfinite(radius) else (1.0, imitation, 0.0)
         candidates.append((key, metrics_path.parent))
     if not candidates:
         raise ValueError(f"no checkpoint metrics found below {model_output}")
@@ -405,12 +408,12 @@ def route_examples(
     return result
 
 
-def postflight(model_output: Path, validation_path: Path, test_path: Path, device: Any) -> dict[str, Any]:
+def postflight(model_output: Path, validation_path: Path, test_path: Path, device: Any, checkpoint_selection: str = "safety_radius") -> dict[str, Any]:
     import torch
     from torch.utils.data import DataLoader
     from transformers import AutoTokenizer
 
-    checkpoint = best_checkpoint(model_output)
+    checkpoint = best_checkpoint(model_output, checkpoint_selection)
     effective = json.loads((checkpoint / "config.json").read_text(encoding="utf-8"))
     model_config = dict(effective["model"])
     shared_encoder = model_output / "text_encoder"
@@ -463,6 +466,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--test", type=path_arg, required=True)
     parser.add_argument("--output", type=path_arg, required=True)
     parser.add_argument("--model-output", type=path_arg)
+    parser.add_argument("--checkpoint-selection", choices=("safety_radius", "euclidean"), default="safety_radius")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--tiny-samples", type=int, default=8)
     parser.add_argument("--tiny-updates", type=int, default=250)
@@ -508,7 +512,7 @@ def main() -> None:
     else:
         if args.model_output is None:
             raise SystemExit("--model-output is required for --stage postflight")
-        report = {"stage": "postflight", **postflight(args.model_output, args.validation, args.test, device)}
+        report = {"stage": "postflight", **postflight(args.model_output, args.validation, args.test, device, args.checkpoint_selection)}
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(compact(report), flush=True)
     if not report["passed"]:

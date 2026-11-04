@@ -1,5 +1,8 @@
 # HRRT preference-conditioned planner fine-tuning
 
+For the final calibrated-vertical, historical eight-waypoint Transformer
+workflow, use [final_transformer_vertical.md](final_transformer_vertical.md).
+
 Distill HRRT-star route preferences into a Llama waypoint planner. The deployed
 model receives scene geometry, human preference, and safety constraints only.
 

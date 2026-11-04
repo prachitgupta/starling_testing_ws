@@ -45,6 +45,13 @@ def resolve_path(value: str | Path) -> Path:
     return PACKAGE_ROOT / path
 
 
+def write_json_atomic(path: Path, value: Any) -> None:
+    """Publish epoch progress without exposing a partially written JSON file."""
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
 def require_section(config: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     section = config.get(name)
     if not isinstance(section, Mapping):
@@ -719,6 +726,8 @@ def main() -> None:
     successful_radius_checks = 0
     best_radius = math.inf
     best_checkpoint = None
+    best_euclidean_loss = math.inf
+    best_euclidean_checkpoint = None
     optimizer.zero_grad(set_to_none=True)
     for epoch in range(1, max_epochs + 1):
         model.train()
@@ -750,26 +759,45 @@ def main() -> None:
         if best_checkpoint is None or radius < best_radius:
             best_radius = radius
             best_checkpoint = checkpoint
+        euclidean_loss = float(metrics["euclidean_imitation_loss_m"])
+        if best_euclidean_checkpoint is None or euclidean_loss < best_euclidean_loss:
+            best_euclidean_loss = euclidean_loss
+            best_euclidean_checkpoint = checkpoint
         if math.isfinite(radius) and radius <= float(validation_config["safety_radius_threshold_m"]):
             successful_radius_checks += 1
         else:
             successful_radius_checks = 0
+        write_json_atomic(output_dir / "training_history.json", history)
+        write_json_atomic(
+            output_dir / "training_summary.json",
+            {
+                "status": "running",
+                "stopping_condition_met": False,
+                "best_safety_radius_m": best_radius,
+                "best_checkpoint": str(best_checkpoint) if best_checkpoint else None,
+                "best_euclidean_loss_m": best_euclidean_loss,
+                "best_euclidean_checkpoint": str(best_euclidean_checkpoint) if best_euclidean_checkpoint else None,
+                "completed_epochs": len(history),
+                "safety_radius_threshold_m": float(validation_config["safety_radius_threshold_m"]),
+            },
+        )
         print(compact_json(metrics), flush=True)
         if successful_radius_checks >= int(validation_config["consecutive_checks"]):
             print(f"Safety-radius stopping condition met at epoch {epoch}: {radius:.6f} m", flush=True)
             break
 
-    with (output_dir / "training_history.json").open("w", encoding="utf-8") as stream:
-        json.dump(history, stream, indent=2)
     summary = {
+        "status": "complete",
         "stopping_condition_met": successful_radius_checks >= int(validation_config["consecutive_checks"]),
         "best_safety_radius_m": best_radius,
         "best_checkpoint": str(best_checkpoint) if best_checkpoint else None,
+        "best_euclidean_loss_m": best_euclidean_loss,
+        "best_euclidean_checkpoint": str(best_euclidean_checkpoint) if best_euclidean_checkpoint else None,
         "completed_epochs": len(history),
         "safety_radius_threshold_m": float(validation_config["safety_radius_threshold_m"]),
     }
-    with (output_dir / "training_summary.json").open("w", encoding="utf-8") as stream:
-        json.dump(summary, stream, indent=2)
+    write_json_atomic(output_dir / "training_history.json", history)
+    write_json_atomic(output_dir / "training_summary.json", summary)
     if not summary["stopping_condition_met"]:
         print(
             f"Maximum epochs reached; safety target was not met. Best radius={best_radius:.6f} m",

@@ -66,6 +66,19 @@ def plot_training(model_output: Path, output_dir: Path) -> Path:
     return output
 
 
+def write_training_dashboard(model_output: Path, output_dir: Path, image: Path) -> Path:
+    """Write a refreshable dashboard while a trainer is still running."""
+    summary = read_json(model_output / "training_summary.json")
+    status = html.escape(str(summary.get("status", "complete")))
+    checkpoint = html.escape(str(summary.get("best_euclidean_checkpoint") or summary.get("best_checkpoint") or "not available yet"))
+    document = f"""<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='refresh' content='60'>
+<title>Transformer training monitor</title><style>body{{font-family:Inter,system-ui,sans-serif;background:#f8fafc;color:#0f172a;max-width:1200px;margin:auto;padding:28px}}section{{background:white;border:1px solid #cbd5e1;border-radius:14px;padding:18px;margin:18px 0;box-shadow:0 8px 28px #0f172a12}}img{{display:block;width:100%;height:auto}}code{{background:#e2e8f0;padding:3px 6px;border-radius:5px}}</style></head><body>
+<h1>HRRT waypoint-transformer training</h1><p>Status: <b>{status}</b> · completed epochs: <b>{int(summary.get('completed_epochs', 0))}</b></p><p>Lowest-validation-Euclidean checkpoint so far: <code>{checkpoint}</code></p><section><h2>Training curves</h2><img src='{html.escape(image.name)}'></section><p>This page refreshes every 60 seconds. Re-run the sync/build command to import the newest completed epoch.</p></body></html>"""
+    output = output_dir / "index.html"
+    output.write_text(document, encoding="utf-8")
+    return output
+
+
 def plot_diagnostics(run_root: Path, output_dir: Path) -> Path:
     preflight = read_json(run_root / "reports" / "preflight.json")
     postflight = read_json(run_root / "reports" / "postflight.json")
@@ -215,11 +228,21 @@ def main() -> None:
         help="Completed trainer output. Defaults to RUN_ROOT/model for verification batch jobs.",
     )
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--training-only",
+        action="store_true",
+        help="Build a live training-only page without preflight/postflight reports.",
+    )
     args = parser.parse_args()
     run_root = args.run_root.resolve()
     model_output = (args.model_output or run_root / "model").resolve()
     output_dir = (args.output_dir or run_root / "plots").resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    if args.training_only:
+        image = plot_training(model_output, output_dir)
+        dashboard = write_training_dashboard(model_output, output_dir, image)
+        print(json.dumps({"plots": [str(image)], "dashboard": str(dashboard)}, indent=2))
+        return
     images = [
         plot_training(model_output, output_dir),
         plot_diagnostics(run_root, output_dir),

@@ -122,9 +122,12 @@ done
 Monitor on NCSA:
 
 ```bash
-squeue -u "$USER"
+squeue -u "$USER" -o "%.18i %.2t %.10M %R"
 tail -n 60 "$PROJECT_ROOT/logs/hrrt-transformer-verify-<JOB_ID>.out"
 ```
+
+In the `ST` column, `PD` means pending and `R` means running; the last column
+shows the pending reason or active compute node.
 
 ## 5. Laptop: refresh the dashboard at any completed epoch
 
@@ -167,10 +170,12 @@ test -s "$LOCAL_FINAL/checkpoint/model.pt"
 
 ## 7. Laptop: run the calibration gateway on the latest outline CSV
 
-This strict switch fixes the experiment contract: GPT goal grounding and HRRT
-route generation use ground-truth obstacles `E`; the Transformer receives only
-perceived outline obstacles `E-hat`. GPT selects among the HRRT routes generated
-from `E`.
+The gateway retains its original mode selector:
+
+- **Environment uncertainty:** HRRT uses ground-truth `E`; goal grounding and
+  the Transformer use perceived `E-hat`.
+- **Planner only:** goal grounding, HRRT, and Transformer all use ground-truth
+  `E`; perceived geometry is hidden.
 
 ```bash
 cd /home/prachit/Desktop/starling_multiple_trajectory_idea/src/llm_vision_planner
@@ -180,7 +185,7 @@ python3 fine_tuning/scripts/calibration_verifier_gateway.py \
   --planner-provider transformer \
   --transformer-checkpoint "$LOCAL_FINAL/checkpoint" \
   --transformer-device auto --intent-provider openai \
-  --strict-e-vs-ehat --host 127.0.0.1 --port 8091
+  --host 127.0.0.1 --port 8091
 ```
 
 Open <http://127.0.0.1:8091/>.

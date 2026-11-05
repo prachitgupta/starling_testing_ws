@@ -232,6 +232,9 @@ class ResidualCalibrationRecorder(Node):
         self.declare_parameter("frame_calibration_samples", 20)
         self.declare_parameter("frame_sync_tolerance_s", 0.10)
         self.declare_parameter("sync_tolerance_s", 0.10)
+        # Added to Vicon header stamps: a bag recorded on another computer has
+        # that computer's clock (HARDWARE_TESTING_README.md, Section 13.3.1).
+        self.declare_parameter("vicon_time_offset_s", 0.0)
         self.declare_parameter("match_distance_m", 0.75)
         self.declare_parameter("object_stability_window_s", 0.50)
         self.declare_parameter("object_stability_min_samples", 5)
@@ -245,6 +248,7 @@ class ResidualCalibrationRecorder(Node):
         self.frame_count = int(self.get_parameter("frame_calibration_samples").value)
         self.frame_sync_tolerance = float(self.get_parameter("frame_sync_tolerance_s").value)
         self.sync_tolerance = float(self.get_parameter("sync_tolerance_s").value)
+        self.vicon_time_offset = float(self.get_parameter("vicon_time_offset_s").value)
         self.match_distance = float(self.get_parameter("match_distance_m").value)
         self.stability_window = float(self.get_parameter("object_stability_window_s").value)
         self.stability_min_samples = int(self.get_parameter("object_stability_min_samples").value)
@@ -401,6 +405,8 @@ class ResidualCalibrationRecorder(Node):
         timestamp = float(message.header.stamp.sec) + float(message.header.stamp.nanosec) * 1e-9
         if timestamp <= 0:
             timestamp = self.get_clock().now().nanoseconds * 1e-9
+        else:
+            timestamp += self.vicon_time_offset
         try:
             pose = transform_pose(message)
         except ValueError:

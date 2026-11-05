@@ -12,3 +12,4 @@ fine_tuning/datasets/calibration_residual_raw.csv
 fine_tuning/datasets/calibration_residual_scored.csv
 fine_tuning/outputs/llama31_8b_hrrt_lora/*
 !fine_tuning/outputs/llama31_8b_hrrt_lora/PLACEHOLDER.txt
+models/*.onnx

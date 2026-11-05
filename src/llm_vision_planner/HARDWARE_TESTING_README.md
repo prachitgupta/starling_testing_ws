@@ -865,6 +865,75 @@ odometry. NED is x North, y East, z Down.
 | `bbox_inner_margin_fraction` | `0.30` | Increase it to reject box-edge background; decrease it when too few ToF points remain |
 | `obstacle_hold_s` | `10.0` | Covers observed static-scene detector dropouts; lower it for moving obstacles |
 | `held_depth_health_grace_s` | `10.0` | Reuses recent measured geometry only for synchronization failures; set to `0.0` for moving scenes |
+| `depth_estimator` | `outline` | `shape_fit` (ToF only) or `front_spread` (legacy) for comparison |
+
+### Object depth behind the front surface
+
+The ToF sees only the surfaces facing the drone, so each obstacle also needs
+its thickness along the line of sight. Perception measures it and publishes it
+in every obstacle as `measured_depth_along_view_m`, with `depth_method`,
+`depth_confidence` and `depth_ready`. The gateway extrudes the perceived front
+segment (`front_surface_center`, `visible_width_m`, `view_axis_xy`) by this
+depth (`nominal_depth_source: perception`, the default) instead of asking GPT
+nano to guess it from the label (`nominal_depth_source: gpt`, the original
+behaviour).
+
+| `depth_estimator` | How | Cost on the ground station |
+| --- | --- | --- |
+| `outline` (default) | The `/hires_small_color` image is outlined by EfficientSAM, prompted with the TFLite box. The outline, the ToF points inside it and the ToF floor give the depth: tangent rays and a person-shaped ellipse for people (feet pick a wide or a long ellipse), floor contacts and footprints for furniture (`scripts/outline_depth.py`) | ~0.7 s segmentation + ~0.2 s math per object, on a worker thread |
+| `shape_fit` | ToF points in the detector box only (`scripts/obstacle_depth.py`): an ellipse fit for people, the visible spread or a class prior for the rest | A few ms |
+| `front_spread` | Legacy: p90-p10 of the visible front surface. Not a thickness, so the gateway treats it as missing | A few ms |
+
+With `outline`, an obstacle seen for the first time carries the ToF-only
+(`shape_fit`) depth and `depth_ready: false` until its outline is computed
+(at most `outline_wait_s`, 8 s); calibration captures and mission requests
+wait for it. An outline is reused for up to `outline_max_age_s` (10 s) unless
+the object's ToF front moves by more than `outline_settle_m` (8 cm). Without
+the model file, perception logs a warning and uses `shape_fit`;
+`status.outline` in `/llm_vision/semantic_obstacles` says which is in use.
+
+In flight, `outline` adds the `/hires_small_color` stream to the Wi-Fi link
+to the ground station. If that link is already busy, set
+`camera_image_topic: ""` (or `depth_estimator: shape_fit`) to keep the
+ToF-only depths.
+
+Footprints now use these measured depths, so a vision-error certificate
+(`vision_error_calibration_csv`) built from a dataset with GPT nano depths
+does not cover them: record the dataset again (Section 13, or 13.3.1 from an
+existing bag) and rebuild the certificate before a conformal flight.
+
+Stop signs have a hard-coded thickness of 10 mm (`FIXED_THICKNESS_M` in
+`scripts/obstacle_depth.py`) instead of the conservative 1.5 m an unknown class
+gets. The face is located with a plane fit, so ToF noise doesn't move it. A
+sign square-on to the drone is exactly 10 mm deep along the line of sight;
+seen at an angle, its face recedes along the line of sight
+(width x sin(angle), e.g. 0.17 m for a 0.6 m sign 16 deg off-axis), and that
+part is covered as well.
+
+Download the EfficientSAM-Ti model (48 MB) once, then rebuild so it is
+installed with the package:
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+curl -L -o src/llm_vision_planner/models/efficientsam_ti_2025april.onnx \
+  https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/image_segmentation_efficientsam/image_segmentation_efficientsam_ti_2025april.onnx
+sha256sum src/llm_vision_planner/models/efficientsam_ti_2025april.onnx
+# 4eb496e0a7259d435b49b66faf1754aa45a5c382a34558ddda9a8c6fe5915d77
+python3 -c "import cv2, numpy; print(cv2.__version__)"   # OpenCV runs it; or: pip install onnxruntime
+colcon build --packages-select llm_vision_planner
+```
+
+To check depths on a recorded bag before a flight (per-frame plots of the
+outline, ToF, feet and boxes; Vicon truth when the bag has it):
+
+```bash
+python3 src/llm_vision_planner/scripts/outline_depth_from_bag.py <bag_folder> --label person \
+  --segmenter efficientsam --align-tof report
+```
+
+`--align-tof report` also prints the small camera/ToF rotation that best
+aligns the outline with the ToF; if several bags agree, put it in
+`outline_tof_rotation_deg`.
 
 ### Calibrate the hires camera
 
@@ -1154,8 +1223,10 @@ This workflow is deliberately split into two stages. The flight records only
 comma-delimited perceived/ground-truth obstacle geometry. Each accepted capture
 is an atomic environment: every configured Vicon object is written under one
 `capture_id`, including Vicon yaw and four NED corners. Detected objects also
-include the perceived front center, view/lateral axes, visible width, ChatGPT
-depth, and four reconstructed NED footprint corners. Offline processing
+include the perceived front center, view/lateral axes, visible width, the
+depth behind the front surface (measured by perception, Section 12; the column
+keeps its old name `pred_chatgpt_depth_m`), and four reconstructed NED
+footprint corners. Offline processing
 then runs HRRT-star on ground truth, the Llama planner on perception, both
 ideal-double-integrator QPs, and writes one residual conformity score per
 capture. Never use the raw CSV as the conformal calibration input.
@@ -1229,6 +1300,10 @@ Offboard publisher at the same time. Keep QGroundControl land/kill controls
 available. The vehicle takes off, holds its initial X/Y position, and records
 only after frame alignment reports `FRAME_READY`.
 
+Depths come from perception (Section 12), so no OpenAI key is needed. To
+record GPT nano's depths as before, export `OPENAI_API_KEY` and add
+`nominal_depth_source:=gpt intent_provider:=openai` to the launch command.
+
 In the launch terminal:
 
 ```bash
@@ -1239,8 +1314,6 @@ source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dd
   enable auto 42
 ros2 daemon start
 
-read -rsp "OpenAI API key: " OPENAI_API_KEY
-export OPENAI_API_KEY
 read -rp "Chair X width in metres: " CHAIR_WIDTH_M
 read -rp "Chair Y depth in metres: " CHAIR_DEPTH_M
 read -rp "Person target X width in metres: " PERSON_WIDTH_M
@@ -1305,8 +1378,6 @@ source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dd
   enable auto 42
 ros2 daemon start
 
-read -rsp "OpenAI API key: " OPENAI_API_KEY
-export OPENAI_API_KEY
 read -rp "Person target X width in metres: " PERSON_WIDTH_M
 read -rp "Person target Y depth in metres: " PERSON_DEPTH_M
 export PERSON_WIDTH_M PERSON_DEPTH_M
@@ -1365,8 +1436,18 @@ BAG_DIR="$HOME/rosbags/person-calibration-$STAMP"
 ros2 bag record -o "$BAG_DIR" \
   /hires_small_color \
   /tof_pc \
-  /tflite
+  /tflite \
+  /tflite_data \
+  /fmu/out/vehicle_odometry \
+  /vicon/Starling2/Starling2 \
+  /vicon/person/person \
+  /llm_vision/semantic_obstacles
 ```
+
+The detections, odometry and Vicon topics let Section 13.3.1 record the
+dataset again from this bag later, for example with a different depth method.
+Add `/vicon/chair1/chair1` and `/vicon/stopsign/stopsign` when those objects
+are in the arena.
 
 Keep recording during collection. After landing, press `Ctrl+C` once and verify:
 
@@ -1415,6 +1496,104 @@ ros2 topic echo /llm_vision/mission_state
 
 Wait for `COMPLETE` and verify that the vehicle is landed and disarmed. Then
 press `Ctrl+C` in the launch terminal.
+
+### 13.3.1 Record the dataset from a rosbag instead of a flight
+
+The same launch records the raw CSV from a bag, with nothing sent to a
+vehicle: `replay:=true` leaves out the takeoff node and the mission-state gate
+and runs every node on the bag's clock (`use_sim_time`), so the perception
+timestamps match the recorded Vicon stamps. The bag needs `/hires_small_color`,
+`/tof_pc`, `/tflite`, `/tflite_data`, `/fmu/out/vehicle_odometry`,
+`/vicon/Starling2/Starling2` and the Vicon topic of every object in
+`VICON_OBJECTS_JSON`; the 2026-10-11 person bag has all of them. Do not replay
+`/llm_vision/semantic_obstacles` from the bag: the perception node publishes
+it again with the new depths.
+
+Check once that the bag's clock and the Vicon stamps agree (a bag recorded on
+another computer can be offset by that computer's clock):
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+BAG_DIR=~/rosbags/person-calibration-20261011-114711   # the bag folder
+
+python3 - "$BAG_DIR" <<'PY'
+import itertools
+import sys
+
+import numpy as np
+
+sys.path.insert(0, "src/llm_vision_planner/scripts")
+import bag_reader as br
+
+bag = br.open_bag(sys.argv[1])
+messages = itertools.islice(bag.messages(["/vicon/person/person"]), 3000)
+gaps = [log_ns - br.stamp_ns(msg.header) for _, log_ns, msg in messages]
+print(f"bag clock minus Vicon stamps: {np.median(gaps) / 1e9:+.3f} s")
+PY
+```
+
+Within +-0.05 s is fine. Otherwise add `vicon_time_offset_s:=<printed value>`
+to the launch command below; the recorder adds it to every Vicon stamp.
+
+Terminal 1, the calibration nodes (person-only example; use the dimensions
+entered for that session; 0.38 x 0.29 m matches the 2026-10-11 ground-truth
+boxes):
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+VICON_OBJECTS_JSON='[{"object_id": "person-1", "label": "person", "topic": "/vicon/person/person", "dimensions_m": [0.38, 0.29]}]'
+RAW_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw_person_outline.csv"
+TRIAL_ID="person-residual-replay-$(date +%Y%m%d-%H%M%S)"
+
+ros2 launch llm_vision_planner vision_error_calibration.launch.py \
+  params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
+  replay:=true \
+  trial_id:="$TRIAL_ID" \
+  output_csv:="$RAW_CSV" \
+  vicon_objects_json:="$VICON_OBJECTS_JSON" \
+  capture_position_change_threshold_m:=0.15 \
+  capture_yaw_change_threshold_rad:=0.261799
+```
+
+Terminal 2, once terminal 1 prints `interactive gateway ready`:
+
+```bash
+cd ~/Desktop/starling_multiple_trajectory_idea
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 bag play ~/rosbags/person-calibration-20261011-114711 --clock --topics \
+  /hires_small_color /tof_pc /tflite /tflite_data /fmu/out/vehicle_odometry \
+  /vicon/Starling2/Starling2 /vicon/person/person
+```
+
+Terminal 3, to watch it:
+
+```bash
+source ~/Desktop/starling_multiple_trajectory_idea/install/setup.bash
+ros2 topic echo /llm_vision/vision_calibration_status
+```
+
+`FRAME_READY` appears within a second of playback, then `RECORDED` for each
+new arrangement of the objects. Play at normal speed: the outline depth takes
+about 1 s per object on a laptop, so faster playback outruns it.
+When the bag ends, press `Ctrl+C` in terminal 1 and validate the CSV with
+Section 13.4 (set `RAW_CSV` to the file above). Rows with
+`missed_detection=true` are captures where no detection reached
+`min_confidence` (0.70); the 2026-10-11 bag has many person boxes at
+0.6-0.7.
+
+Compare the replayed CSV with the one recorded live (GPT nano depths): how far
+each Vicon footprint reaches outside the predicted one, and the depths:
+
+```bash
+python3 src/llm_vision_planner/fine_tuning/scripts/compare_raw_calibration.py \
+  src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw_person.csv "$RAW_CSV" --label person
+```
 
 ### 13.4 Validate the raw comma-delimited CSV
 

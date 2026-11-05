@@ -1,0 +1,10 @@
+Put efficientsam_ti_2025april.onnx (48 MB) here; perception_detection.py and
+outline_depth_from_bag.py look for it in this folder (installed to
+share/llm_vision_planner/models by colcon build). Download:
+
+  curl -L -o src/llm_vision_planner/models/efficientsam_ti_2025april.onnx \
+    https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/image_segmentation_efficientsam/image_segmentation_efficientsam_ti_2025april.onnx
+  sha256sum src/llm_vision_planner/models/efficientsam_ti_2025april.onnx
+  # 4eb496e0a7259d435b49b66faf1754aa45a5c382a34558ddda9a8c6fe5915d77
+
+Without it perception uses the ToF-only depth (depth_method shape_fit / extent / ellipse_fit).

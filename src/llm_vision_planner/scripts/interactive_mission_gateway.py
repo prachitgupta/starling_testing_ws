@@ -587,6 +587,34 @@ def load_vision_error_certificate(value, delta):
     }
 
 
+def perception_depth_estimates(obstacles):
+    """Depths measured by perception_detection.py, in the GPT estimate format.
+
+    Perception measures the thickness behind the visible front surface
+    (outline_depth.py / obstacle_depth.py) and reports it as
+    measured_depth_along_view_m; the legacy front-surface spread is not a
+    thickness, so it counts as abstaining.
+    """
+    estimates = []
+    for obstacle in obstacles:
+        depth = obstacle.get("measured_depth_along_view_m")
+        method = str(obstacle.get("depth_method", "front_spread"))
+        try:
+            depth = float(depth)
+        except (TypeError, ValueError):
+            depth = math.nan
+        valid = math.isfinite(depth) and depth > 0.0 and method != "front_spread"
+        estimates.append(
+            {
+                "object_id": str(obstacle["object_id"]),
+                "effective_depth_along_view_m": depth if valid else None,
+                "abstained": not valid,
+                "source": f"perception_{method}",
+            }
+        )
+    return estimates
+
+
 def nominal_obstacles_from_depth(obstacles, depth_estimates):
     """Extrude each perceived front segment away from the camera into a nominal footprint."""
     estimates = {}
@@ -594,24 +622,25 @@ def nominal_obstacles_from_depth(obstacles, depth_estimates):
         estimate = raw.model_dump() if isinstance(raw, ObjectDepthEstimate) else dict(raw)
         object_id = str(estimate.get("object_id", ""))
         if not object_id or object_id in estimates:
-            raise ValueError("GPT depth estimates must contain unique detected object IDs")
+            raise ValueError("depth estimates must contain unique detected object IDs")
         estimates[object_id] = estimate
     expected_ids = {str(obstacle["object_id"]) for obstacle in obstacles}
     if set(estimates) != expected_ids:
         missing = sorted(expected_ids - set(estimates))
         extra = sorted(set(estimates) - expected_ids)
-        raise ValueError(f"GPT depth estimates do not match the scene (missing={missing}, extra={extra})")
+        raise ValueError(f"depth estimates do not match the scene (missing={missing}, extra={extra})")
 
     nominal = []
     for obstacle in obstacles:
         object_id = str(obstacle["object_id"])
         estimate = estimates[object_id]
         depth = estimate.get("effective_depth_along_view_m")
+        source = str(estimate.get("source", "gpt_nano"))
         if bool(estimate.get("abstained")) or depth is None:
-            raise ValueError(f"GPT nano abstained from estimating depth for {object_id}")
+            raise ValueError(f"{source} abstained from estimating depth for {object_id}")
         depth = float(depth)
         if not math.isfinite(depth) or depth <= 0.0:
-            raise ValueError(f"GPT nano returned invalid depth for {object_id}")
+            raise ValueError(f"{source} returned invalid depth for {object_id}")
 
         front = obstacle.get("front_surface_center")
         view = obstacle.get("view_axis_xy")
@@ -657,7 +686,7 @@ def nominal_obstacles_from_depth(obstacles, depth_estimates):
             maximum_z - minimum_z,
         ]
         item["effective_depth_along_view_m"] = depth
-        item["depth_estimate_source"] = "gpt_nano"
+        item["depth_estimate_source"] = source
         item["nominal_footprint_corners_xy"] = corners
         nominal.append(item)
     return nominal
@@ -1070,6 +1099,9 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("environment", "real")
         self.declare_parameter("intent_provider", "openai")
         self.declare_parameter("openai_intent_model", "gpt-5.4-nano")
+        # perception: thickness measured by perception_detection.py (outline +
+        # ToF); gpt: GPT nano's estimate from the label (original behaviour).
+        self.declare_parameter("nominal_depth_source", "perception")
         self.declare_parameter("planner_llm_provider", "llama")
         self.declare_parameter("planner_model_name", "hrrt_planner")
         self.declare_parameter("visualizer", "contraction")
@@ -1222,6 +1254,15 @@ class InteractiveMissionGateway(Node):
         self.latest_route_family = None
         self.last_failure = None
         self.calibration_only = bool(self.get_parameter("calibration_only").value)
+        self.nominal_depth_source = str(self.get_parameter("nominal_depth_source").value).strip().lower()
+        if self.nominal_depth_source not in ("perception", "gpt"):
+            raise ValueError("nominal_depth_source must be 'perception' or 'gpt'")
+        if (
+            self.calibration_only
+            and self.nominal_depth_source == "gpt"
+            and str(self.get_parameter("intent_provider").value).strip().lower() == "mock"
+        ):
+            raise ValueError("nominal_depth_source 'gpt' needs intent_provider 'openai': the mock parser estimates no depths")
         self.auto_calibration_capture = bool(
             self.get_parameter("auto_calibration_capture").value
         )
@@ -1426,14 +1467,22 @@ class InteractiveMissionGateway(Node):
                 raise ValueError(
                     "real conformal missions require a non-placeholder vision calibration dataset"
                 )
-            nominal = nominal_obstacles_from_depth(observed, intent.depth_estimates)
+            nominal = nominal_obstacles_from_depth(observed, self.depth_estimates_for(scene, intent))
         return nominal, inflate_obstacles_xy(nominal, self.scene_guard_band_m)
+
+    def depth_source(self):
+        return getattr(self, "nominal_depth_source", "gpt")
+
+    def depth_estimates_for(self, scene, intent):
+        if self.depth_source() == "perception" and self.environment != "sim":
+            return perception_depth_estimates(scene["obstacles"])
+        return list(intent.depth_estimates)
 
     def calibration_nominal_obstacles(self, scene, intent, mission_nominal):
         if self.obs_safety_bracket != "hardcoded" or self.environment == "sim":
             return mission_nominal
         try:
-            return nominal_obstacles_from_depth(scene["obstacles"], intent.depth_estimates)
+            return nominal_obstacles_from_depth(scene["obstacles"], self.depth_estimates_for(scene, intent))
         except ValueError as exc:
             self.get_logger().warning(
                 f"hardcoded mission remains available, but no calibration snapshot was published: {exc}"
@@ -1446,7 +1495,7 @@ class InteractiveMissionGateway(Node):
         if self.environment == "sim":
             source = "sim_complete_boxes"
         else:
-            source = "gpt_nano_front_footprint"
+            source = f"{'perception' if self.depth_source() == 'perception' else 'gpt_nano'}_front_footprint"
         try:
             observation_timestamp = float(scene.get("timestamp", time.time()))
         except (TypeError, ValueError):
@@ -1462,7 +1511,10 @@ class InteractiveMissionGateway(Node):
             "obstacles": copy.deepcopy(nominal),
             "observed_obstacles": copy.deepcopy(scene["obstacles"]),
             "observer_pose": copy.deepcopy(scene.get("pose")),
-            "depth_estimates": [item.model_dump() for item in intent.depth_estimates],
+            "depth_estimates": [
+                item.model_dump() if isinstance(item, ObjectDepthEstimate) else dict(item)
+                for item in self.depth_estimates_for(scene, intent)
+            ],
             **self.obstacle_safety_metadata(),
         }
         self.nominal_obstacle_pub.publish(String(data=json.dumps(payload)))
@@ -1683,7 +1735,7 @@ class InteractiveMissionGateway(Node):
         self.calibration_capture_count += 1
         self.last_calibration_capture_s = now
         scene = copy.deepcopy(self.latest_scene)
-        if not scene["obstacles"]:
+        if not scene["obstacles"] or self.depth_source() == "perception":
             intent = MissionIntent(
                 status="READY",
                 intent_type="QUERY",
@@ -1694,7 +1746,7 @@ class InteractiveMissionGateway(Node):
                 depth_estimates=[],
                 clarifying_question="",
             )
-            self.handle_calibration_intent(intent, scene)
+            self.handle_calibration_intent(intent, scene)   # depths come from perception: no GPT call
             return
         self.start_intent_request("Describe all visible objects for vision calibration.", scene)
         self.publish_response(
@@ -2048,12 +2100,14 @@ class InteractiveMissionGateway(Node):
     def handle_calibration_intent(self, intent, scene):
         nominal = []
         failures = []
+        depth_estimates = self.depth_estimates_for(scene, intent)
         for obstacle in scene["obstacles"]:
             object_id = str(obstacle["object_id"])
             estimates = [
                 estimate
-                for estimate in intent.depth_estimates
-                if estimate.object_id == object_id
+                for estimate in depth_estimates
+                if (estimate.object_id if isinstance(estimate, ObjectDepthEstimate) else estimate["object_id"])
+                == object_id
             ]
             try:
                 nominal.extend(nominal_obstacles_from_depth([obstacle], estimates))
@@ -2639,6 +2693,10 @@ class InteractiveMissionGateway(Node):
             return "The obstacle snapshot is stale."
         if self.latest_scene.get("healthy") is False:
             return "Perception reports an unhealthy obstacle snapshot."
+        if self.depth_source() == "perception" and any(
+            not bool(item.get("depth_ready", True)) for item in self.latest_scene.get("obstacles", [])
+        ):
+            return "Perception is still measuring object depths; try again in a few seconds."
         return None
 
     def vicon_ground_truth_context_error(self):

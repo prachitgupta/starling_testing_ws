@@ -55,6 +55,33 @@ semantic_obstacle_perception:
     bbox_inner_margin_fraction: 0.30
     depth_near_percentile: 25.0
     depth_cluster_tolerance_m: 0.35
+    # Thickness behind each object's visible front (HARDWARE_TESTING_README.md
+    # section 12): outline = camera outline from EfficientSAM prompted with the
+    # TFLite box, plus ToF and the floor (scripts/outline_depth.py); shape_fit
+    # = ToF only (scripts/obstacle_depth.py, also used while an outline is
+    # computed or when the model is missing); front_spread = legacy.
+    depth_estimator: outline
+    camera_image_topic: /hires_small_color
+    segmenter: efficientsam
+    # Empty: <package share>/models/efficientsam_ti_2025april.onnx (README 12).
+    efficientsam_model: ""
+    # plumb_bob k1 k2 p1 p2 k3 of calibration/opencv_hires_small_grey_intrinsics.yml.
+    hires_distortion: [-0.28655908953387943, 0.081789942250115405, 0.00052374055289612631,
+                       0.00071156224551124046, -0.010172420045783252]
+    # Small camera/ToF misalignment fix in degrees (outline_depth_from_bag.py
+    # --align-tof report prints it); the 2026-10-11 person bag gave ~[-0.2, 1.1, 0.5].
+    outline_tof_rotation_deg: [0.0, 0.0, 0.0]
+    outline_max_image_gap_s: 0.5
+    # An outline is reused until its frame is this old (the 2026-10-11 bag has
+    # an image every ~3 s) unless the object moves; until one exists (up to
+    # outline_wait_s) obstacles carry depth_ready: false and the ToF-only depth.
+    outline_max_age_s: 10.0
+    outline_wait_s: 8.0
+    # An outline only counts for an object if its frame was taken after the
+    # object's ToF front last moved by more than this.
+    outline_settle_m: 0.08
+    outline_async: true
+    shape_fit_front_tolerance_m: 0.15
     obstacle_hold_s: 10.0
     # Reuse only recent, measured ToF geometry when the current failure is sync-only.
     held_depth_health_grace_s: 10.0
@@ -122,6 +149,9 @@ interactive_mission_gateway:
     environment: real
     intent_provider: openai
     openai_intent_model: gpt-5.4-nano
+    # perception: perception_detection.py's measured depth (outline + ToF);
+    # gpt: GPT nano's estimate from the object label (original behaviour).
+    nominal_depth_source: perception
     planner_llm_provider: llama
     # full_plot.launch.py maps its llama_model_name argument to this parameter.
     planner_model_name: hrrt_planner
@@ -246,6 +276,8 @@ residual_calibration_recorder:
     frame_sync_tolerance_s: 0.10
     frame_calibration_samples: 20
     sync_tolerance_s: 0.10
+    # Added to Vicon header stamps (a bag recorded on another computer's clock).
+    vicon_time_offset_s: 0.0
     match_distance_m: 0.75
     object_stability_window_s: 0.50
     object_stability_min_samples: 5

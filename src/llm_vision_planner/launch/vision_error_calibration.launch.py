@@ -1,6 +1,7 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, TimerAction
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.conditions import UnlessCondition
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -32,13 +33,36 @@ def generate_launch_description():
         DeclareLaunchArgument("frame_calibration_samples", default_value="20"),
         DeclareLaunchArgument("frame_sync_tolerance_s", default_value="0.10"),
         DeclareLaunchArgument("sync_tolerance_s", default_value="0.10"),
+        DeclareLaunchArgument("vicon_time_offset_s", default_value="0.0"),
         DeclareLaunchArgument("match_distance_m", default_value="0.75"),
         DeclareLaunchArgument("capture_position_change_threshold_m", default_value="0.15"),
         DeclareLaunchArgument("capture_yaw_change_threshold_rad", default_value="0.261799"),
         DeclareLaunchArgument("calibration_capture_delay_s", default_value="1.0"),
         DeclareLaunchArgument("calibration_capture_interval_s", default_value="3.0"),
         DeclareLaunchArgument("openai_intent_model", default_value="gpt-5.4-nano"),
+        # Depth behind each detected object's front: perception (our outline +
+        # ToF method, no API calls) or gpt (GPT nano from the label; needs
+        # intent_provider:=openai and OPENAI_API_KEY).
+        DeclareLaunchArgument("nominal_depth_source", default_value="perception"),
+        DeclareLaunchArgument(
+            "intent_provider",
+            default_value=PythonExpression(
+                ["'openai' if '", LaunchConfiguration("nominal_depth_source"), "' == 'gpt' else 'mock'"]
+            ),
+        ),
+        DeclareLaunchArgument("depth_estimator", default_value="outline"),
+        DeclareLaunchArgument("efficientsam_model", default_value=""),
+        # replay:=true records from a rosbag instead of a flight: no takeoff
+        # node (nothing is sent to a vehicle), no mission-state gate, and
+        # use_sim_time follows `ros2 bag play --clock`.
+        DeclareLaunchArgument("replay", default_value="false"),
+        DeclareLaunchArgument("use_sim_time", default_value=LaunchConfiguration("replay")),
     ]
+    use_sim_time = ParameterValue(LaunchConfiguration("use_sim_time"), value_type=bool)
+    live = ParameterValue(
+        PythonExpression(["'", LaunchConfiguration("replay"), "'.lower() not in ('true', '1')"]),
+        value_type=bool,
+    )
 
     recorder = Node(
         package="llm_vision_planner",
@@ -48,6 +72,7 @@ def generate_launch_description():
         parameters=[
             params_file,
             {
+                "use_sim_time": use_sim_time,
                 "trial_id": LaunchConfiguration("trial_id"),
                 "output_csv": LaunchConfiguration("output_csv"),
                 "vicon_objects_json": ParameterValue(
@@ -76,6 +101,9 @@ def generate_launch_description():
                 "sync_tolerance_s": ParameterValue(
                     LaunchConfiguration("sync_tolerance_s"), value_type=float
                 ),
+                "vicon_time_offset_s": ParameterValue(
+                    LaunchConfiguration("vicon_time_offset_s"), value_type=float
+                ),
                 "match_distance_m": ParameterValue(
                     LaunchConfiguration("match_distance_m"), value_type=float
                 ),
@@ -94,7 +122,14 @@ def generate_launch_description():
         executable="perception_detection.py",
         name="semantic_obstacle_perception",
         output="screen",
-        parameters=[params_file],
+        parameters=[
+            params_file,
+            {
+                "use_sim_time": use_sim_time,
+                "depth_estimator": LaunchConfiguration("depth_estimator"),
+                "efficientsam_model": LaunchConfiguration("efficientsam_model"),
+            },
+        ],
     )
 
     takeoff = Node(
@@ -105,10 +140,12 @@ def generate_launch_description():
         parameters=[
             params_file,
             {
+                "use_sim_time": use_sim_time,
                 "takeoff_gate_topic": "/llm_vision/vision_calibration_status",
                 "takeoff_gate_status": "FRAME_READY",
             },
         ],
+        condition=UnlessCondition(LaunchConfiguration("replay")),
     )
 
     nominal_environment = Node(
@@ -119,11 +156,13 @@ def generate_launch_description():
         parameters=[
             params_file,
             {
+                "use_sim_time": use_sim_time,
                 "environment": "real",
-                "intent_provider": "openai",
+                "intent_provider": LaunchConfiguration("intent_provider"),
                 "openai_intent_model": LaunchConfiguration("openai_intent_model"),
+                "nominal_depth_source": LaunchConfiguration("nominal_depth_source"),
                 "visualizer": "standard",
-                "require_mission_state": True,
+                "require_mission_state": live,
                 "calibration_only": True,
                 "auto_calibration_capture": True,
                 "continuous_calibration_capture": True,

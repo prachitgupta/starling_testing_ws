@@ -16,7 +16,7 @@ class DatasetScenePublisher(Node):
         super().__init__("dataset_scene_publisher")
         self.declare_parameter(
             "dataset_csv",
-            "fine_tuning/datasets/env_ros_commands.csv",
+            "test/fixtures/env_ros_commands.csv",
         )
         self.declare_parameter("sample_id", 4)
         self.declare_parameter("publish_hz", 2.0)

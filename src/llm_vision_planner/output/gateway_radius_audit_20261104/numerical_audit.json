@@ -1,0 +1,380 @@
+{
+  "checkpoint": "/home/prachit/Desktop/starling_final_testing/src/llm_vision_planner/fine_tuning/outputs/final-transformer-vertical-teacher_only_80_10_10/final_transformer_vertical_teacher_only_80_10_10_best/checkpoint",
+  "dataset": "/home/prachit/Desktop/starling_final_testing/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw_person_outline.csv",
+  "row": 15,
+  "capture_id": "person-residual-replay-20261102-043942-capture-000027",
+  "start": {
+    "x": -0.45,
+    "y": -1.64,
+    "z": -0.5
+  },
+  "goal": {
+    "x": -0.45,
+    "y": 2.4,
+    "z": -0.5
+  },
+  "preference": "go to the goal in shortest time possible",
+  "expert_selection": "Explicit shortest generated route; no OpenAI selection call",
+  "route_cards": [
+    {
+      "route_id": "route-001",
+      "path_length_m": 4.768,
+      "minimum_clearance_m": {
+        "person-1": 0.56
+      },
+      "waypoints": [
+        {
+          "x": -0.45,
+          "y": -1.64,
+          "z": -0.5
+        },
+        {
+          "x": -1.6677,
+          "y": -0.2745,
+          "z": -0.5
+        },
+        {
+          "x": -0.45,
+          "y": 2.4,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-002",
+      "path_length_m": 4.3,
+      "minimum_clearance_m": {
+        "person-1": 0.536
+      },
+      "waypoints": [
+        {
+          "x": -0.45,
+          "y": -1.64,
+          "z": -0.5
+        },
+        {
+          "x": 0.286,
+          "y": 0.3485,
+          "z": -0.5
+        },
+        {
+          "x": -0.45,
+          "y": 2.4,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-003",
+      "path_length_m": 4.887,
+      "minimum_clearance_m": {
+        "person-1": 0.82
+      },
+      "waypoints": [
+        {
+          "x": -0.45,
+          "y": -1.64,
+          "z": -0.5
+        },
+        {
+          "x": -1.6677,
+          "y": -0.2745,
+          "z": -0.5
+        },
+        {
+          "x": -1.6374,
+          "y": 0.7459,
+          "z": -0.5
+        },
+        {
+          "x": -0.45,
+          "y": 2.4,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-004",
+      "path_length_m": 4.59,
+      "minimum_clearance_m": {
+        "person-1": 0.84
+      },
+      "waypoints": [
+        {
+          "x": -0.45,
+          "y": -1.64,
+          "z": -0.5
+        },
+        {
+          "x": 0.5957,
+          "y": -0.1948,
+          "z": -0.5
+        },
+        {
+          "x": 0.3262,
+          "y": 0.7501,
+          "z": -0.5
+        },
+        {
+          "x": -0.45,
+          "y": 2.4,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-005",
+      "path_length_m": 5.772,
+      "minimum_clearance_m": {
+        "person-1": 1.203
+      },
+      "waypoints": [
+        {
+          "x": -0.45,
+          "y": -1.64,
+          "z": -0.5
+        },
+        {
+          "x": -1.2648,
+          "y": -1.1744,
+          "z": -0.5
+        },
+        {
+          "x": -1.5521,
+          "y": -0.9745,
+          "z": -0.5
+        },
+        {
+          "x": -2.0236,
+          "y": -0.4801,
+          "z": -0.5
+        },
+        {
+          "x": -2.0886,
+          "y": 1.3998,
+          "z": -0.5
+        },
+        {
+          "x": -0.45,
+          "y": 2.4,
+          "z": -0.5
+        }
+      ]
+    },
+    {
+      "route_id": "route-006",
+      "path_length_m": 6.884,
+      "minimum_clearance_m": {
+        "person-1": 1.286
+      },
+      "waypoints": [
+        {
+          "x": -0.45,
+          "y": -1.64,
+          "z": -0.5
+        },
+        {
+          "x": 2.3367,
+          "y": 0.3216,
+          "z": -0.5
+        },
+        {
+          "x": -0.45,
+          "y": 2.4,
+          "z": -0.5
+        }
+      ]
+    }
+  ],
+  "selected_route_id": "route-002",
+  "P": [
+    [
+      8.558361595735933,
+      0.0,
+      3.1622776601683844,
+      0.0
+    ],
+    [
+      0.0,
+      8.558361595735933,
+      0.0,
+      3.1622776601683844
+    ],
+    [
+      3.1622776601683844,
+      0.0,
+      2.7063915681838764,
+      0.0
+    ],
+    [
+      0.0,
+      3.1622776601683844,
+      0.0,
+      2.7063915681838764
+    ]
+  ],
+  "K": [
+    [
+      3.1622776601683844,
+      0.0,
+      2.7063915681838764,
+      0.0
+    ],
+    [
+      0.0,
+      3.1622776601683844,
+      0.0,
+      2.7063915681838764
+    ]
+  ],
+  "B": [
+    [
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0
+    ],
+    [
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0
+    ]
+  ],
+  "alpha": 1.1081176978867227,
+  "projection_gain": 0.4534504026058025,
+  "radius_conversion_gain": 0.40920779757472703,
+  "modes": {
+    "env_uncertainty": {
+      "score": 6.64685694185239,
+      "time_s": 3.5,
+      "expert_sample": {
+        "t": 3.5,
+        "x": [
+          -0.086936,
+          -0.632313,
+          0.097526,
+          0.279766
+        ],
+        "u": [
+          9e-05,
+          -0.041397
+        ]
+      },
+      "predicted_sample": {
+        "t": 3.5,
+        "x": [
+          0.930527,
+          -1.218361,
+          0.281017,
+          0.20814
+        ],
+        "u": [
+          -0.126317,
+          0.14746
+        ]
+      },
+      "delta_state": [
+        1.017463,
+        -0.586048,
+        0.18349100000000002,
+        -0.07162600000000002
+      ],
+      "delta_control": [
+        -0.12640700000000002,
+        0.188857
+      ],
+      "K_delta_state": [
+        3.714099010185533,
+        -2.0470945006491
+      ],
+      "control_residual": [
+        3.587692010185533,
+        -1.8582375006490999
+      ],
+      "residual": [
+        0.0,
+        0.0,
+        3.587692010185533,
+        -1.8582375006490999
+      ],
+      "squared_metric": 44.18070720545131,
+      "website_label": "6.64686 m",
+      "svg_circle_radius": 720.1,
+      "svg_actual_circle_radius": "720.1",
+      "same_time_position_mean_m": 0.7057137495918084,
+      "same_time_position_max_m": 1.2653050348876353,
+      "projected_radius_if_score_were_q": 2.719945689969702,
+      "number_of_samples": 144,
+      "horizon_s": 14.3
+    },
+    "planner_only": {
+      "score": 6.50418205863837,
+      "time_s": 3.7,
+      "expert_sample": {
+        "t": 3.7,
+        "x": [
+          -0.067409,
+          -0.577164,
+          0.097959,
+          0.271963
+        ],
+        "u": [
+          0.008396,
+          -0.031858
+        ]
+      },
+      "predicted_sample": {
+        "t": 3.7,
+        "x": [
+          0.944155,
+          -1.169676,
+          0.256201,
+          0.232373
+        ],
+        "u": [
+          -0.099262,
+          0.14766
+        ]
+      },
+      "delta_state": [
+        1.011564,
+        -0.5925119999999999,
+        0.158242,
+        -0.039590000000000014
+      ],
+      "delta_control": [
+        -0.107658,
+        0.179518
+      ],
+      "K_delta_state": [
+        3.6271110535631244,
+        -1.9808335031660893
+      ],
+      "control_residual": [
+        3.5194530535631245,
+        -1.8013155031660892
+      ],
+      "residual": [
+        0.0,
+        0.0,
+        3.5194530535631245,
+        -1.8013155031660892
+      ],
+      "squared_metric": 42.30438425191326,
+      "website_label": "6.50418 m",
+      "svg_circle_radius": 704.6,
+      "svg_actual_circle_radius": "704.6",
+      "same_time_position_mean_m": 0.6806680715348095,
+      "same_time_position_max_m": 1.2398065593712593,
+      "projected_radius_if_score_were_q": 2.6615620152404613,
+      "number_of_samples": 144,
+      "horizon_s": 14.3
+    }
+  },
+  "checkpoint_sha256": null
+}

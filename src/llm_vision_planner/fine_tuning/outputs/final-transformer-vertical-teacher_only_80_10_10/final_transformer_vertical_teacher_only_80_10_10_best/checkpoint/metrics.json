@@ -1,0 +1,8 @@
+{
+  "euclidean_imitation_loss_m": 0.2772914745977947,
+  "conformity_quantile": Infinity,
+  "safety_radius_m": Infinity,
+  "verification_pass_rate": 0.8645833333333334,
+  "epoch": 67,
+  "train_euclidean_imitation_loss_m": 0.255425386446895
+}

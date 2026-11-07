@@ -36,6 +36,11 @@ def generate_launch_description():
         default_value="llama",
         description="Planner LLM provider: chatgpt or llama",
     )
+    llama_model_name_arg = DeclareLaunchArgument(
+        "llama_model_name",
+        default_value="hrrt_planner",
+        description="OpenAI-compatible served model name for the DSS or DSS-SCOTT Llama adapter.",
+    )
     show_rrt_arg = DeclareLaunchArgument(
         "show_rrt",
         default_value="true",
@@ -94,13 +99,18 @@ def generate_launch_description():
     )
     vision_error_calibration_csv_arg = DeclareLaunchArgument(
         "vision_error_calibration_csv",
-        default_value="fine_tuning/datasets/calibration_vision_error_dummy.csv",
+        default_value="test/fixtures/calibration_vision_error_dummy.csv",
         description="Vision containment-score calibration CSV.",
     )
     vision_error_delta_arg = DeclareLaunchArgument(
         "vision_error_delta",
         default_value="0.10",
         description="Miscoverage level for the obstacle containment certificate.",
+    )
+    vicon_objects_json_arg = DeclareLaunchArgument(
+        "vicon_objects_json",
+        default_value="[]",
+        description="Real-ACP Vicon object catalog JSON with object_id, label, topic, and dimensions_m.",
     )
     params_file = LaunchConfiguration("params_file")
     fixed_goal = {
@@ -152,6 +162,7 @@ def generate_launch_description():
             {
                 "environment": LaunchConfiguration("environment"),
                 "llm_provider": LaunchConfiguration("llm_provider"),
+                "llama_model_name": LaunchConfiguration("llama_model_name"),
                 **fixed_goal,
             },
         ],
@@ -169,6 +180,7 @@ def generate_launch_description():
                 "environment": LaunchConfiguration("environment"),
                 "intent_provider": LaunchConfiguration("intent_provider"),
                 "planner_llm_provider": LaunchConfiguration("llm_provider"),
+                "planner_model_name": LaunchConfiguration("llama_model_name"),
                 "visualizer": LaunchConfiguration("visualizer"),
                 "obs_safety_bracket": LaunchConfiguration("obs_safety_bracket"),
                 "vision_error_calibration_csv": LaunchConfiguration(
@@ -177,6 +189,7 @@ def generate_launch_description():
                 "vision_error_delta": ParameterValue(
                     LaunchConfiguration("vision_error_delta"), value_type=float
                 ),
+                "vicon_objects_json": LaunchConfiguration("vicon_objects_json"),
             },
         ],
         condition=use_interactive_prompt,
@@ -193,6 +206,7 @@ def generate_launch_description():
                 "port": ParameterValue(LaunchConfiguration("web_ui_port"), value_type=int),
                 "host": LaunchConfiguration("web_ui_host"),
                 "visualizer": LaunchConfiguration("visualizer"),
+                "environment": LaunchConfiguration("environment"),
             },
         ],
         condition=use_interactive_web_ui,
@@ -212,7 +226,13 @@ def generate_launch_description():
         executable="llm_planner.py",
         name="llm_planner",
         output="screen",
-        parameters=[params_file, {"llm_provider": LaunchConfiguration("llm_provider")}],
+        parameters=[
+            params_file,
+            {
+                "llm_provider": LaunchConfiguration("llm_provider"),
+                "llama_model_name": LaunchConfiguration("llama_model_name"),
+            },
+        ],
     )
 
     refinement = Node(
@@ -281,6 +301,7 @@ def generate_launch_description():
             goal_x_arg,
             goal_y_arg,
             llm_provider_arg,
+            llama_model_name_arg,
             show_rrt_arg,
             visualizer_arg,
             land_after_complete_arg,
@@ -294,6 +315,7 @@ def generate_launch_description():
             obs_safety_bracket_arg,
             vision_error_calibration_csv_arg,
             vision_error_delta_arg,
+            vicon_objects_json_arg,
             semantic_perception,
             dataset_scene,
             llm_planner,

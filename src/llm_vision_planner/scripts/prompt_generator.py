@@ -9,7 +9,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import String
 
-DEFAULT_WORKSPACE_X = (-3.0, 3.0)
+DEFAULT_WORKSPACE_X = (-4.0, 4.0)
 DEFAULT_WORKSPACE_Y = (-3.0, 3.0)
 DEFAULT_FIXED_Z = -0.5
 DEFAULT_GOAL = (0.0, 1.5, -0.5)
@@ -61,7 +61,7 @@ class PromptGenerator(Node):
         self.declare_parameter("prompt_topic", DEFAULT_PROMPT_TOPIC)
         self.declare_parameter("llm_provider", "llama")
         self.declare_parameter("chatgpt_model_name", "gpt-5-mini")
-        self.declare_parameter("llama_model_name", "rrt_planner")
+        self.declare_parameter("llama_model_name", "hrrt_planner")
         self.declare_parameter("verified_plan_topic", DEFAULT_VERIFIED_PLAN_TOPIC)
         self.declare_parameter("mission_state_topic", DEFAULT_MISSION_STATE_TOPIC)
         self.declare_parameter("required_mission_state", "HOLDING_FOR_PLAN")
@@ -497,6 +497,7 @@ class PromptGenerator(Node):
             "- stay within workspace\n"
             "- no waypoint should be within obstacle boxes, walls, or near corners\n"
             "- prefer sparse, smooth, monotonic progress through open space\n"
+            "- reasoning must use: Preference: ... Geometry: ... Decision: ... Safety: ...\n"
             "- return only the structured output requested by the response model"
         )
 

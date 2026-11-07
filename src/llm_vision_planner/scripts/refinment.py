@@ -71,6 +71,14 @@ class PathRefinement(Node):
             "spacing_m": self.interpolation_spacing_m,
             "safety_margin_m": self.safety_margin_m,
         }
+        expert = payload.get("selected_expert_route")
+        if isinstance(expert, dict) and len(expert.get("waypoints", [])) >= 2:
+            expert_refined = dict(expert)
+            expert_refined["waypoints_sparse"] = expert["waypoints"]
+            expert_refined["waypoints"] = self.interpolate_waypoints(
+                expert["waypoints"], workspace, obstacles
+            )
+            output["selected_expert_route_refined"] = expert_refined
 
         out = String()
         out.data = json.dumps(output)
@@ -149,7 +157,7 @@ class PathRefinement(Node):
         return point
 
     def clamp_to_workspace(self, point, workspace):
-        x_limits = workspace.get("x", [-3.0, 3.0])
+        x_limits = workspace.get("x", [-4.0, 4.0])
         y_limits = workspace.get("y", [-3.0, 3.0])
         point["x"] = min(max(point["x"], float(x_limits[0])), float(x_limits[1]))
         point["y"] = min(max(point["y"], float(y_limits[0])), float(y_limits[1]))

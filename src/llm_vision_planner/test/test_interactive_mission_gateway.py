@@ -12,11 +12,13 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from interactive_mission_gateway import (  # noqa: E402
     GoalRelation,
     MockIntentParser,
+    MockRouteSelector,
     build_planner_prompt,
     inflate_obstacles_xy,
     normalize_goal_relations,
     normalize_obstacles,
     range_constrained_goal,
+    route_cards,
     relation_results,
     safe_standoff_goal,
     scene_signature,
@@ -69,6 +71,7 @@ def test_grounding_helpers():
     assert "chair (obj-1)" in prompt
     assert "bottle (obj-2)" in prompt
     assert "maintain >=0.40m clearance" in prompt
+    assert "Preference: ... Geometry: ... Decision: ... Safety: ..." in prompt
     assert nl_env in prompt
 
 
@@ -150,6 +153,28 @@ def test_mock_intent_queries_and_control_rejection():
     assert control.status == "UNSUPPORTED"
 
 
+def test_route_cards_and_mock_selection():
+    routes = [
+        {
+            "route_id": "route-001",
+            "path_length_m": 4.0,
+            "minimum_clearance_m": {"person-1": 0.8, "chair-1": 0.5},
+        },
+        {
+            "route_id": "route-002",
+            "path_length_m": 5.0,
+            "minimum_clearance_m": {"person-1": 1.4, "chair-1": 0.9},
+        },
+    ]
+    cards = route_cards(routes, nominal_speed_mps=0.5)
+    assert cards[0]["estimated_duration_s"] == 8.0
+    assert "h_signature" not in cards[0]
+    assert "clearance_bins" not in cards[0]
+    selector = MockRouteSelector()
+    assert selector.select("Use route-001", cards, []).selected_route_id == "route-001"
+    assert selector.select("Give me the widest clearance", cards, []).selected_route_id == "route-002"
+
+
 def test_invalid_obstacle_rejected():
     try:
         normalize_obstacles({"obstacles": [{"id": 1, "label": "chair"}]})
@@ -229,6 +254,7 @@ if __name__ == "__main__":
     test_grounding_helpers()
     test_multi_object_range_goal()
     test_mock_intent_queries_and_control_rejection()
+    test_route_cards_and_mock_selection()
     test_invalid_obstacle_rejected()
     test_live_scene_jitter_is_bounded_and_conservative()
     test_unsafe_live_scene_changes_are_rejected()

@@ -1,0 +1,288 @@
+{
+  "row": 15,
+  "capture_id": "person-residual-replay-20261102-043942-capture-000027",
+  "start": {
+    "x": -0.45,
+    "y": -1.64,
+    "z": -0.5
+  },
+  "goal": {
+    "x": -1.0,
+    "y": -0.6,
+    "z": -0.5
+  },
+  "preference": "go to the goal in shortest time possible",
+  "modes": {
+    "env_uncertainty": {
+      "raw": [
+        {
+          "x": -0.45,
+          "y": -1.64,
+          "z": -0.5
+        },
+        {
+          "x": -0.5464162826538086,
+          "y": -1.449419617652893,
+          "z": -0.5
+        },
+        {
+          "x": -0.7082226276397705,
+          "y": -1.2370637655258179,
+          "z": -0.5
+        },
+        {
+          "x": -0.7115821838378906,
+          "y": -1.0458486080169678,
+          "z": -0.5
+        },
+        {
+          "x": -0.7730250358581543,
+          "y": -0.9132380485534668,
+          "z": -0.5
+        },
+        {
+          "x": -0.6256840229034424,
+          "y": -0.7591099739074707,
+          "z": -0.5
+        },
+        {
+          "x": -0.8196120262145996,
+          "y": -0.6044666767120361,
+          "z": -0.5
+        },
+        {
+          "x": -1.0,
+          "y": -0.6,
+          "z": -0.5
+        }
+      ],
+      "refined": [
+        {
+          "x": -0.45,
+          "y": -1.64,
+          "z": -0.5
+        },
+        {
+          "x": -0.5464162826538086,
+          "y": -1.449419617652893,
+          "z": -0.5
+        },
+        {
+          "x": -0.7082226276397705,
+          "y": -1.2370637655258179,
+          "z": -0.5
+        },
+        {
+          "x": -0.7115821838378906,
+          "y": -1.0458486080169678,
+          "z": -0.5
+        },
+        {
+          "x": -0.7730250358581543,
+          "y": -0.9132380485534668,
+          "z": -0.5
+        },
+        {
+          "x": -0.6256840229034424,
+          "y": -0.7591099739074707,
+          "z": -0.5
+        },
+        {
+          "x": -0.8196120262145996,
+          "y": -0.6044666767120361,
+          "z": -0.5
+        },
+        {
+          "x": -1.0,
+          "y": -0.6,
+          "z": -0.5
+        }
+      ],
+      "passed": false,
+      "reason": "monotonic_goal_progress",
+      "metrics": {
+        "collision_free": true,
+        "min_clearance_m": 0.58,
+        "goal_clearance_m": 0.62,
+        "max_segment_speed": 0.08,
+        "max_segment_accel": 0.031,
+        "monotonic_goal_progress": false,
+        "smoothness_score": 0.559,
+        "passed": false,
+        "goal_match": true,
+        "start_match": true,
+        "in_workspace": true,
+        "nominal_dt_s": 3.333,
+        "failed_constraints": [
+          "monotonic_goal_progress"
+        ],
+        "thresholds": {
+          "min_clearance_m": 0.4,
+          "max_segment_speed": 0.5,
+          "max_segment_accel": 0.5,
+          "goal_tolerance_m": 0.05,
+          "start_tolerance_m": 0.1,
+          "progress_tolerance_m": 0.001
+        },
+        "feedback_table": "| Metric | Value | Required | Status |\n|---|---:|---:|---|\n| in_workspace | True | true | PASS |\n| goal_clearance | 0.620 | >= 0.400 | PASS |\n| collision_free | True | true | PASS |\n| min_clearance_m | 0.580 | >= 0.400 | PASS |\n| start_match | True | true | PASS |\n| goal_match | True | true | PASS |\n| monotonic_goal_progress | False | true | FAIL |\n| max_segment_speed | 0.080 | <= 0.500 | PASS |\n| max_segment_accel | 0.031 | <= 0.500 | PASS |"
+      }
+    },
+    "planner_only": {
+      "raw": [
+        {
+          "x": -0.45,
+          "y": -1.64,
+          "z": -0.5
+        },
+        {
+          "x": -0.546534538269043,
+          "y": -1.450622320175171,
+          "z": -0.5
+        },
+        {
+          "x": -0.7112627029418945,
+          "y": -1.2391135692596436,
+          "z": -0.5
+        },
+        {
+          "x": -0.7129929065704346,
+          "y": -1.0589361190795898,
+          "z": -0.5
+        },
+        {
+          "x": -0.7823910713195801,
+          "y": -0.9239664077758789,
+          "z": -0.5
+        },
+        {
+          "x": -0.6449379920959473,
+          "y": -0.7677545547485352,
+          "z": -0.5
+        },
+        {
+          "x": -0.8468213081359863,
+          "y": -0.6126968860626221,
+          "z": -0.5
+        },
+        {
+          "x": -1.0,
+          "y": -0.6,
+          "z": -0.5
+        }
+      ],
+      "refined": [
+        {
+          "x": -0.45,
+          "y": -1.64,
+          "z": -0.5
+        },
+        {
+          "x": -0.546534538269043,
+          "y": -1.450622320175171,
+          "z": -0.5
+        },
+        {
+          "x": -0.7112627029418945,
+          "y": -1.2391135692596436,
+          "z": -0.5
+        },
+        {
+          "x": -0.7129929065704346,
+          "y": -1.0589361190795898,
+          "z": -0.5
+        },
+        {
+          "x": -0.7823910713195801,
+          "y": -0.9239664077758789,
+          "z": -0.5
+        },
+        {
+          "x": -0.6449379920959473,
+          "y": -0.7677545547485352,
+          "z": -0.5
+        },
+        {
+          "x": -0.8468213081359863,
+          "y": -0.6126968860626221,
+          "z": -0.5
+        },
+        {
+          "x": -1.0,
+          "y": -0.6,
+          "z": -0.5
+        }
+      ],
+      "passed": false,
+      "reason": "monotonic_goal_progress",
+      "metrics": {
+        "collision_free": true,
+        "min_clearance_m": 0.561,
+        "goal_clearance_m": 0.592,
+        "max_segment_speed": 0.08,
+        "max_segment_accel": 0.031,
+        "monotonic_goal_progress": false,
+        "smoothness_score": 0.56,
+        "passed": false,
+        "goal_match": true,
+        "start_match": true,
+        "in_workspace": true,
+        "nominal_dt_s": 3.333,
+        "failed_constraints": [
+          "monotonic_goal_progress"
+        ],
+        "thresholds": {
+          "min_clearance_m": 0.4,
+          "max_segment_speed": 0.5,
+          "max_segment_accel": 0.5,
+          "goal_tolerance_m": 0.05,
+          "start_tolerance_m": 0.1,
+          "progress_tolerance_m": 0.001
+        },
+        "feedback_table": "| Metric | Value | Required | Status |\n|---|---:|---:|---|\n| in_workspace | True | true | PASS |\n| goal_clearance | 0.592 | >= 0.400 | PASS |\n| collision_free | True | true | PASS |\n| min_clearance_m | 0.561 | >= 0.400 | PASS |\n| start_match | True | true | PASS |\n| goal_match | True | true | PASS |\n| monotonic_goal_progress | False | true | FAIL |\n| max_segment_speed | 0.080 | <= 0.500 | PASS |\n| max_segment_accel | 0.031 | <= 0.500 | PASS |"
+      }
+    }
+  },
+  "retry": [
+    {
+      "x": -0.45,
+      "y": -1.64,
+      "z": -0.5
+    },
+    {
+      "x": -0.5464162826538086,
+      "y": -1.449419617652893,
+      "z": -0.5
+    },
+    {
+      "x": -0.7082226276397705,
+      "y": -1.2370637655258179,
+      "z": -0.5
+    },
+    {
+      "x": -0.7115821838378906,
+      "y": -1.0458486080169678,
+      "z": -0.5
+    },
+    {
+      "x": -0.7730250358581543,
+      "y": -0.9132380485534668,
+      "z": -0.5
+    },
+    {
+      "x": -0.6256840229034424,
+      "y": -0.7591099739074707,
+      "z": -0.5
+    },
+    {
+      "x": -0.8196120262145996,
+      "y": -0.6044666767120361,
+      "z": -0.5
+    },
+    {
+      "x": -1.0,
+      "y": -0.6,
+      "z": -0.5
+    }
+  ],
+  "retry_max_coordinate_difference": 0.0
+}

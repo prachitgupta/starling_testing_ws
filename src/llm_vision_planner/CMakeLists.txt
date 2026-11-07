@@ -21,26 +21,38 @@ install(PROGRAMS
   scripts/trajectory_follower.py
   scripts/trajectory_follower_continuous.py
   scripts/control_law_executer.py
-  fine_tuning/scripts/vision_error_dataset_generattor.py
-  fine_tuning/scripts/postprocess_vision_error_dataset.py
+  scripts/outline_depth_from_bag.py
+  fine_tuning/scripts/hrrt_star.py
+  fine_tuning/scripts/lqr.py
+  fine_tuning/scripts/residual_calibration_recorder.py
+  fine_tuning/scripts/postprocess_residual_calibration.py
+  fine_tuning/scripts/calibration_verifier_gateway.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(FILES
   fine_tuning/scripts/min_control_qp.py
-  fine_tuning/scripts/lqr.py
+  fine_tuning/scripts/train_hrrt_waypoint_transformer.py
+  scripts/obstacle_depth.py
+  scripts/outline_depth.py
+  scripts/outline_segmentation.py
+  scripts/bag_reader.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY
   launch
   config
+  calibration
+  models
   web
   fine_tuning
   DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE
 )
+
+install(DIRECTORY test/fixtures DESTINATION share/${PROJECT_NAME}/test)
 
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -49,12 +61,28 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_interactive_web_ui.py
   )
   add_test(
-    NAME conformal_obstacle_safety
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_conformal_obstacle_safety.py
+    NAME interactive_mission_gateway
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_interactive_mission_gateway.py
   )
   add_test(
-    NAME expert_calibration_pipeline
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_expert_calibration_pipeline.py
+    NAME interactive_gateway_ros
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_interactive_gateway_ros.py
+  )
+  add_test(
+    NAME residual_calibration_pipeline
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_residual_calibration_pipeline.py
+  )
+  add_test(
+    NAME obstacle_depth
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_obstacle_depth.py
+  )
+  add_test(
+    NAME outline_depth
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_outline_depth.py
+  )
+  add_test(
+    NAME calibration_replay
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_calibration_replay.py
   )
 endif()
 

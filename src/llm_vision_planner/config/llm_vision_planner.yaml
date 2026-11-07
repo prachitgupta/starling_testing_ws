@@ -55,6 +55,33 @@ semantic_obstacle_perception:
     bbox_inner_margin_fraction: 0.30
     depth_near_percentile: 25.0
     depth_cluster_tolerance_m: 0.35
+    # Thickness behind each object's visible front (HARDWARE_TESTING_README.md
+    # section 12): outline = camera outline from EfficientSAM prompted with the
+    # TFLite box, plus ToF and the floor (scripts/outline_depth.py); shape_fit
+    # = ToF only (scripts/obstacle_depth.py, also used while an outline is
+    # computed or when the model is missing); front_spread = legacy.
+    depth_estimator: outline
+    camera_image_topic: /hires_small_color
+    segmenter: efficientsam
+    # Empty: <package share>/models/efficientsam_ti_2025april.onnx (README 12).
+    efficientsam_model: ""
+    # plumb_bob k1 k2 p1 p2 k3 of calibration/opencv_hires_small_grey_intrinsics.yml.
+    hires_distortion: [-0.28655908953387943, 0.081789942250115405, 0.00052374055289612631,
+                       0.00071156224551124046, -0.010172420045783252]
+    # Small camera/ToF misalignment fix in degrees (outline_depth_from_bag.py
+    # --align-tof report prints it); the 2026-10-11 person bag gave ~[-0.2, 1.1, 0.5].
+    outline_tof_rotation_deg: [0.0, 0.0, 0.0]
+    outline_max_image_gap_s: 0.5
+    # An outline is reused until its frame is this old (the 2026-10-11 bag has
+    # an image every ~3 s) unless the object moves; until one exists (up to
+    # outline_wait_s) obstacles carry depth_ready: false and the ToF-only depth.
+    outline_max_age_s: 10.0
+    outline_wait_s: 8.0
+    # An outline only counts for an object if its frame was taken after the
+    # object's ToF front last moved by more than this.
+    outline_settle_m: 0.08
+    outline_async: true
+    shape_fit_front_tolerance_m: 0.15
     obstacle_hold_s: 10.0
     # Reuse only recent, measured ToF geometry when the current failure is sync-only.
     held_depth_health_grace_s: 10.0
@@ -86,11 +113,12 @@ prompt_generator:
     environment: real
     llm_provider: llama
     chatgpt_model_name: gpt-5.4-nano
-    llama_model_name: rrt_planner
+    # Override with launch argument llama_model_name for a DSS or DSS-SCOTT served adapter.
+    llama_model_name: hrrt_planner
     single_shot: True
     initial_plan_id: 1
-    workspace_x_min: -3.0
-    workspace_x_max: 3.0
+    workspace_x_min: -4.0
+    workspace_x_max: 4.0
     workspace_y_min: -3.0
     workspace_y_max: 3.0
     fixed_z: -0.5
@@ -121,9 +149,22 @@ interactive_mission_gateway:
     environment: real
     intent_provider: openai
     openai_intent_model: gpt-5.4-nano
+    # perception: perception_detection.py's measured depth (outline + ToF);
+    # gpt: GPT nano's estimate from the object label (original behaviour).
+    nominal_depth_source: perception
     planner_llm_provider: llama
-    planner_model_name: rrt_planner
+    # full_plot.launch.py maps its llama_model_name argument to this parameter.
+    planner_model_name: hrrt_planner
     visualizer: contraction
+    interaction_mode: MISSION_EXECUTION
+    mode_topic: /llm_vision/interaction_mode
+    route_candidates_topic: /llm_vision/hrrt_route_candidates
+    hrrt_seed: 17
+    hrrt_max_iterations: 300
+    hrrt_max_candidates: 8
+    hrrt_max_total_nodes: 3000
+    hrrt_max_nodes_per_key: 120
+    route_nominal_speed_mps: 0.5
     operator_command_topic: /llm_vision/operator_command
     approval_topic: /llm_vision/mission_approval
     launch_approval_topic: /llm_vision/launch_approval
@@ -135,6 +176,15 @@ interactive_mission_gateway:
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
     sim_obstacle_topic: /llm_vision/sim_obstacles
     nominal_obstacle_topic: /llm_vision/nominal_obstacles
+    ground_truth_obstacle_topic: /llm_vision/ground_truth_obstacles
+    # Real ACP mode requires this JSON to be overridden with measured object
+    # dimensions; use the exact Vicon topics documented in HARDWARE_TESTING_README.md.
+    vicon_objects_json: "[]"
+    vicon_vehicle_topic: /vicon/Starling2/Starling2
+    vicon_vehicle_frame_convention: flu
+    vicon_frame_calibration_samples: 20
+    vicon_frame_sync_tolerance_s: 0.10
+    vicon_fresh_data_timeout_s: 0.25
     mission_state_topic: /llm_vision/mission_state
     pose_topic: /fmu/out/vehicle_odometry
     prompt_topic: /llm_vision/prompt
@@ -142,8 +192,8 @@ interactive_mission_gateway:
     passed_plan_topic: /llm_vision/plan_verified
     required_mission_state: HOLDING_FOR_PLAN
     require_mission_state: True
-    workspace_x_min: -3.0
-    workspace_x_max: 3.0
+    workspace_x_min: -4.0
+    workspace_x_max: 4.0
     workspace_y_min: -3.0
     workspace_y_max: 3.0
     fixed_z: -0.5
@@ -161,16 +211,17 @@ interactive_mission_gateway:
     scene_position_tolerance_m: 0.20
     scene_size_tolerance_m: 0.30
     obs_safety_bracket: conformal
-    vision_error_calibration_csv: fine_tuning/datasets/calibration_vision_error_dummy.csv
+    vision_error_calibration_csv: test/fixtures/calibration_vision_error_dummy.csv
     vision_error_delta: 0.10
     max_start_drift_m: 0.25
     # Keep margin below the executor's 0.10 m verified-plan start limit.
     max_release_start_drift_m: 0.08
-    max_planning_attempts: 3
+    max_planning_attempts: 2
     debug: True
 
 interactive_web_ui:
   ros__parameters:
+    environment: real
     host: 127.0.0.1
     port: 8080
     operator_command_topic: /llm_vision/operator_command
@@ -179,13 +230,21 @@ interactive_web_ui:
     operator_response_topic: /llm_vision/operator_response
     mission_proposal_topic: /llm_vision/mission_proposal
     launch_proposal_topic: /llm_vision/launch_proposal
+    mode_topic: /llm_vision/interaction_mode
+    route_candidates_topic: /llm_vision/hrrt_route_candidates
+    semantic_obstacle_topic: /llm_vision/semantic_obstacles
+    sim_obstacle_topic: /llm_vision/sim_obstacles
+    ground_truth_obstacle_topic: /llm_vision/ground_truth_obstacles
+    raw_plan_topic: /llm_vision/plan_raw
+    refined_plan_topic: /llm_vision/plan_refined
+    verified_plan_topic: /llm_vision/plan_candidate_verified
     visualizer: contraction
     transcription_model: gpt-4o-mini-transcribe
     contraction_plot_path: src/llm_vision_planner/plots/contraction/live_contraction.png
 
 dataset_scene_publisher:
   ros__parameters:
-    dataset_csv: fine_tuning/datasets/env_ros_commands.csv
+    dataset_csv: test/fixtures/env_ros_commands.csv
     sample_id: 4
     publish_hz: 2.0
     # Preserve the diverse COCO labels recorded in env_ros_commands.csv.
@@ -196,43 +255,61 @@ dataset_scene_publisher:
     mission_state_topic: /llm_vision/mission_state
     publish_mission_state: False
 
-vision_error_dataset_generator:
+residual_calibration_recorder:
   ros__parameters:
     nominal_obstacle_topic: /llm_vision/nominal_obstacles
     calibration_status_topic: /llm_vision/vision_calibration_status
     trial_id: unset
-    output_csv: fine_tuning/datasets/calibration_vision_error.csv
+    output_csv: fine_tuning/datasets/calibration_residual_raw.csv
     # The calibration-only launch overrides these convenient single-object fields.
     object_id: obj-1
     object_label: chair
     object_vicon_topic: /vicon/chair1/chair1
     object_width_m: 0.0
     object_depth_m: 0.0
-    # Identity is used when Tracker's object origin/axes are aligned to the
-    # physical footprint. Advanced deployments can provide the old rigid transform.
-    marker_to_object_json: "{}"
-    # Optional advanced multi-object configuration. A non-empty list takes
-    # precedence over the single-object fields above.
+    # Optional multi-object configuration. A non-empty list takes precedence
+    # over the single-object fields above.
     vicon_objects_json: "[]"
-    # Automatically derive Vicon-world -> local NED from synchronized Starling
-    # Vicon and PX4 VehicleOdometry poses. Manual JSON remains a fallback only.
-    auto_vicon_world_to_ned: True
-    vicon_world_to_ned_json: "{}"
     vicon_vehicle_topic: /vicon/Starling2/Starling2
     vicon_vehicle_frame_convention: flu
     pose_topic: /fmu/out/vehicle_odometry
     frame_sync_tolerance_s: 0.10
     frame_calibration_samples: 20
-    frame_max_translation_deviation_m: 0.15
-    frame_max_rotation_deviation_deg: 5.0
-    derived_transform_output_json: ""
     sync_tolerance_s: 0.10
+    # Added to Vicon header stamps (a bag recorded on another computer's clock).
+    vicon_time_offset_s: 0.0
     match_distance_m: 0.75
-    continuous_recording: False
     object_stability_window_s: 0.50
     object_stability_min_samples: 5
     object_stability_position_tolerance_m: 0.02
-    object_stability_yaw_tolerance_deg: 2.0
+    # A new capture is written only when at least one Vicon object exceeds
+    # either threshold relative to the last accepted complete environment.
+    capture_position_change_threshold_m: 0.15
+    capture_yaw_change_threshold_rad: 0.261799
+
+# Offline calibration verifier gateway.  It intentionally reads a refined CSV
+# instead of subscribing to ROS perception topics; command-line arguments can
+# override these values for a particular capture and planner service.
+calibration_verifier_gateway:
+  ros__parameters:
+    dataset: fine_tuning/datasets/calibration_residual_raw_person_outline.csv
+    row: 2
+    host: 127.0.0.1
+    port: 8091
+    planner_provider: mock
+    intent_provider: openai
+    intent_model: gpt-5.4-nano
+    vllm_base_url: http://127.0.0.1:8000/v1
+    llama_model: hrrt_planner
+    fixed_z: -0.5
+    clearance_m: 0.40
+    default_standoff_m: 0.60
+    goal_sample_resolution_m: 0.10
+    default_goal_range_half_width_m: 0.15
+    exact_goal_distance_tolerance_m: 0.10
+    hrrt_iterations: 300
+    max_candidates: 8
+    max_waypoints: 8
 
 llm_planner:
   ros__parameters:
@@ -241,7 +318,8 @@ llm_planner:
     model_name: gpt-5.4-nano
     llm_provider: llama
     chatgpt_model_name: gpt-5.4-nano
-    llama_model_name: rrt_planner
+    # Must match the model alias exposed by the OpenAI-compatible Llama server.
+    llama_model_name: hrrt_planner
     vllm_base_url: http://172.22.224.93:8000/v1
     vllm_api_key: EMPTY
     goal_tolerance_m: 0.05
@@ -287,8 +365,8 @@ planner_visualizer:
     static_plot_dpi: 180
     static_plot_prefix: simulated_test
     fixed_z: -0.5
-    workspace_x_min: -3.0
-    workspace_x_max: 3.0
+    workspace_x_min: -4.0
+    workspace_x_max: 4.0
     workspace_y_min: -3.0
     workspace_y_max: 3.0
     show_rrt: True
@@ -307,8 +385,8 @@ verify_contraction:
     semantic_obstacle_topic: /llm_vision/semantic_obstacles
     sim_obstacle_topic: /llm_vision/sim_obstacles
     pose_topic: /fmu/out/vehicle_odometry
-    workspace_x_min: -3.0
-    workspace_x_max: 3.0
+    workspace_x_min: -4.0
+    workspace_x_max: 4.0
     workspace_y_min: -3.0
     workspace_y_max: 3.0
     output_png: src/llm_vision_planner/plots/contraction/live_contraction.png
@@ -318,7 +396,7 @@ verify_contraction:
     trajectory_dt: 0.1
     max_horizontal_speed_mps: 0.5
     max_horizontal_acceleration_mps2: 0.5
-    calibration_csv: fine_tuning/datasets/calibration_min_control_qp_position_score_with_limits_2000.csv
+    calibration_csv: config/certificates/calibration_min_control_qp_position_score_with_limits_2000.csv
     calibration_samples: 2000
     # Blue tube radius q_p is the (1 - delta_p) quantile of calibrated position errors.
     delta_p: 0.10

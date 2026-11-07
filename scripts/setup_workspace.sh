@@ -11,7 +11,7 @@ if ! command -v vcs >/dev/null 2>&1; then
   exit 1
 fi
 
-vcs import src < dependencies.repos
+vcs import . < dependencies.repos
 
 ignored_paths=(
   "$ROOT_DIR/src/voxl-mpa-to-ros2/colcon_ws/src/voxl_mpa_to_ros2"

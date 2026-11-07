@@ -1,0 +1,92 @@
+{
+  "stage": "preflight",
+  "passed": true,
+  "dataset": {
+    "passed": true,
+    "splits": {
+      "train": {
+        "path": "/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/calibrated_vertical_dss/teacher_only_80_10_10/hrrt_sft_train.csv",
+        "rows": 21114,
+        "waypoint_rows": 21114,
+        "scene_count": 3200,
+        "original_waypoint_count": {
+          "minimum": 3,
+          "maximum": 11,
+          "mean": 4.418584825234442
+        },
+        "coordinate_error_count": 0,
+        "coordinate_error_examples": []
+      },
+      "validation": {
+        "path": "/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/calibrated_vertical_dss/teacher_only_80_10_10/hrrt_sft_validation.csv",
+        "rows": 2688,
+        "waypoint_rows": 2688,
+        "scene_count": 400,
+        "original_waypoint_count": {
+          "minimum": 3,
+          "maximum": 13,
+          "mean": 4.447544642857143
+        },
+        "coordinate_error_count": 0,
+        "coordinate_error_examples": []
+      },
+      "test": {
+        "path": "/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/datasets/calibrated_vertical_dss/teacher_only_80_10_10/hrrt_sft_test.csv",
+        "rows": 2598,
+        "waypoint_rows": 2598,
+        "scene_count": 400,
+        "original_waypoint_count": {
+          "minimum": 3,
+          "maximum": 10,
+          "mean": 4.496920708237106
+        },
+        "coordinate_error_count": 0,
+        "coordinate_error_examples": []
+      }
+    },
+    "scene_overlap_examples": {
+      "train_validation": [],
+      "train_test": [],
+      "validation_test": []
+    }
+  },
+  "tiny_overfit": {
+    "passed": true,
+    "samples": 8,
+    "updates": 250,
+    "learning_rate_multiplier": 5.0,
+    "initial_loss_m": 1.4096930027008057,
+    "final_loss_m": 0.07805471867322922,
+    "best_observed_loss_m": 0.07697789371013641,
+    "relative_loss_reduction": 0.9446299878599911,
+    "required_relative_reduction": 0.5,
+    "output_shape": [
+      8,
+      8,
+      2
+    ],
+    "expected_output_shape": [
+      8,
+      8,
+      2
+    ],
+    "output_shape_correct": true,
+    "gradient_norms": {
+      "text_encoder": 0.11871989316097917,
+      "scene_projection": 0.020556056889770507,
+      "fusion_transformer": 0.1540378651094743,
+      "waypoint_decoder": 0.593877871156584,
+      "coordinate_head": 5.698708692477512,
+      "text_projection": 0.053724698212671194,
+      "scene_position_embedding": 0.0008491665203914061,
+      "modality_embedding": 0.0061138149624926355,
+      "route_queries": 0.4803020656108856
+    },
+    "sensitivity": {
+      "text_change_normalized_waypoint_delta": 0.06208039075136185,
+      "scene_change_normalized_waypoint_delta": 0.0009496859856881201,
+      "text_response_nonzero": true,
+      "scene_response_nonzero": true
+    }
+  }
+}

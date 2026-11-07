@@ -1,0 +1,802 @@
+[
+  {
+    "euclidean_imitation_loss_m": 0.6183007260163625,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.7194940476190477,
+    "epoch": 1,
+    "train_euclidean_imitation_loss_m": 1.1516735458012783
+  },
+  {
+    "euclidean_imitation_loss_m": 0.45265150992643266,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.7284226190476191,
+    "epoch": 2,
+    "train_euclidean_imitation_loss_m": 0.5570190291513096
+  },
+  {
+    "euclidean_imitation_loss_m": 0.4212759279069446,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.7965029761904762,
+    "epoch": 3,
+    "train_euclidean_imitation_loss_m": 0.44835937515352714
+  },
+  {
+    "euclidean_imitation_loss_m": 0.4075149389959517,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8046875,
+    "epoch": 4,
+    "train_euclidean_imitation_loss_m": 0.41749192239208655
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3987534273238409,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.7421875,
+    "epoch": 5,
+    "train_euclidean_imitation_loss_m": 0.39940363482543917
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3699066035804294,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8311011904761905,
+    "epoch": 6,
+    "train_euclidean_imitation_loss_m": 0.3836356041332086
+  },
+  {
+    "euclidean_imitation_loss_m": 0.35468157806566786,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8303571428571429,
+    "epoch": 7,
+    "train_euclidean_imitation_loss_m": 0.3627134863400098
+  },
+  {
+    "euclidean_imitation_loss_m": 0.34385837543578374,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.7831101190476191,
+    "epoch": 8,
+    "train_euclidean_imitation_loss_m": 0.3495129912640109
+  },
+  {
+    "euclidean_imitation_loss_m": 0.33795572888283504,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8396577380952381,
+    "epoch": 9,
+    "train_euclidean_imitation_loss_m": 0.34133627464373906
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3195374214223453,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8117559523809523,
+    "epoch": 10,
+    "train_euclidean_imitation_loss_m": 0.3324595671485771
+  },
+  {
+    "euclidean_imitation_loss_m": 0.32820795547394527,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8218005952380952,
+    "epoch": 11,
+    "train_euclidean_imitation_loss_m": 0.3312531268732114
+  },
+  {
+    "euclidean_imitation_loss_m": 0.30792737149056937,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8154761904761905,
+    "epoch": 12,
+    "train_euclidean_imitation_loss_m": 0.3225633547161565
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3123870939016342,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8229166666666666,
+    "epoch": 13,
+    "train_euclidean_imitation_loss_m": 0.32122957209746045
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3177853985911324,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.7912946428571429,
+    "epoch": 14,
+    "train_euclidean_imitation_loss_m": 0.31666815983075086
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3242797145531291,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8444940476190477,
+    "epoch": 15,
+    "train_euclidean_imitation_loss_m": 0.31469852083334415
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3061730716200102,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8411458333333334,
+    "epoch": 16,
+    "train_euclidean_imitation_loss_m": 0.31289865776444925
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3092269276579221,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8381696428571429,
+    "epoch": 17,
+    "train_euclidean_imitation_loss_m": 0.31100010143762286
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3140180873728934,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8273809523809523,
+    "epoch": 18,
+    "train_euclidean_imitation_loss_m": 0.31489819453069656
+  },
+  {
+    "euclidean_imitation_loss_m": 0.33065433197078253,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8697916666666666,
+    "epoch": 19,
+    "train_euclidean_imitation_loss_m": 0.3054041783692259
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3016568227183251,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8370535714285714,
+    "epoch": 20,
+    "train_euclidean_imitation_loss_m": 0.30660253850122293
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3222404870958555,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8590029761904762,
+    "epoch": 21,
+    "train_euclidean_imitation_loss_m": 0.3027915907289946
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2923906250368981,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8366815476190477,
+    "epoch": 22,
+    "train_euclidean_imitation_loss_m": 0.3026714069712343
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3027611594824564,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8255208333333334,
+    "epoch": 23,
+    "train_euclidean_imitation_loss_m": 0.2992526159029115
+  },
+  {
+    "euclidean_imitation_loss_m": 0.29996785344112487,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8444940476190477,
+    "epoch": 24,
+    "train_euclidean_imitation_loss_m": 0.2971959382747159
+  },
+  {
+    "euclidean_imitation_loss_m": 0.3046037533453533,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8385416666666666,
+    "epoch": 25,
+    "train_euclidean_imitation_loss_m": 0.29569584281381334
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2924171019168127,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8549107142857143,
+    "epoch": 26,
+    "train_euclidean_imitation_loss_m": 0.29345994738466813
+  },
+  {
+    "euclidean_imitation_loss_m": 0.296731839577357,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8523065476190477,
+    "epoch": 27,
+    "train_euclidean_imitation_loss_m": 0.2952095184362296
+  },
+  {
+    "euclidean_imitation_loss_m": 0.30101666741427924,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8456101190476191,
+    "epoch": 28,
+    "train_euclidean_imitation_loss_m": 0.2938754019525015
+  },
+  {
+    "euclidean_imitation_loss_m": 0.30126561508292243,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8404017857142857,
+    "epoch": 29,
+    "train_euclidean_imitation_loss_m": 0.2922595639797774
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2914623983559154,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8463541666666666,
+    "epoch": 30,
+    "train_euclidean_imitation_loss_m": 0.289452007808017
+  },
+  {
+    "euclidean_imitation_loss_m": 0.30369310613189426,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8422619047619048,
+    "epoch": 31,
+    "train_euclidean_imitation_loss_m": 0.290044061771848
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28749819774003255,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8552827380952381,
+    "epoch": 32,
+    "train_euclidean_imitation_loss_m": 0.28964893776133205
+  },
+  {
+    "euclidean_imitation_loss_m": 0.29787481008541017,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8303571428571429,
+    "epoch": 33,
+    "train_euclidean_imitation_loss_m": 0.2885938418746898
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2895112633705139,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8541666666666666,
+    "epoch": 34,
+    "train_euclidean_imitation_loss_m": 0.2871610283512961
+  },
+  {
+    "euclidean_imitation_loss_m": 0.300066046771549,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8311011904761905,
+    "epoch": 35,
+    "train_euclidean_imitation_loss_m": 0.28518636084415694
+  },
+  {
+    "euclidean_imitation_loss_m": 0.282343351770015,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8567708333333334,
+    "epoch": 36,
+    "train_euclidean_imitation_loss_m": 0.28594404306601395
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28254631090731847,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8433779761904762,
+    "epoch": 37,
+    "train_euclidean_imitation_loss_m": 0.2852824234149673
+  },
+  {
+    "euclidean_imitation_loss_m": 0.29059099441482905,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8690476190476191,
+    "epoch": 38,
+    "train_euclidean_imitation_loss_m": 0.28350490979624515
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28685163529146285,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8549107142857143,
+    "epoch": 39,
+    "train_euclidean_imitation_loss_m": 0.28214547175801163
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2849406397768429,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8407738095238095,
+    "epoch": 40,
+    "train_euclidean_imitation_loss_m": 0.2818172765274843
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28517753205129076,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8616071428571429,
+    "epoch": 41,
+    "train_euclidean_imitation_loss_m": 0.28117435074439556
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2844678426072711,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8552827380952381,
+    "epoch": 42,
+    "train_euclidean_imitation_loss_m": 0.27953867685388434
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28656039138635,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8556547619047619,
+    "epoch": 43,
+    "train_euclidean_imitation_loss_m": 0.27903102705198707
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2841287042413439,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8578869047619048,
+    "epoch": 44,
+    "train_euclidean_imitation_loss_m": 0.2777955321990179
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2919246078956695,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8616071428571429,
+    "epoch": 45,
+    "train_euclidean_imitation_loss_m": 0.2767764531979055
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28540146067028954,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8511904761904762,
+    "epoch": 46,
+    "train_euclidean_imitation_loss_m": 0.2767847608097575
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2817225729425748,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8671875,
+    "epoch": 47,
+    "train_euclidean_imitation_loss_m": 0.2745780622078614
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28728741726705004,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8504464285714286,
+    "epoch": 48,
+    "train_euclidean_imitation_loss_m": 0.27558972989067887
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28368697812159854,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8571428571428571,
+    "epoch": 49,
+    "train_euclidean_imitation_loss_m": 0.27252955971793696
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2873523284991582,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8649553571428571,
+    "epoch": 50,
+    "train_euclidean_imitation_loss_m": 0.27254459934704234
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28208887860888526,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8545386904761905,
+    "epoch": 51,
+    "train_euclidean_imitation_loss_m": 0.2725558355224855
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2881479784846306,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8519345238095238,
+    "epoch": 52,
+    "train_euclidean_imitation_loss_m": 0.26941442967138507
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28166901284740087,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8604910714285714,
+    "epoch": 53,
+    "train_euclidean_imitation_loss_m": 0.268428763713349
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2798674801985423,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8545386904761905,
+    "epoch": 54,
+    "train_euclidean_imitation_loss_m": 0.2677800633916349
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2853405365631694,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8519345238095238,
+    "epoch": 55,
+    "train_euclidean_imitation_loss_m": 0.2686275765299797
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2823207619644347,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8523065476190477,
+    "epoch": 56,
+    "train_euclidean_imitation_loss_m": 0.2664334263426788
+  },
+  {
+    "euclidean_imitation_loss_m": 0.27750440474067417,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8586309523809523,
+    "epoch": 57,
+    "train_euclidean_imitation_loss_m": 0.26504561380680763
+  },
+  {
+    "euclidean_imitation_loss_m": 0.283113932680516,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8545386904761905,
+    "epoch": 58,
+    "train_euclidean_imitation_loss_m": 0.2637224374395428
+  },
+  {
+    "euclidean_imitation_loss_m": 0.280801269979704,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8630952380952381,
+    "epoch": 59,
+    "train_euclidean_imitation_loss_m": 0.2629387918521057
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2863714907850538,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8552827380952381,
+    "epoch": 60,
+    "train_euclidean_imitation_loss_m": 0.26186922518818667
+  },
+  {
+    "euclidean_imitation_loss_m": 0.27763527170533225,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8586309523809523,
+    "epoch": 61,
+    "train_euclidean_imitation_loss_m": 0.2644829709534392
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2846273964359647,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8578869047619048,
+    "epoch": 62,
+    "train_euclidean_imitation_loss_m": 0.2599181302004691
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2811569997242519,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8630952380952381,
+    "epoch": 63,
+    "train_euclidean_imitation_loss_m": 0.260359103379376
+  },
+  {
+    "euclidean_imitation_loss_m": 0.27959562767119633,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8575148809523809,
+    "epoch": 64,
+    "train_euclidean_imitation_loss_m": 0.25824190232564104
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2788113039873895,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8530505952380952,
+    "epoch": 65,
+    "train_euclidean_imitation_loss_m": 0.2576415540029605
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2826215546755564,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8630952380952381,
+    "epoch": 66,
+    "train_euclidean_imitation_loss_m": 0.25645959206828567
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2772914745977947,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8645833333333334,
+    "epoch": 67,
+    "train_euclidean_imitation_loss_m": 0.255425386446895
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2786071275671323,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8686755952380952,
+    "epoch": 68,
+    "train_euclidean_imitation_loss_m": 0.2551081686421777
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28253145657834555,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8709077380952381,
+    "epoch": 69,
+    "train_euclidean_imitation_loss_m": 0.25339163410844223
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28159154809656595,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8552827380952381,
+    "epoch": 70,
+    "train_euclidean_imitation_loss_m": 0.2530974460822163
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28071935368435724,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8563988095238095,
+    "epoch": 71,
+    "train_euclidean_imitation_loss_m": 0.2518063729120926
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2842181378177234,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8534226190476191,
+    "epoch": 72,
+    "train_euclidean_imitation_loss_m": 0.25047736044860247
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28948086890436353,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8537946428571429,
+    "epoch": 73,
+    "train_euclidean_imitation_loss_m": 0.2508236427650307
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28867999003047035,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8586309523809523,
+    "epoch": 74,
+    "train_euclidean_imitation_loss_m": 0.24890912052131062
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2834705064694087,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8597470238095238,
+    "epoch": 75,
+    "train_euclidean_imitation_loss_m": 0.24761159754160678
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2844571527980623,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8608630952380952,
+    "epoch": 76,
+    "train_euclidean_imitation_loss_m": 0.24558865012544573
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28516089064734323,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8604910714285714,
+    "epoch": 77,
+    "train_euclidean_imitation_loss_m": 0.24496844983236357
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2824541724153927,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8612351190476191,
+    "epoch": 78,
+    "train_euclidean_imitation_loss_m": 0.24380211670967666
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28754183437143055,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8530505952380952,
+    "epoch": 79,
+    "train_euclidean_imitation_loss_m": 0.242890254927404
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28792991098903475,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8597470238095238,
+    "epoch": 80,
+    "train_euclidean_imitation_loss_m": 0.2428662561218847
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28830375983601525,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.859375,
+    "epoch": 81,
+    "train_euclidean_imitation_loss_m": 0.2421610519967296
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2904247173241207,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8578869047619048,
+    "epoch": 82,
+    "train_euclidean_imitation_loss_m": 0.24092713025483217
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28928237834147047,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8519345238095238,
+    "epoch": 83,
+    "train_euclidean_imitation_loss_m": 0.2407755439141483
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2886935029001463,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8619791666666666,
+    "epoch": 84,
+    "train_euclidean_imitation_loss_m": 0.24006528056254892
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2849104610227403,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8590029761904762,
+    "epoch": 85,
+    "train_euclidean_imitation_loss_m": 0.23891175677153198
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28733458263533457,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8582589285714286,
+    "epoch": 86,
+    "train_euclidean_imitation_loss_m": 0.23896842782921862
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2886314853316262,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8597470238095238,
+    "epoch": 87,
+    "train_euclidean_imitation_loss_m": 0.23794401747485003
+  },
+  {
+    "euclidean_imitation_loss_m": 0.29013390874578837,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8578869047619048,
+    "epoch": 88,
+    "train_euclidean_imitation_loss_m": 0.23768876690530416
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2869173621847516,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.859375,
+    "epoch": 89,
+    "train_euclidean_imitation_loss_m": 0.23732296532076416
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2866955225666364,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8627232142857143,
+    "epoch": 90,
+    "train_euclidean_imitation_loss_m": 0.23674484432646722
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28815708344890956,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8571428571428571,
+    "epoch": 91,
+    "train_euclidean_imitation_loss_m": 0.2365543533342354
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28794810317811514,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8575148809523809,
+    "epoch": 92,
+    "train_euclidean_imitation_loss_m": 0.2365080920584274
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28865573271399453,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8604910714285714,
+    "epoch": 93,
+    "train_euclidean_imitation_loss_m": 0.23586633358940934
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28889050476607825,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8612351190476191,
+    "epoch": 94,
+    "train_euclidean_imitation_loss_m": 0.23502659630594833
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28893971052907763,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8601190476190477,
+    "epoch": 95,
+    "train_euclidean_imitation_loss_m": 0.2355484798211943
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28926709365277065,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.859375,
+    "epoch": 96,
+    "train_euclidean_imitation_loss_m": 0.23514527251774614
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2892779175724302,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8604910714285714,
+    "epoch": 97,
+    "train_euclidean_imitation_loss_m": 0.2347065699822975
+  },
+  {
+    "euclidean_imitation_loss_m": 0.289303363433906,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8604910714285714,
+    "epoch": 98,
+    "train_euclidean_imitation_loss_m": 0.2352025305908738
+  },
+  {
+    "euclidean_imitation_loss_m": 0.2892403716132754,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8604910714285714,
+    "epoch": 99,
+    "train_euclidean_imitation_loss_m": 0.23461079643757055
+  },
+  {
+    "euclidean_imitation_loss_m": 0.28926156283844084,
+    "conformity_quantile": Infinity,
+    "safety_radius_m": Infinity,
+    "verification_pass_rate": 0.8604910714285714,
+    "epoch": 100,
+    "train_euclidean_imitation_loss_m": 0.23513307021648594
+  }
+]

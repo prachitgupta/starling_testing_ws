@@ -1,0 +1,10 @@
+{
+  "status": "complete",
+  "stopping_condition_met": false,
+  "best_safety_radius_m": Infinity,
+  "best_checkpoint": "/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/final-transformer-vertical-teacher_only_80_10_10/model/checkpoint-epoch-001",
+  "best_euclidean_loss_m": 0.2772914745977947,
+  "best_euclidean_checkpoint": "/projects/bhkj/pgupta12/starling_multiple_trajectory_idea/src/llm_vision_planner/fine_tuning/outputs/final-transformer-vertical-teacher_only_80_10_10/model/checkpoint-epoch-067",
+  "completed_epochs": 100,
+  "safety_radius_threshold_m": 0.4
+}

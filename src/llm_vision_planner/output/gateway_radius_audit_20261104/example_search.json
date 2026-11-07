@@ -1,0 +1,27 @@
+[
+  {
+    "row": 15,
+    "goal": {
+      "x": -1.0,
+      "y": -0.6,
+      "z": -0.5
+    },
+    "modes": {
+      "env_uncertainty": "monotonic_goal_progress",
+      "planner_only": "monotonic_goal_progress"
+    }
+  },
+  {
+    "row": 15,
+    "goal": {
+      "x": -0.45,
+      "y": 2.4,
+      "z": -0.5
+    },
+    "modes": {
+      "env_uncertainty": "passed",
+      "planner_only": "passed"
+    },
+    "expert_reason": "passed"
+  }
+]

@@ -16,7 +16,7 @@ from std_msgs.msg import String
 PROMPT_TOPIC = "/llm_vision/prompt"
 PLAN_TOPIC = "/llm_vision/plan_raw"
 MODEL_NAME = "gpt-5-mini"
-LLAMA_MODEL_NAME = "rrt_planner"
+LLAMA_MODEL_NAME = "hrrt_planner"
 VLLM_BASE_URL = "http://172.22.224.93:8000/v1"
 GOAL_TOLERANCE_M = 0.05
 PROMPT_QOS = QoSProfile(
@@ -42,7 +42,9 @@ class Waypoint(BaseModel):
 class WaypointPlan(BaseModel):
     reasoning: str = Field(
         ...,
-        description="2-3 concise statements explaining obstacle-avoidance routing.",
+        description=(
+            "Concise deployment-visible rationale using Preference, Geometry, Decision, and Safety fields."
+        ),
     )
     waypoints: List[Waypoint] = Field(
         ...,
@@ -170,6 +172,9 @@ class LLMPlanner(Node):
             "vision_error_calibration_csv",
             "vision_error_calibration_placeholder",
             "scene_guard_band_m",
+            "interaction_mode",
+            "route_preference_text",
+            "selected_expert_route",
         ):
             if field in payload:
                 result[field] = payload[field]

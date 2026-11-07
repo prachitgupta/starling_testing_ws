@@ -9,8 +9,10 @@ import math
 import os
 import queue
 import re
+import sys
 import time
 import uuid
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal, Optional
@@ -18,10 +20,37 @@ from typing import Literal, Optional
 import rclpy
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
+from geometry_msgs.msg import TransformStamped
 from px4_msgs.msg import VehicleOdometry
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import String
+
+try:
+    from hrrt_star import plan_hrrt_star
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
+    from hrrt_star import plan_hrrt_star
+
+try:
+    from residual_calibration_recorder import (
+        average_transforms,
+        ground_truth_aabb,
+        parse_objects,
+        px4_pose,
+        transform_pose,
+        world_to_ned_candidate,
+    )
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
+    from residual_calibration_recorder import (
+        average_transforms,
+        ground_truth_aabb,
+        parse_objects,
+        px4_pose,
+        transform_pose,
+        world_to_ned_candidate,
+    )
 
 
 INSTRUCTIONS = (
@@ -115,6 +144,96 @@ class MissionIntent(BaseModel):
     query_object_ids: list[str] = Field(default_factory=list, max_length=8)
     depth_estimates: list[ObjectDepthEstimate] = Field(default_factory=list, max_length=32)
     clarifying_question: str
+
+
+class RouteSelection(BaseModel):
+    """Schema-constrained choice from a finite HRRT-star route family."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["SELECTED", "NEEDS_CLARIFICATION", "NO_FEASIBLE_ROUTE"]
+    selected_route_id: Optional[str] = None
+    reason: str
+    clarifying_question: str
+
+
+ROUTE_SELECTION_SYSTEM_PROMPT = """You select one route from a finite verified route catalog.
+Apply the operator's natural-language preferences to the supplied human-readable route cards.
+Never invent a route ID. Select only a supplied route_id.
+Treat explicit limits such as maximum duration as hard constraints.
+If the request contains competing objectives and does not state their priority, return
+NEEDS_CLARIFICATION with one concise question. If no route meets a hard constraint, return
+NO_FEASIBLE_ROUTE and explain why. Do not generate coordinates or a new route.
+"""
+
+
+class OpenAIRouteSelector:
+    def __init__(self, model_name):
+        if not os.getenv("OPENAI_API_KEY"):
+            raise RuntimeError("OPENAI_API_KEY is not set")
+        self.model_name = model_name
+        self.client = OpenAI()
+
+    def select(self, operator_text, route_cards, conversation):
+        response = self.client.responses.parse(
+            model=self.model_name,
+            input=[
+                {"role": "system", "content": ROUTE_SELECTION_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "route_preference": operator_text,
+                            "route_cards": route_cards,
+                            "conversation": conversation[-6:],
+                        },
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+            text_format=RouteSelection,
+        )
+        if response.output_parsed is None:
+            raise RuntimeError("OpenAI returned no parsed RouteSelection")
+        return response.output_parsed
+
+
+class MockRouteSelector:
+    """Deterministic selector for simulation and integration tests."""
+
+    def select(self, operator_text, route_cards, conversation):
+        del conversation
+        lowered = operator_text.lower()
+        explicit = next(
+            (card for card in route_cards if str(card["route_id"]).lower() in lowered),
+            None,
+        )
+        if explicit is not None:
+            return RouteSelection(
+                status="SELECTED",
+                selected_route_id=explicit["route_id"],
+                reason="The operator explicitly named this route.",
+                clarifying_question="",
+            )
+        if not route_cards:
+            return RouteSelection(
+                status="NO_FEASIBLE_ROUTE",
+                selected_route_id=None,
+                reason="No candidate route is available.",
+                clarifying_question="",
+            )
+        route = min(route_cards, key=lambda card: float(card["path_length_m"]))
+        if any(term in lowered for term in ("far", "away", "clearance", "wide")):
+            route = max(
+                route_cards,
+                key=lambda card: min(card.get("clearance_by_object_m", {}).values(), default=0.0),
+            )
+        return RouteSelection(
+            status="SELECTED",
+            selected_route_id=route["route_id"],
+            reason="Deterministic mock preference match.",
+            clarifying_question="",
+        )
 
 
 class OpenAIIntentParser:
@@ -270,6 +389,27 @@ class MockIntentParser:
 
 def canonical_json(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def route_cards(routes, nominal_speed_mps=0.5):
+    """Human-readable summaries; topology metadata stays internal to the planner."""
+    speed = max(float(nominal_speed_mps), 1e-6)
+    cards = []
+    for route in routes:
+        clearances = {
+            str(object_id): round(float(distance), 3)
+            for object_id, distance in route.get("minimum_clearance_m", {}).items()
+        }
+        cards.append(
+            {
+                "route_id": str(route["route_id"]),
+                "path_length_m": round(float(route["path_length_m"]), 3),
+                "estimated_duration_s": round(float(route["path_length_m"]) / speed, 2),
+                "clearance_by_object_m": clearances,
+                "minimum_clearance_m": min(clearances.values(), default=None),
+            }
+        )
+    return cards
 
 
 def containment_score(predicted, ground_truth):
@@ -447,6 +587,34 @@ def load_vision_error_certificate(value, delta):
     }
 
 
+def perception_depth_estimates(obstacles):
+    """Depths measured by perception_detection.py, in the GPT estimate format.
+
+    Perception measures the thickness behind the visible front surface
+    (outline_depth.py / obstacle_depth.py) and reports it as
+    measured_depth_along_view_m; the legacy front-surface spread is not a
+    thickness, so it counts as abstaining.
+    """
+    estimates = []
+    for obstacle in obstacles:
+        depth = obstacle.get("measured_depth_along_view_m")
+        method = str(obstacle.get("depth_method", "front_spread"))
+        try:
+            depth = float(depth)
+        except (TypeError, ValueError):
+            depth = math.nan
+        valid = math.isfinite(depth) and depth > 0.0 and method != "front_spread"
+        estimates.append(
+            {
+                "object_id": str(obstacle["object_id"]),
+                "effective_depth_along_view_m": depth if valid else None,
+                "abstained": not valid,
+                "source": f"perception_{method}",
+            }
+        )
+    return estimates
+
+
 def nominal_obstacles_from_depth(obstacles, depth_estimates):
     """Extrude each perceived front segment away from the camera into a nominal footprint."""
     estimates = {}
@@ -454,24 +622,25 @@ def nominal_obstacles_from_depth(obstacles, depth_estimates):
         estimate = raw.model_dump() if isinstance(raw, ObjectDepthEstimate) else dict(raw)
         object_id = str(estimate.get("object_id", ""))
         if not object_id or object_id in estimates:
-            raise ValueError("GPT depth estimates must contain unique detected object IDs")
+            raise ValueError("depth estimates must contain unique detected object IDs")
         estimates[object_id] = estimate
     expected_ids = {str(obstacle["object_id"]) for obstacle in obstacles}
     if set(estimates) != expected_ids:
         missing = sorted(expected_ids - set(estimates))
         extra = sorted(set(estimates) - expected_ids)
-        raise ValueError(f"GPT depth estimates do not match the scene (missing={missing}, extra={extra})")
+        raise ValueError(f"depth estimates do not match the scene (missing={missing}, extra={extra})")
 
     nominal = []
     for obstacle in obstacles:
         object_id = str(obstacle["object_id"])
         estimate = estimates[object_id]
         depth = estimate.get("effective_depth_along_view_m")
+        source = str(estimate.get("source", "gpt_nano"))
         if bool(estimate.get("abstained")) or depth is None:
-            raise ValueError(f"GPT nano abstained from estimating depth for {object_id}")
+            raise ValueError(f"{source} abstained from estimating depth for {object_id}")
         depth = float(depth)
         if not math.isfinite(depth) or depth <= 0.0:
-            raise ValueError(f"GPT nano returned invalid depth for {object_id}")
+            raise ValueError(f"{source} returned invalid depth for {object_id}")
 
         front = obstacle.get("front_surface_center")
         view = obstacle.get("view_axis_xy")
@@ -517,7 +686,7 @@ def nominal_obstacles_from_depth(obstacles, depth_estimates):
             maximum_z - minimum_z,
         ]
         item["effective_depth_along_view_m"] = depth
-        item["depth_estimate_source"] = "gpt_nano"
+        item["depth_estimate_source"] = source
         item["nominal_footprint_corners_xy"] = corners
         nominal.append(item)
     return nominal
@@ -883,7 +1052,15 @@ def describe_goal_relations(relations):
     return "; ".join(descriptions)
 
 
-def build_planner_prompt(start, goal, workspace, obstacles, clearance, goal_relations=None):
+def build_planner_prompt(
+    start,
+    goal,
+    workspace,
+    obstacles,
+    clearance,
+    goal_relations=None,
+    route_preference=None,
+):
     distance = math.hypot(float(goal["x"]) - float(start["x"]), float(goal["y"]) - float(start["y"]))
     nl_env = (
         "Mission state: the UAV has already taken off and is holding hover at the start position. "
@@ -899,6 +1076,8 @@ def build_planner_prompt(start, goal, workspace, obstacles, clearance, goal_rela
             " The deterministic gateway selected the goal to satisfy these approved object-surface "
             f"distance relations: {describe_goal_relations(goal_relations)}."
         )
+    if route_preference:
+        nl_env += f" Approved operator route preference: {route_preference.strip()}"
     constraints = (
         "Constraints:\n"
         f"- all waypoints in NED frame, z must stay {workspace['z']:.2f}\n"
@@ -908,6 +1087,7 @@ def build_planner_prompt(start, goal, workspace, obstacles, clearance, goal_rela
         "- stay within workspace\n"
         "- no waypoint should be within obstacle boxes, walls, or near corners\n"
         "- prefer sparse, smooth, monotonic progress through open space\n"
+        "- reasoning must use: Preference: ... Geometry: ... Decision: ... Safety: ...\n"
         "- return only the structured output requested by the response model"
     )
     return "\n".join((INSTRUCTIONS, nl_env, constraints)), nl_env
@@ -919,9 +1099,21 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("environment", "real")
         self.declare_parameter("intent_provider", "openai")
         self.declare_parameter("openai_intent_model", "gpt-5.4-nano")
+        # perception: thickness measured by perception_detection.py (outline +
+        # ToF); gpt: GPT nano's estimate from the label (original behaviour).
+        self.declare_parameter("nominal_depth_source", "perception")
         self.declare_parameter("planner_llm_provider", "llama")
-        self.declare_parameter("planner_model_name", "rrt_planner")
+        self.declare_parameter("planner_model_name", "hrrt_planner")
         self.declare_parameter("visualizer", "contraction")
+        self.declare_parameter("interaction_mode", "MISSION_EXECUTION")
+        self.declare_parameter("mode_topic", "/llm_vision/interaction_mode")
+        self.declare_parameter("route_candidates_topic", "/llm_vision/hrrt_route_candidates")
+        self.declare_parameter("hrrt_seed", 17)
+        self.declare_parameter("hrrt_max_iterations", 300)
+        self.declare_parameter("hrrt_max_candidates", 8)
+        self.declare_parameter("hrrt_max_total_nodes", 3000)
+        self.declare_parameter("hrrt_max_nodes_per_key", 120)
+        self.declare_parameter("route_nominal_speed_mps", 0.5)
         self.declare_parameter("operator_command_topic", "/llm_vision/operator_command")
         self.declare_parameter("approval_topic", "/llm_vision/mission_approval")
         self.declare_parameter("launch_approval_topic", "/llm_vision/launch_approval")
@@ -933,6 +1125,13 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("semantic_obstacle_topic", "/llm_vision/semantic_obstacles")
         self.declare_parameter("sim_obstacle_topic", "/llm_vision/sim_obstacles")
         self.declare_parameter("nominal_obstacle_topic", "/llm_vision/nominal_obstacles")
+        self.declare_parameter("ground_truth_obstacle_topic", "/llm_vision/ground_truth_obstacles")
+        self.declare_parameter("vicon_objects_json", "[]")
+        self.declare_parameter("vicon_vehicle_topic", "/vicon/Starling2/Starling2")
+        self.declare_parameter("vicon_vehicle_frame_convention", "flu")
+        self.declare_parameter("vicon_frame_calibration_samples", 20)
+        self.declare_parameter("vicon_frame_sync_tolerance_s", 0.10)
+        self.declare_parameter("vicon_fresh_data_timeout_s", 0.25)
         self.declare_parameter("mission_state_topic", "/llm_vision/mission_state")
         self.declare_parameter("pose_topic", "/fmu/out/vehicle_odometry")
         self.declare_parameter("prompt_topic", "/llm_vision/prompt")
@@ -946,8 +1145,8 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("calibration_capture_interval_s", 3.0)
         self.declare_parameter("required_mission_state", "HOLDING_FOR_PLAN")
         self.declare_parameter("require_mission_state", True)
-        self.declare_parameter("workspace_x_min", -3.0)
-        self.declare_parameter("workspace_x_max", 3.0)
+        self.declare_parameter("workspace_x_min", -4.0)
+        self.declare_parameter("workspace_x_max", 4.0)
         self.declare_parameter("workspace_y_min", -3.0)
         self.declare_parameter("workspace_y_max", 3.0)
         self.declare_parameter("fixed_z", -0.5)
@@ -964,12 +1163,12 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("obs_safety_bracket", "conformal")
         self.declare_parameter(
             "vision_error_calibration_csv",
-            "fine_tuning/datasets/calibration_vision_error_dummy.csv",
+            "test/fixtures/calibration_vision_error_dummy.csv",
         )
         self.declare_parameter("vision_error_delta", 0.10)
         self.declare_parameter("max_start_drift_m", 0.25)
         self.declare_parameter("max_release_start_drift_m", 0.08)
-        self.declare_parameter("max_planning_attempts", 3)
+        self.declare_parameter("max_planning_attempts", 2)
         self.declare_parameter("debug", True)
 
         self.environment = str(self.get_parameter("environment").value).strip().lower()
@@ -1030,13 +1229,40 @@ class InteractiveMissionGateway(Node):
         self.latest_mission_state = None
         self.latest_mission_state_received_s = None
         self.current_pose = None
+        self.latest_vicon_ground_truth = None
+        self.latest_vicon_ground_truth_received_s = None
+        self.vicon_world_to_ned = None
+        self.vicon_vehicle_samples = deque(maxlen=100)
+        self.vicon_px4_samples = deque(maxlen=100)
+        self.vicon_frame_candidates = deque(maxlen=100)
+        self.vicon_used_frame_pairs = set()
+        self.vicon_object_poses = {}
+        self.vicon_objects = []
         self.conversation = []
         self.active_mission = None
         self.active_plan_id = None
         self.pending_verified_plan = None
         self.latest_safety_tube_ready = None
+        self.interaction_mode = str(
+            self.get_parameter("interaction_mode").value
+        ).strip().upper()
+        if self.interaction_mode not in (
+            "ADAPTIVE_CONFORMAL_PREDICTION",
+            "MISSION_EXECUTION",
+        ):
+            raise ValueError("interaction_mode must be ADAPTIVE_CONFORMAL_PREDICTION or MISSION_EXECUTION")
+        self.latest_route_family = None
         self.last_failure = None
         self.calibration_only = bool(self.get_parameter("calibration_only").value)
+        self.nominal_depth_source = str(self.get_parameter("nominal_depth_source").value).strip().lower()
+        if self.nominal_depth_source not in ("perception", "gpt"):
+            raise ValueError("nominal_depth_source must be 'perception' or 'gpt'")
+        if (
+            self.calibration_only
+            and self.nominal_depth_source == "gpt"
+            and str(self.get_parameter("intent_provider").value).strip().lower() == "mock"
+        ):
+            raise ValueError("nominal_depth_source 'gpt' needs intent_provider 'openai': the mock parser estimates no depths")
         self.auto_calibration_capture = bool(
             self.get_parameter("auto_calibration_capture").value
         )
@@ -1053,6 +1279,16 @@ class InteractiveMissionGateway(Node):
         self.intent_results = queue.Queue()
         self.intent_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="intent_parser")
         self.intent_parser = intent_parser or self.create_intent_parser()
+        self.route_request_token = None
+        self.route_results = queue.Queue()
+        self.route_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="route_planner")
+        self.route_selector = self.create_route_selector()
+
+        if self.environment == "real":
+            configured_vicon = str(self.get_parameter("vicon_objects_json").value)
+            if json.loads(configured_vicon):
+                self.vicon_objects = parse_objects(configured_vicon)
+                self.vicon_object_poses = {item["topic"]: None for item in self.vicon_objects}
 
         obstacle_topic = (
             str(self.get_parameter("sim_obstacle_topic").value)
@@ -1072,10 +1308,40 @@ class InteractiveMissionGateway(Node):
             self.pose_callback,
             ODOM_QOS,
         )
+        self.ground_truth_obstacle_pub = self.create_publisher(
+            String,
+            str(self.get_parameter("ground_truth_obstacle_topic").value),
+            LATCHED_QOS,
+        )
+        self.vicon_subscriptions = []
+        if self.environment == "real" and self.vicon_objects:
+            self.vicon_subscriptions.append(
+                self.create_subscription(
+                    TransformStamped,
+                    str(self.get_parameter("vicon_vehicle_topic").value),
+                    self.vicon_vehicle_callback,
+                    20,
+                )
+            )
+            self.vicon_subscriptions.extend(
+                self.create_subscription(
+                    TransformStamped,
+                    item["topic"],
+                    lambda message, configured=item: self.vicon_object_callback(configured, message),
+                    20,
+                )
+                for item in self.vicon_objects
+            )
         self.create_subscription(
             String,
             str(self.get_parameter("operator_command_topic").value),
             self.command_callback,
+            10,
+        )
+        self.create_subscription(
+            String,
+            str(self.get_parameter("mode_topic").value),
+            self.mode_callback,
             10,
         )
         self.create_subscription(
@@ -1119,6 +1385,11 @@ class InteractiveMissionGateway(Node):
             str(self.get_parameter("mission_proposal_topic").value),
             LATCHED_QOS,
         )
+        self.route_candidates_pub = self.create_publisher(
+            String,
+            str(self.get_parameter("route_candidates_topic").value),
+            LATCHED_QOS,
+        )
         self.launch_proposal_pub = self.create_publisher(
             String,
             str(self.get_parameter("launch_proposal_topic").value),
@@ -1145,12 +1416,13 @@ class InteractiveMissionGateway(Node):
             LATCHED_QOS,
         )
         self.create_timer(0.05, self.drain_intent_results)
+        self.create_timer(0.05, self.drain_route_results)
         if self.calibration_only and self.auto_calibration_capture:
             self.create_timer(0.20, self.maybe_start_calibration_capture)
         self.get_logger().info(
             f"interactive gateway ready: intent_provider={self.get_parameter('intent_provider').value}, "
             f"obstacles={obstacle_topic}, obs_safety_bracket={self.obs_safety_bracket}, "
-            f"scene_guard_band={self.scene_guard_band_m:.3f} m"
+            f"scene_guard_band={self.scene_guard_band_m:.3f} m, mode={self.interaction_mode}"
         )
         if self.obs_safety_bracket == "conformal" and self.vision_error_certificate["placeholder"]:
             self.get_logger().warning(
@@ -1164,6 +1436,12 @@ class InteractiveMissionGateway(Node):
         if provider != "openai":
             raise ValueError(f"unsupported intent_provider: {provider}")
         return OpenAIIntentParser(str(self.get_parameter("openai_intent_model").value))
+
+    def create_route_selector(self):
+        provider = str(self.get_parameter("intent_provider").value).strip().lower()
+        if provider == "mock":
+            return MockRouteSelector()
+        return OpenAIRouteSelector(str(self.get_parameter("openai_intent_model").value))
 
     def obstacle_safety_metadata(self):
         certificate = self.vision_error_certificate
@@ -1189,14 +1467,22 @@ class InteractiveMissionGateway(Node):
                 raise ValueError(
                     "real conformal missions require a non-placeholder vision calibration dataset"
                 )
-            nominal = nominal_obstacles_from_depth(observed, intent.depth_estimates)
+            nominal = nominal_obstacles_from_depth(observed, self.depth_estimates_for(scene, intent))
         return nominal, inflate_obstacles_xy(nominal, self.scene_guard_band_m)
+
+    def depth_source(self):
+        return getattr(self, "nominal_depth_source", "gpt")
+
+    def depth_estimates_for(self, scene, intent):
+        if self.depth_source() == "perception" and self.environment != "sim":
+            return perception_depth_estimates(scene["obstacles"])
+        return list(intent.depth_estimates)
 
     def calibration_nominal_obstacles(self, scene, intent, mission_nominal):
         if self.obs_safety_bracket != "hardcoded" or self.environment == "sim":
             return mission_nominal
         try:
-            return nominal_obstacles_from_depth(scene["obstacles"], intent.depth_estimates)
+            return nominal_obstacles_from_depth(scene["obstacles"], self.depth_estimates_for(scene, intent))
         except ValueError as exc:
             self.get_logger().warning(
                 f"hardcoded mission remains available, but no calibration snapshot was published: {exc}"
@@ -1209,7 +1495,7 @@ class InteractiveMissionGateway(Node):
         if self.environment == "sim":
             source = "sim_complete_boxes"
         else:
-            source = "gpt_nano_front_footprint"
+            source = f"{'perception' if self.depth_source() == 'perception' else 'gpt_nano'}_front_footprint"
         try:
             observation_timestamp = float(scene.get("timestamp", time.time()))
         except (TypeError, ValueError):
@@ -1225,7 +1511,10 @@ class InteractiveMissionGateway(Node):
             "obstacles": copy.deepcopy(nominal),
             "observed_obstacles": copy.deepcopy(scene["obstacles"]),
             "observer_pose": copy.deepcopy(scene.get("pose")),
-            "depth_estimates": [item.model_dump() for item in intent.depth_estimates],
+            "depth_estimates": [
+                item.model_dump() if isinstance(item, ObjectDepthEstimate) else dict(item)
+                for item in self.depth_estimates_for(scene, intent)
+            ],
             **self.obstacle_safety_metadata(),
         }
         self.nominal_obstacle_pub.publish(String(data=json.dumps(payload)))
@@ -1257,6 +1546,93 @@ class InteractiveMissionGateway(Node):
             "z": float(msg.position[2]),
             "received_s": time.time(),
         }
+        if self.environment == "real" and self.vicon_objects:
+            try:
+                self.vicon_px4_samples.append((time.monotonic(), px4_pose(msg)))
+            except ValueError:
+                return
+            self.try_align_vicon_frame()
+
+    def vicon_vehicle_callback(self, msg):
+        try:
+            self.vicon_vehicle_samples.append((time.monotonic(), transform_pose(msg)))
+        except ValueError:
+            return
+        self.try_align_vicon_frame()
+
+    def try_align_vicon_frame(self):
+        if self.vicon_world_to_ned is not None or not self.vicon_vehicle_samples or not self.vicon_px4_samples:
+            return
+        vicon_time, vicon_pose = self.vicon_vehicle_samples[-1]
+        px4_time, ned_pose = min(self.vicon_px4_samples, key=lambda item: abs(item[0] - vicon_time))
+        if abs(px4_time - vicon_time) > float(self.get_parameter("vicon_frame_sync_tolerance_s").value):
+            return
+        pair = (vicon_time, px4_time)
+        if pair in self.vicon_used_frame_pairs:
+            return
+        self.vicon_used_frame_pairs.add(pair)
+        self.vicon_frame_candidates.append(
+            world_to_ned_candidate(
+                vicon_pose,
+                ned_pose,
+                str(self.get_parameter("vicon_vehicle_frame_convention").value),
+            )
+        )
+        required = int(self.get_parameter("vicon_frame_calibration_samples").value)
+        if len(self.vicon_frame_candidates) < required:
+            return
+        transform, translation_error, rotation_error = average_transforms(
+            list(self.vicon_frame_candidates)[-required:]
+        )
+        if translation_error <= 0.15 and rotation_error <= 5.0:
+            self.vicon_world_to_ned = transform
+            self.get_logger().info(
+                f"Vicon ground-truth frame aligned: translation_error={translation_error:.3f} m, "
+                f"rotation_error={rotation_error:.2f} deg"
+            )
+
+    def vicon_object_callback(self, configured, msg):
+        try:
+            pose = transform_pose(msg)
+        except ValueError:
+            return
+        self.vicon_object_poses[configured["topic"]] = (time.time(), pose)
+        self.publish_vicon_ground_truth()
+
+    def publish_vicon_ground_truth(self):
+        if self.vicon_world_to_ned is None or not self.vicon_objects:
+            return
+        now = time.time()
+        timeout = float(self.get_parameter("vicon_fresh_data_timeout_s").value)
+        obstacles = []
+        for configured in self.vicon_objects:
+            sample = self.vicon_object_poses.get(configured["topic"])
+            if sample is None or now - sample[0] > timeout:
+                return
+            geometry = ground_truth_aabb(configured, sample[1], self.vicon_world_to_ned)
+            dimensions = configured["dimensions"]
+            half_height = 0.5 * float(dimensions[2]) if len(dimensions) == 3 else 0.5
+            obstacles.append(
+                {
+                    "object_id": configured["object_id"],
+                    "label": configured["label"],
+                    "min_corner": [geometry["min_corner"][0], geometry["min_corner"][1], self.fixed_z - half_height],
+                    "max_corner": [geometry["max_corner"][0], geometry["max_corner"][1], self.fixed_z + half_height],
+                    "footprint_corners_xy": geometry["corners"],
+                    "yaw_rad": geometry["yaw"],
+                    "source": "vicon_ground_truth",
+                }
+            )
+        payload = {
+            "healthy": True,
+            "frame": "local_ned",
+            "source": "vicon_ground_truth",
+            "obstacles": obstacles,
+            "timestamp": now,
+        }
+        self.latest_vicon_ground_truth = payload
+        self.latest_vicon_ground_truth_received_s = now
+        self.ground_truth_obstacle_pub.publish(String(data=json.dumps(payload)))
 
     def command_callback(self, msg):
         operator_text = self.command_text(msg.data)
@@ -1265,6 +1641,9 @@ class InteractiveMissionGateway(Node):
             return
         if operator_text.strip().lower() == "cancel":
             self.cancel_active_mission("Mission cancelled by operator.")
+            return
+        if self.state == "AWAITING_TRAJECTORY_SELECTION":
+            self.start_route_selection_request(operator_text)
             return
         if self.intent_request_token is not None:
             self.publish_response("BUSY", "Another command is still being interpreted.")
@@ -1276,6 +1655,35 @@ class InteractiveMissionGateway(Node):
 
         self.start_intent_request(operator_text, copy.deepcopy(self.latest_scene))
         self.publish_response("PARSING_INTENT", "Interpreting the command against the current object snapshot.")
+
+    def mode_callback(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.publish_response("MODE_REJECTED", "Interaction mode must be structured JSON.")
+            return
+        requested = str(payload.get("mode", "")).strip().upper()
+        if requested not in ("ADAPTIVE_CONFORMAL_PREDICTION", "MISSION_EXECUTION"):
+            self.publish_response("MODE_REJECTED", "Unsupported interaction mode.")
+            return
+        if self.state not in (
+            "WAITING_FOR_COMMAND",
+            "CANCELLED",
+            "PLANNING_FAILED",
+            "NO_SAFE_PLAN_FOUND",
+            "SAFETY_TUBE_FAILED",
+        ) or self.intent_request_token is not None or self.route_request_token is not None:
+            self.publish_response("MODE_REJECTED", "Finish or cancel the active mission before changing mode.")
+            return
+        self.interaction_mode = requested
+        self.latest_route_family = None
+        self.state = "WAITING_FOR_COMMAND"
+        self.publish_response(
+            "MODE_CHANGED",
+            "Adaptive conformal prediction mode selected. Goal approval will be followed by route preference selection."
+            if requested == "ADAPTIVE_CONFORMAL_PREDICTION"
+            else "Mission execution mode selected. Approved goals proceed directly to planning.",
+        )
 
     def start_intent_request(self, operator_text, scene):
         token = uuid.uuid4().hex
@@ -1327,7 +1735,7 @@ class InteractiveMissionGateway(Node):
         self.calibration_capture_count += 1
         self.last_calibration_capture_s = now
         scene = copy.deepcopy(self.latest_scene)
-        if not scene["obstacles"]:
+        if not scene["obstacles"] or self.depth_source() == "perception":
             intent = MissionIntent(
                 status="READY",
                 intent_type="QUERY",
@@ -1338,7 +1746,7 @@ class InteractiveMissionGateway(Node):
                 depth_estimates=[],
                 clarifying_question="",
             )
-            self.handle_calibration_intent(intent, scene)
+            self.handle_calibration_intent(intent, scene)   # depths come from perception: no GPT call
             return
         self.start_intent_request("Describe all visible objects for vision calibration.", scene)
         self.publish_response(
@@ -1373,6 +1781,146 @@ class InteractiveMissionGateway(Node):
                 continue
             self.handle_intent(intent, scene, operator_text)
 
+    def start_hrrt_request(self):
+        mission = self.active_mission
+        token = uuid.uuid4().hex
+        self.route_request_token = token
+        self.state = "GENERATING_TRAJECTORIES"
+        future = self.route_executor.submit(
+            plan_hrrt_star,
+            copy.deepcopy(mission["start"]),
+            copy.deepcopy(mission["goal"]),
+            copy.deepcopy(mission["expert_obstacles"]),
+            copy.deepcopy(mission["workspace"]),
+            clearance_m=self.clearance_m,
+            seed=int(self.get_parameter("hrrt_seed").value),
+            max_iterations=int(self.get_parameter("hrrt_max_iterations").value),
+            max_candidates=int(self.get_parameter("hrrt_max_candidates").value),
+            max_total_nodes=int(self.get_parameter("hrrt_max_total_nodes").value),
+            max_nodes_per_key=int(self.get_parameter("hrrt_max_nodes_per_key").value),
+        )
+        future.add_done_callback(
+            lambda completed: self.route_results.put(("FAMILY", token, completed, ""))
+        )
+        self.publish_response(
+            "GENERATING_TRAJECTORIES",
+            "The goal is approved. HRRT-star is generating distinct route and clearance options.",
+            mission_id=mission["mission_id"],
+        )
+
+    def start_route_selection_request(self, operator_text):
+        if self.route_request_token is not None:
+            self.publish_response("BUSY", "A route request is already being processed.")
+            return
+        family = self.latest_route_family or {}
+        routes = family.get("routes", [])
+        if not routes:
+            self.publish_response("NO_FEASIBLE_ROUTE", "No HRRT-star route family is available.")
+            return
+        token = uuid.uuid4().hex
+        self.route_request_token = token
+        self.state = "SELECTING_TRAJECTORY"
+        cards = route_cards(
+            routes,
+            float(self.get_parameter("route_nominal_speed_mps").value),
+        )
+        future = self.route_executor.submit(
+            self.route_selector.select,
+            operator_text,
+            cards,
+            list(self.conversation),
+        )
+        future.add_done_callback(
+            lambda completed: self.route_results.put(
+                ("SELECTION", token, completed, operator_text)
+            )
+        )
+        self.publish_response(
+            "SELECTING_TRAJECTORY",
+            "Matching your preference against the displayed HRRT-star routes.",
+            mission_id=self.active_mission["mission_id"],
+        )
+
+    def drain_route_results(self):
+        while True:
+            try:
+                kind, token, future, operator_text = self.route_results.get_nowait()
+            except queue.Empty:
+                return
+            if token != self.route_request_token:
+                continue
+            self.route_request_token = None
+            try:
+                result = future.result()
+            except Exception as exc:
+                self.state = "AWAITING_APPROVAL" if kind == "FAMILY" else "AWAITING_TRAJECTORY_SELECTION"
+                self.publish_response(
+                    "ROUTE_ERROR",
+                    f"Route {'generation' if kind == 'FAMILY' else 'selection'} failed: {exc}",
+                )
+                continue
+            if kind == "FAMILY":
+                result.update(
+                    {
+                        "mission_id": self.active_mission["mission_id"],
+                        "snapshot_id": self.active_mission["snapshot_id"],
+                        "selected_route_id": None,
+                        "route_cards": route_cards(
+                            result.get("routes", []),
+                            float(self.get_parameter("route_nominal_speed_mps").value),
+                        ),
+                        "observed_obstacles": copy.deepcopy(self.active_mission["observed_obstacles"]),
+                        "ground_truth_obstacles": copy.deepcopy(self.active_mission["expert_obstacles"]),
+                    }
+                )
+                self.latest_route_family = result
+                self.active_mission["hrrt_route_family"] = copy.deepcopy(result)
+                self.state = "AWAITING_TRAJECTORY_SELECTION"
+                self.route_candidates_pub.publish(String(data=json.dumps(result)))
+                self.publish_response(
+                    "AWAITING_TRAJECTORY_SELECTION",
+                    f"Review {len(result.get('routes', []))} route options, then describe which route you prefer.",
+                    mission_id=self.active_mission["mission_id"],
+                    route_count=len(result.get("routes", [])),
+                )
+                continue
+            self.handle_route_selection(result, operator_text)
+
+    def handle_route_selection(self, selection, operator_text):
+        if selection.status != "SELECTED":
+            self.state = "AWAITING_TRAJECTORY_SELECTION"
+            question = selection.clarifying_question or selection.reason
+            self.publish_response(selection.status, question)
+            return
+        routes = (self.latest_route_family or {}).get("routes", [])
+        selected = next(
+            (route for route in routes if route.get("route_id") == selection.selected_route_id),
+            None,
+        )
+        if selected is None:
+            self.state = "AWAITING_TRAJECTORY_SELECTION"
+            self.publish_response(
+                "ROUTE_ERROR",
+                "The selector returned a route that is not in the displayed family.",
+            )
+            return
+        self.conversation.append({"role": "operator", "content": operator_text})
+        self.active_mission["route_preference_text"] = operator_text
+        self.active_mission["selected_expert_route"] = copy.deepcopy(selected)
+        self.active_mission["base_prompt"], self.active_mission["nl_env"] = build_planner_prompt(
+            self.active_mission["start"],
+            self.active_mission["goal"],
+            self.active_mission["workspace"],
+            self.active_mission["obstacles"],
+            self.clearance_m,
+            self.active_mission["goal_relations"],
+            operator_text,
+        )
+        self.latest_route_family["selected_route_id"] = selected["route_id"]
+        self.latest_route_family["selection_reason"] = selection.reason
+        self.route_candidates_pub.publish(String(data=json.dumps(self.latest_route_family)))
+        self.publish_planning_attempt()
+
     def handle_intent(self, intent, scene, operator_text):
         if intent.status == "CANCELLED":
             self.cancel_active_mission("Mission cancelled by parsed operator intent.")
@@ -1401,6 +1949,9 @@ class InteractiveMissionGateway(Node):
             )
             return
         if self.state in (
+            "GENERATING_TRAJECTORIES",
+            "AWAITING_TRAJECTORY_SELECTION",
+            "SELECTING_TRAJECTORY",
             "WAITING_FOR_VERIFICATION",
             "FORMING_SAFETY_TUBES",
             "AWAITING_LAUNCH_APPROVAL",
@@ -1413,6 +1964,11 @@ class InteractiveMissionGateway(Node):
         if error:
             self.publish_response("NOT_READY", error)
             return
+        if self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION" and self.environment == "real":
+            error = self.vicon_ground_truth_context_error()
+            if error:
+                self.publish_response("GROUND_TRUTH_NOT_READY", error)
+                return
         start = self.current_start()
         try:
             nominal_obstacles, planning_obstacles = self.environment_obstacles(scene, intent)
@@ -1420,19 +1976,36 @@ class InteractiveMissionGateway(Node):
             self.publish_response("ENVIRONMENT_UNCERTAIN", f"No mission was released: {exc}")
             return
         try:
+            goal_obstacles = (
+                self.latest_vicon_ground_truth["obstacles"]
+                if self.environment == "real"
+                and self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                else nominal_obstacles
+            )
+            goal_collision_obstacles = (
+                goal_obstacles
+                if self.environment == "real"
+                and self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                else planning_obstacles
+            )
             goal_relations = normalize_goal_relations(
                 intent.relations,
-                nominal_obstacles,
+                goal_obstacles,
                 default_standoff=self.default_standoff_m,
                 clearance=self.clearance_m,
-                guard_band=self.scene_guard_band_m,
+                guard_band=(
+                    0.0
+                    if self.environment == "real"
+                    and self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                    else self.scene_guard_band_m
+                ),
                 default_range_half_width=self.default_goal_range_half_width_m,
                 exact_distance_tolerance=self.exact_goal_distance_tolerance_m,
             )
             goal, goal_relation_results = range_constrained_goal(
                 start,
                 goal_relations,
-                planning_obstacles,
+                goal_collision_obstacles,
                 self.workspace,
                 self.fixed_z,
                 self.clearance_m,
@@ -1445,7 +2018,7 @@ class InteractiveMissionGateway(Node):
             return
 
         target_id = next(item["object_id"] for item in goal_relations if item["relation"] == "NEAR")
-        target = next(item for item in nominal_obstacles if item["object_id"] == target_id)
+        target = next(item for item in goal_obstacles if item["object_id"] == target_id)
 
         created_at = time.time()
         mission_id = f"M-{int(created_at * 1000)}-{uuid.uuid4().hex[:6]}"
@@ -1470,6 +2043,11 @@ class InteractiveMissionGateway(Node):
             "workspace": copy.deepcopy(self.workspace),
             "observed_obstacles": copy.deepcopy(scene["obstacles"]),
             "nominal_obstacles": copy.deepcopy(nominal_obstacles),
+            "expert_obstacles": copy.deepcopy(
+                self.latest_vicon_ground_truth["obstacles"]
+                if self.environment == "real" and self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                else nominal_obstacles
+            ),
             "obstacles": planning_obstacles,
             "obstacle_safety": self.obstacle_safety_metadata(),
             "created_at": created_at,
@@ -1522,12 +2100,14 @@ class InteractiveMissionGateway(Node):
     def handle_calibration_intent(self, intent, scene):
         nominal = []
         failures = []
+        depth_estimates = self.depth_estimates_for(scene, intent)
         for obstacle in scene["obstacles"]:
             object_id = str(obstacle["object_id"])
             estimates = [
                 estimate
-                for estimate in intent.depth_estimates
-                if estimate.object_id == object_id
+                for estimate in depth_estimates
+                if (estimate.object_id if isinstance(estimate, ObjectDepthEstimate) else estimate["object_id"])
+                == object_id
             ]
             try:
                 nominal.extend(nominal_obstacles_from_depth([obstacle], estimates))
@@ -1650,6 +2230,7 @@ class InteractiveMissionGateway(Node):
             "obstacle_ids": [item["object_id"] for item in mission["obstacles"]],
             "created_at": mission["created_at"],
             "observed_obstacles": copy.deepcopy(mission["observed_obstacles"]),
+            "ground_truth_obstacles": copy.deepcopy(mission["expert_obstacles"]),
             "environment_frozen": bool(mission.get("environment_frozen", False)),
             "environment_frozen_at": mission.get("environment_frozen_at"),
             **copy.deepcopy(mission["obstacle_safety"]),
@@ -1725,7 +2306,10 @@ class InteractiveMissionGateway(Node):
         )
         if mission["environment_frozen"]:
             self.proposal_pub.publish(String(data=json.dumps(self.proposal_payload(mission))))
-        self.publish_planning_attempt()
+        if self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION":
+            self.start_hrrt_request()
+        else:
+            self.publish_planning_attempt()
 
     def publish_planning_attempt(self, feedback=None):
         mission = self.active_mission
@@ -1753,6 +2337,8 @@ class InteractiveMissionGateway(Node):
             "goal": mission["goal"],
             "goal_relations": mission["goal_relations"],
             "workspace": mission["workspace"],
+            "observed_obstacles": mission["observed_obstacles"],
+            "ground_truth_obstacles": mission["expert_obstacles"],
             "nominal_obstacles": mission["nominal_obstacles"],
             "obstacles": mission["obstacles"],
             "obstacle_safety": mission["obstacle_safety"],
@@ -1760,7 +2346,15 @@ class InteractiveMissionGateway(Node):
             "timestamp": time.time(),
             "llm_provider": str(self.get_parameter("planner_llm_provider").value),
             "requested_model": str(self.get_parameter("planner_model_name").value),
+            "interaction_mode": self.interaction_mode,
         }
+        if mission.get("selected_expert_route"):
+            envelope.update(
+                {
+                    "route_preference_text": mission.get("route_preference_text", ""),
+                    "selected_expert_route": copy.deepcopy(mission["selected_expert_route"]),
+                }
+            )
         self.active_plan_id = plan_id
         self.state = "WAITING_FOR_VERIFICATION"
         self.prompt_pub.publish(String(data=json.dumps(envelope)))
@@ -1769,6 +2363,7 @@ class InteractiveMissionGateway(Node):
             f"Approved mission {mission['mission_id']}; planning attempt {mission['attempt']} is running.",
             mission_id=mission["mission_id"],
             plan_id=plan_id,
+            selected_route_id=(mission.get("selected_expert_route") or {}).get("route_id"),
         )
 
     def verification_callback(self, msg):
@@ -1849,10 +2444,10 @@ class InteractiveMissionGateway(Node):
             "timestamp": time.time(),
         }
         if self.active_mission["attempt"] >= int(self.get_parameter("max_planning_attempts").value):
-            self.state = "PLANNING_FAILED"
+            self.state = "NO_SAFE_PLAN_FOUND"
             self.publish_response(
-                "PLANNING_FAILED",
-                "No planning attempt passed verification; the vehicle remains holding.",
+                "NO_SAFE_PLAN_FOUND",
+                "No safe plan found after both planning attempts; the vehicle remains holding.",
                 mission_id=self.active_mission["mission_id"],
                 plan_id=self.active_plan_id,
                 failed_constraints=list(candidate.get("failed_constraints", [])),
@@ -2098,6 +2693,25 @@ class InteractiveMissionGateway(Node):
             return "The obstacle snapshot is stale."
         if self.latest_scene.get("healthy") is False:
             return "Perception reports an unhealthy obstacle snapshot."
+        if self.depth_source() == "perception" and any(
+            not bool(item.get("depth_ready", True)) for item in self.latest_scene.get("obstacles", [])
+        ):
+            return "Perception is still measuring object depths; try again in a few seconds."
+        return None
+
+    def vicon_ground_truth_context_error(self):
+        if not self.vicon_objects:
+            return (
+                "Real ACP mode requires vicon_objects_json with measured dimensions and the "
+                "hardware-guide topics before HRRT expert generation."
+            )
+        if self.vicon_world_to_ned is None:
+            return "Vicon-to-local-NED alignment is not ready; keep the vehicle still."
+        if self.latest_vicon_ground_truth is None or self.latest_vicon_ground_truth_received_s is None:
+            return "No complete Vicon ground-truth obstacle snapshot is available."
+        timeout = float(self.get_parameter("vicon_fresh_data_timeout_s").value)
+        if time.time() - self.latest_vicon_ground_truth_received_s > timeout:
+            return "The Vicon ground-truth obstacle snapshot is stale."
         return None
 
     def current_start(self):
@@ -2122,15 +2736,18 @@ class InteractiveMissionGateway(Node):
             self.request_executor_land(reason)
             return
         self.intent_request_token = None
+        self.route_request_token = None
         self.active_mission = None
         self.active_plan_id = None
         self.pending_verified_plan = None
+        self.latest_route_family = None
         self.state = "WAITING_FOR_COMMAND"
+        self.route_candidates_pub.publish(String(data=json.dumps({"routes": [], "selected_route_id": None})))
         self.publish_response("CANCELLED", reason)
 
     def publish_response(self, status, message, **metadata):
         if (
-            status in ("INTENT_ERROR", "NO_SAFE_GOAL", "PLANNING_FAILED")
+            status in ("INTENT_ERROR", "NO_SAFE_GOAL", "PLANNING_FAILED", "NO_SAFE_PLAN_FOUND")
             or status.endswith("_REJECTED")
         ):
             self.last_failure = {
@@ -2144,6 +2761,7 @@ class InteractiveMissionGateway(Node):
             "status": status,
             "message": message,
             "gateway_state": self.state,
+            "interaction_mode": self.interaction_mode,
             "timestamp": time.time(),
         }
         if self.environment_frozen():
@@ -2168,6 +2786,7 @@ class InteractiveMissionGateway(Node):
 
     def destroy_node(self):
         self.intent_executor.shutdown(wait=False, cancel_futures=True)
+        self.route_executor.shutdown(wait=False, cancel_futures=True)
         return super().destroy_node()
 
 

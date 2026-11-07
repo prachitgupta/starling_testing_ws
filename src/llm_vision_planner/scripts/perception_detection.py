@@ -2,6 +2,9 @@
 from collections import deque
 import json
 import math
+from pathlib import Path
+import sys
+import threading
 import time
 
 import numpy as np
@@ -16,6 +19,18 @@ try:
     from voxl_msgs.msg import Aidetection
 except ImportError:
     Aidetection = None
+
+try:
+    import bag_reader
+    import outline_depth as od
+    from obstacle_depth import canonical_label, estimate_depth, prior_for, range_window_for
+    from outline_segmentation import EFFICIENTSAM_FILE, box_iou, make_segmenter, mask_box
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import bag_reader
+    import outline_depth as od
+    from obstacle_depth import canonical_label, estimate_depth, prior_for, range_window_for
+    from outline_segmentation import EFFICIENTSAM_FILE, box_iou, make_segmenter, mask_box
 
 
 BEST_EFFORT_QOS = QoSProfile(
@@ -102,6 +117,28 @@ class SemanticObstaclePerception(Node):
                 ("bbox_inner_margin_fraction", 0.30),
                 ("depth_near_percentile", 25.0),
                 ("depth_cluster_tolerance_m", 0.35),
+                # Depth along the line of sight (thickness behind the front):
+                # outline = camera outline (EfficientSAM, prompted with the
+                # detector box) + ToF + floor, scripts/outline_depth.py;
+                # shape_fit = ToF only, scripts/obstacle_depth.py (also the
+                # fallback while an outline is computed or without the model);
+                # front_spread = legacy p90-p10 of the visible front surface.
+                ("depth_estimator", "outline"),
+                ("camera_image_topic", "/hires_small_color"),
+                ("segmenter", "efficientsam"),
+                ("efficientsam_model", ""),
+                (
+                    "hires_distortion",
+                    [-0.28655908953387943, 0.081789942250115405, 0.00052374055289612631,
+                     0.00071156224551124046, -0.010172420045783252],
+                ),
+                ("outline_tof_rotation_deg", [0.0, 0.0, 0.0]),
+                ("outline_max_image_gap_s", 0.5),
+                ("outline_max_age_s", 10.0),
+                ("outline_wait_s", 8.0),
+                ("outline_settle_m", 0.08),
+                ("outline_async", True),
+                ("shape_fit_front_tolerance_m", 0.15),
                 ("obstacle_hold_s", 10.0),
                 ("held_depth_health_grace_s", 10.0),
                 ("obstacle_match_distance_m", 0.75),
@@ -167,6 +204,20 @@ class SemanticObstaclePerception(Node):
         self.last_pose_sync_delta_s = None
         self.last_log_stamp = 0.0
         self.obstacle_tracks = []
+        self.camera_images = deque(maxlen=8)
+        self.outline_lock = threading.Lock()
+        self.outline_event = threading.Event()
+        self.outline_stop = threading.Event()
+        self.outline_job = None
+        self.outline_last_key = None
+        self.outline_results = []
+        self.outline_tracks = []
+        self.outline_used = set()
+        self.outline_status = "not_used"
+        self.segmenter = None
+        self.outline_camera = None
+        if self.depth_estimator_mode() == "outline" and str(self.get_parameter("camera_image_topic").value).strip():
+            self.setup_outline()   # an empty camera_image_topic keeps the ToF-only depths
 
         self.create_subscription(
             Aidetection,
@@ -188,6 +239,11 @@ class SemanticObstaclePerception(Node):
             self.point_cloud_callback,
             BEST_EFFORT_QOS,
         )
+        camera_image_topic = str(self.get_parameter("camera_image_topic").value).strip()
+        if self.segmenter is not None and camera_image_topic:
+            self.create_subscription(Image, camera_image_topic, self.camera_image_callback, BEST_EFFORT_QOS)
+            if bool(self.get_parameter("outline_async").value):
+                threading.Thread(target=self.outline_worker, daemon=True).start()
         self.create_subscription(
             VehicleOdometry,
             str(self.get_parameter("pose_topic").value),
@@ -216,6 +272,15 @@ class SemanticObstaclePerception(Node):
         self.detector_image_samples.append(
             {
                 "arrival_s": now,
+                "source_stamp_ns": self.ros_stamp_ns(msg.header.stamp),
+            }
+        )
+
+    def camera_image_callback(self, msg):
+        self.camera_images.append(
+            {
+                "msg": msg,
+                "arrival_s": time.monotonic(),
                 "source_stamp_ns": self.ros_stamp_ns(msg.header.stamp),
             }
         )
@@ -303,6 +368,7 @@ class SemanticObstaclePerception(Node):
 
     def publish_obstacles(self):
         self.prune_detections()
+        self.outline_used = set()
         obstacles = []
         no_depth = []
         low_confidence = []
@@ -311,6 +377,8 @@ class SemanticObstaclePerception(Node):
         frame_arrival_s = max((stamp for _, stamp in detections), default=None)
         point_cloud_sample, sync_reason = self.match_point_cloud(frame_arrival_s)
         pose = self.match_pose(point_cloud_sample, frame_arrival_s)
+        if self.segmenter is not None and point_cloud_sample is not None and pose is not None:
+            self.submit_outline_job(detections, frame_arrival_s, point_cloud_sample, pose)
 
         for detection, _ in detections:
             label = str(detection.class_name)
@@ -335,6 +403,8 @@ class SemanticObstaclePerception(Node):
 
         obstacles = self.update_obstacle_tracks(obstacles)
         obstacles.sort(key=lambda obstacle: obstacle["distance_m"])
+        now = time.monotonic()
+        self.outline_tracks = [track for track in self.outline_tracks if now - track["seen_s"] <= 1.0]
         status = self.health_status(no_depth, obstacles)
         payload = {
             "pose": self.pose_tuple(),
@@ -343,7 +413,9 @@ class SemanticObstaclePerception(Node):
             "no_depth": no_depth,
             "low_conf": low_confidence,
             "goal": self.goal,
-            "timestamp": time.time(),
+            # ROS time: wall time live, the bag's clock when replayed with
+            # use_sim_time, so it matches the recorded Vicon stamps.
+            "timestamp": self.ros_time_s(),
             "source": self.perception_source(),
             "healthy": status["healthy"],
             "range_is_measured": status["range_is_measured"],
@@ -445,6 +517,17 @@ class SemanticObstaclePerception(Node):
         if points_body is None:
             return None, reason
 
+        if self.depth_estimator_mode() in ("outline", "shape_fit"):
+            obstacle, reason = self.build_shape_fit_obstacle(
+                points_body, x1, y1, x2, y2, label, confidence, point_cloud_sample, pose, detection
+            )
+            if obstacle is not None:
+                if self.depth_estimator_mode() == "outline":
+                    self.apply_outline(obstacle, label, (x1, y1, x2, y2), pose, point_cloud_sample["arrival_s"])
+                return obstacle, None
+            if reason is not None and not reason.startswith("shape_fit_fallback"):
+                return None, reason
+
         selected_body, selected_detection, candidate_count = self.depth_points_for_box(
             points_body,
             x1,
@@ -478,7 +561,7 @@ class SemanticObstaclePerception(Node):
             center_body
             + (self.rotation_detection_camera_to_body @ corners_detection.T).T
         )
-        return self.obstacle_payload(
+        payload = self.obstacle_payload(
             center_body,
             corners_body,
             pose,
@@ -491,7 +574,361 @@ class SemanticObstaclePerception(Node):
             center_body,
             width_m,
             float(np.linalg.norm(center_body - self.detection_camera_translation_body)),
-        ), None
+        )
+        if self.depth_estimator_mode() != "front_spread":
+            # The ToF fit failed: the visible spread is only a lower bound, so
+            # the class prior fills in (never thinner than what was seen).
+            payload["measured_depth_along_view_m"] = round(
+                max(float(depth_m), float(prior_for(label)["depth"])), 3
+            )
+            payload["depth_method"] = "prior_fallback"
+            payload["depth_confidence"] = 0.0
+            payload["depth_ready"] = True
+        return payload, None
+
+    def build_shape_fit_obstacle(
+        self, points_body, x1, y1, x2, y2, label, confidence, point_cloud_sample, pose, detection
+    ):
+        """ToF-only depth: every point in the detection box near the object's
+        range (the inner-box cluster picks the range), floor removed, fitted by
+        scripts/obstacle_depth.py; the box extends back from the nearest surface."""
+        seed_body, _, candidate_count = self.depth_points_for_box(points_body, x1, y1, x2, y2)
+        min_points = int(self.get_parameter("min_frustum_points").value)
+        if len(seed_body) < min_points:
+            return None, f"projected_tof_points={candidate_count}, clustered_points={len(seed_body)}"
+        front_range = float(
+            np.percentile(np.linalg.norm(seed_body - self.depth_camera_translation_body, axis=1), 5.0)
+        )
+        box_body, box_detection, box_ranges = self.points_in_full_box(points_body, x1, y1, x2, y2)
+        tolerance = max(0.0, float(self.get_parameter("shape_fit_front_tolerance_m").value))
+        keep = (box_ranges >= front_range - tolerance) & (box_ranges <= front_range + range_window_for(label))
+        floor = self.tof_floor(point_cloud_sample, points_body)
+        if floor is not None:
+            keep &= floor.distance_above(box_detection) > 0.05
+        box_detection = box_detection[keep]
+        if len(box_detection) < min_points:
+            return None, "shape_fit_fallback: too few full-box points"
+        optical_depth = float(np.median(box_detection[:, 2]))
+        bbox_width_m = max(0.10, (x2 - x1) * self.image_width * optical_depth / self.fx)
+        bbox_height_m = max(0.10, (y2 - y1) * self.image_height * optical_depth / self.fy)
+        estimate = estimate_depth(box_detection, label, min_width=bbox_width_m, min_height=bbox_height_m)
+        if estimate is None:
+            return None, "shape_fit_fallback: estimator rejected the points"
+        rotation = self.rotation_detection_camera_to_body
+        translation = self.detection_camera_translation_body
+        corners_body = translation + (rotation @ estimate.corners_cam.T).T
+        front_center_body = translation + rotation @ estimate.front_center_cam
+        payload = self.obstacle_payload(
+            corners_body.mean(axis=0),
+            corners_body,
+            pose,
+            label,
+            confidence,
+            f"tof_projected_{estimate.points_used}of{len(box_ranges)}pts_{estimate.method}",
+            "tflite_tof_shape_fit",
+            point_cloud_sample.get("sync_delta_s"),
+            str(getattr(detection, "cam", "")),
+            front_center_body,
+            max(bbox_width_m, estimate.width_m),
+            float(np.linalg.norm(front_center_body - translation)),
+        )
+        payload["measured_depth_along_view_m"] = round(float(estimate.depth_m), 3)
+        payload["depth_method"] = estimate.method
+        payload["depth_confidence"] = round(float(estimate.confidence), 2)
+        payload["depth_ready"] = True
+        return payload, None
+
+    def points_in_full_box(self, points_body, x1, y1, x2, y2):
+        """Valid ToF points projecting anywhere inside the detection box."""
+        points_detection = (
+            self.rotation_detection_camera_to_body.T
+            @ (points_body - self.detection_camera_translation_body).T
+        ).T
+        ranges = np.linalg.norm(points_body - self.depth_camera_translation_body, axis=1)
+        valid = (
+            (points_detection[:, 2] > 0.01)
+            & (ranges >= float(self.get_parameter("min_tof_depth_m").value))
+            & (ranges <= float(self.get_parameter("max_tof_depth_m").value))
+        )
+        points_body, points_detection, ranges = points_body[valid], points_detection[valid], ranges[valid]
+        u = (self.fx * points_detection[:, 0] / points_detection[:, 2] + self.cx) / self.image_width
+        v = (self.fy * points_detection[:, 1] / points_detection[:, 2] + self.cy) / self.image_height
+        mask = (u >= x1) & (u <= x2) & (v >= y1) & (v <= y2)
+        return points_body[mask], points_detection[mask], ranges[mask]
+
+    def tof_floor(self, point_cloud_sample, points_body):
+        """Floor plane from this ToF frame, in the detection camera frame (cached per frame)."""
+        if "floor_detection" not in point_cloud_sample:
+            points_detection = (
+                self.rotation_detection_camera_to_body.T
+                @ (points_body - self.detection_camera_translation_body).T
+            ).T
+            down = self.rotation_detection_camera_to_body.T @ np.array([0.0, 0.0, 1.0])
+            point_cloud_sample["floor_detection"] = od.fit_floor_plane(points_detection, down)
+        return point_cloud_sample["floor_detection"]
+
+    # ------------------------------------------------------------ outline depth
+    def setup_outline(self):
+        names = (
+            "hires_fx", "hires_fy", "hires_cx", "hires_cy", "hires_width", "hires_height",
+            "detection_cam_body_x_m", "detection_cam_body_y_m", "detection_cam_body_z_m",
+            "detection_cam_roll_deg", "detection_cam_pitch_deg", "detection_cam_yaw_deg",
+        )
+        config = {name: float(self.get_parameter(name).value) for name in names}
+        distortion = tuple(float(value) for value in self.get_parameter("hires_distortion").value)
+        self.outline_camera, _, _ = od.starling_cameras(config, distortion)
+        kind = str(self.get_parameter("segmenter").value).strip().lower()
+        model = str(self.get_parameter("efficientsam_model").value).strip() or self.default_efficientsam_model()
+        try:
+            if kind not in ("efficientsam", "sam", "yolo"):
+                raise ValueError(f"segmenter must be efficientsam, sam or yolo, not '{kind}'")
+            self.segmenter = make_segmenter(kind, efficientsam_model=model)
+            # One pass on a blank image: a model this OpenCV/onnxruntime can't run fails here, once.
+            self.segmenter.segment(np.zeros((64, 64, 3), dtype=np.uint8), [("check", 1.0, (8.0, 8.0, 56.0, 56.0))])
+            self.outline_status = "ok"
+        except (SystemExit, Exception) as exc:  # missing model or library: keep the ToF fit
+            self.segmenter = None
+            reason = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+            self.outline_status = f"unavailable: {reason}"
+            self.get_logger().warning(
+                f"outline depth unavailable ({reason}); depths use the ToF-only shape fit"
+            )
+
+    @staticmethod
+    def default_efficientsam_model():
+        candidates = []
+        try:
+            from ament_index_python.packages import get_package_share_directory
+
+            candidates.append(Path(get_package_share_directory("llm_vision_planner")) / "models")
+        except Exception:
+            pass
+        candidates += [Path(__file__).resolve().parents[1] / "models", Path.cwd() / "src" / "llm_vision_planner" / "models"]
+        for folder in candidates:
+            if (folder / EFFICIENTSAM_FILE).is_file():
+                return str(folder / EFFICIENTSAM_FILE)
+        return str(candidates[0] / EFFICIENTSAM_FILE)
+
+    def submit_outline_job(self, detections, frame_arrival_s, point_cloud_sample, pose):
+        key = (frame_arrival_s, int(point_cloud_sample.get("source_stamp_ns", 0)))
+        if key == self.outline_last_key or not self.camera_images:
+            return
+        self.outline_last_key = key
+        cloud_ns = int(point_cloud_sample.get("source_stamp_ns", 0))
+        if cloud_ns > 0 and all(int(item["source_stamp_ns"]) > 0 for item in self.camera_images):
+            image = min(self.camera_images, key=lambda item: abs(int(item["source_stamp_ns"]) - cloud_ns))
+            gap_s = abs(int(image["source_stamp_ns"]) - cloud_ns) / 1e9
+        else:
+            target = float(point_cloud_sample["arrival_s"])
+            image = min(self.camera_images, key=lambda item: abs(float(item["arrival_s"]) - target))
+            gap_s = abs(float(image["arrival_s"]) - target)
+        if gap_s > float(self.get_parameter("outline_max_image_gap_s").value):
+            self.outline_status = f"no camera image within {gap_s:.2f} s of the ToF frame"
+            return
+        prompts = []
+        for detection, _ in detections:
+            confidence = self.detection_confidence(detection)
+            if confidence < float(self.get_parameter("min_confidence").value):
+                continue
+            if not self.detection_camera_matches(getattr(detection, "cam", "")):
+                continue
+            box = self.normalized_box(detection)
+            if box[2] > box[0] and box[3] > box[1]:
+                prompts.append((str(detection.class_name), confidence, box))
+        # TFLite often reports one object several times; outline it once.
+        unique = []
+        for prompt in sorted(prompts, key=lambda item: -item[1]):
+            if all(
+                canonical_label(prompt[0]) != canonical_label(kept[0]) or box_iou(prompt[2], kept[2]) < 0.6
+                for kept in unique
+            ):
+                unique.append(prompt)
+        prompts = unique
+        if not prompts:
+            return
+        points_body, _ = self.point_cloud_points_body(point_cloud_sample, pose)
+        if points_body is None:
+            return
+        # When the newer of the two was taken: an outline only counts for an
+        # object if this frame was taken after the object last moved.
+        source_s = min(float(point_cloud_sample["arrival_s"]), float(image["arrival_s"]))
+        job = {"image": image["msg"], "points_body": points_body, "pose": pose, "prompts": prompts,
+               "source_s": source_s}
+        if bool(self.get_parameter("outline_async").value):
+            with self.outline_lock:
+                self.outline_job = job   # only the newest frame waits
+            self.outline_event.set()
+        else:
+            self.run_outline_job(job)
+
+    def outline_worker(self):
+        while not self.outline_stop.is_set():
+            if not self.outline_event.wait(0.5):
+                continue
+            self.outline_event.clear()
+            with self.outline_lock:
+                job, self.outline_job = self.outline_job, None
+            if job is not None:
+                self.run_outline_job(job)
+
+    def run_outline_job(self, job):
+        try:
+            started = time.perf_counter()
+            rgb = bag_reader.image_to_rgb(job["image"])
+            height, width = rgb.shape[:2]
+            camera = self.outline_camera.scaled_to(width, height)
+            points_cam = camera.body_to_cam(job["points_body"])
+            rotation_deg = [float(value) for value in self.get_parameter("outline_tof_rotation_deg").value]
+            if any(rotation_deg):
+                points_cam = points_cam @ od.small_rotation(*rotation_deg).T
+            floor = od.fit_floor_plane(points_cam, camera.expected_down())
+            prompts_px = [
+                (label, confidence, (box[0] * width, box[1] * height, box[2] * width, box[3] * height))
+                for label, confidence, box in job["prompts"]
+            ]
+            masks = self.segmenter.segment(rgb, prompts_px)
+            results = []
+            for (label, _, box), (_, _, box_px) in zip(job["prompts"], prompts_px):
+                scored = [
+                    (box_iou(mask.box or mask_box(mask.mask), box_px), mask)
+                    for mask in masks
+                    if canonical_label(mask.label) == canonical_label(label)
+                ]
+                scored = [item for item in scored if item[0] >= 0.3]
+                if not scored:
+                    continue
+                mask = max(scored, key=lambda item: item[0])[1].mask
+                result = od.estimate_from_outline(label, mask, camera, points_cam, floor=floor)
+                if result is None:
+                    continue
+                results.append(
+                    {
+                        "label": canonical_label(label),
+                        "box": box,
+                        "source_s": job["source_s"],
+                        **self.outline_geometry(result, camera, job["pose"]),
+                    }
+                )
+            max_age = float(self.get_parameter("outline_max_age_s").value)
+            now = time.monotonic()
+            with self.outline_lock:
+                kept = [item for item in self.outline_results if now - item["source_s"] <= max_age]
+                self.outline_results = (kept + results)[-32:]
+            self.outline_status = f"ok ({1000.0 * (time.perf_counter() - started):.0f} ms per frame)"
+        except Exception as exc:  # never let one bad frame stop perception
+            self.outline_status = f"error: {type(exc).__name__}: {exc}"
+            self.get_logger().warning(f"outline depth failed on a frame: {self.outline_status}")
+
+    @staticmethod
+    def outline_geometry(result, camera, pose):
+        """The outline box (level frame at the camera) in local NED."""
+        level, box = result.level, result.box_level
+        front_level = np.array(
+            [[0.5 * (box["x0"] + box["x1"]), 0.5 * (box["y_top"] + box["y_bottom"]), box["z0"]]]
+        )
+        view_cam = level.to_cam(np.array([[0.0, 0.0, 1.0]]))[0]
+        rotation, position = pose["rotation_body_to_world"], pose["position"]
+        corners_world = position + (rotation @ camera.cam_to_body(result.corners_cam).T).T
+        front_world = position + rotation @ camera.cam_to_body(level.to_cam(front_level))[0]
+        view_xy = (rotation @ camera.rotation_cam_to_body @ view_cam)[:2]
+        view_xy = view_xy / max(1e-9, float(np.linalg.norm(view_xy)))
+        camera_world = position + rotation @ camera.translation_cam_body
+        return {
+            "corners_world": corners_world,
+            "front_world": front_world,
+            "view_axis_xy": view_xy,
+            "visible_width_m": float(box["x1"] - box["x0"]),
+            "depth_m": float(result.depth_m),
+            "front_range_m": float(np.linalg.norm(front_world - camera_world)),
+            "decided_by": str(result.decided_by),
+            "depth_observed": bool(result.depth_observed),
+        }
+
+    def outline_track(self, name, box, front_xy, frame_s):
+        """This object across frames: when its ToF front last moved, and since
+        when it has been waiting for an outline. After a move, only an outline
+        whose camera image and ToF frame both came after the ToF frame that
+        showed the move counts. One track per object, so two people don't
+        share a state; a track unseen for 1 s is dropped."""
+        settle = float(self.get_parameter("outline_settle_m").value)
+        scored = [
+            (box_iou(track["box"], box), track)
+            for track in self.outline_tracks
+            if track["label"] == name and id(track) not in self.outline_used
+        ]
+        scored = [item for item in scored if item[0] >= 0.3]
+        if scored:
+            track = max(scored, key=lambda item: item[0])[1]
+            if math.dist(front_xy, track["anchor_xy"]) > settle:
+                track["anchor_xy"], track["moved_s"] = front_xy, frame_s
+        else:
+            # Nothing known about where it was before: the image paired with
+            # this ToF frame (up to outline_max_image_gap_s older) counts too.
+            gap = float(self.get_parameter("outline_max_image_gap_s").value)
+            track = {"label": name, "anchor_xy": front_xy, "moved_s": frame_s - gap, "pending_s": None}
+            self.outline_tracks.append(track)
+        track["box"], track["seen_s"] = box, time.monotonic()
+        self.outline_used.add(id(track))
+        return track
+
+    def apply_outline(self, payload, label, box, pose, frame_s):
+        """Replace the ToF-only geometry with the newest outline estimate made
+        from a frame taken after the object last moved."""
+        now = time.monotonic()
+        name = canonical_label(label)
+        track = self.outline_track(name, box, [float(v) for v in payload["front_surface_center"][:2]], frame_s)
+        max_age = float(self.get_parameter("outline_max_age_s").value)
+        with self.outline_lock:
+            candidates = [
+                item
+                for item in self.outline_results
+                if item["label"] == name
+                and box_iou(item["box"], box) >= 0.3
+                and now - item["source_s"] <= max_age
+                and item["source_s"] >= track["moved_s"]
+            ]
+        if not candidates:
+            if self.segmenter is None:
+                payload["depth_ready"] = True   # the ToF fit is all there is
+                return
+            if track["pending_s"] is None:
+                track["pending_s"] = now
+            payload["depth_ready"] = now - track["pending_s"] >= float(self.get_parameter("outline_wait_s").value)
+            payload["outline_pending"] = True
+            return
+        track["pending_s"] = None
+        result = max(candidates, key=lambda item: item["source_s"])
+        corners = result["corners_world"]
+        centroid = corners.mean(axis=0)
+        delta = centroid - pose["position"]
+        view_xy = result["view_axis_xy"]
+        payload.update(
+            {
+                "centroid": np.round(centroid, 2).tolist(),
+                "min_corner": np.round(corners.min(axis=0), 2).tolist(),
+                "max_corner": np.round(corners.max(axis=0), 2).tolist(),
+                "size": np.round(corners.max(axis=0) - corners.min(axis=0), 2).tolist(),
+                "distance_m": round(float(np.linalg.norm(delta)), 2),
+                "bearing_deg": round(float(np.degrees(math.atan2(delta[1], delta[0]))), 1),
+                "front_surface_center": np.round(result["front_world"], 3).tolist(),
+                "front_range_m": round(result["front_range_m"], 3),
+                "visible_width_m": round(result["visible_width_m"], 3),
+                "view_axis_xy": np.round(view_xy, 6).tolist(),
+                "lateral_axis_xy": np.round([-view_xy[1], view_xy[0]], 6).tolist(),
+                "measured_depth_along_view_m": round(result["depth_m"], 3),
+                "depth_method": f"outline_{result['decided_by']}",
+                "depth_confidence": 1.0 if result["depth_observed"] else 0.5,
+                "depth_source": payload["depth_source"].rsplit("pts_", 1)[0] + f"pts_outline_{result['decided_by']}",
+                "source": "tflite_tof_outline",
+                "depth_ready": True,
+                "outline_age_s": round(now - result["source_s"], 2),
+            }
+        )
+
+    def destroy_node(self):
+        self.outline_stop.set()
+        self.outline_event.set()
+        return super().destroy_node()
 
     def build_hardcoded_obstacle(self, x1, y1, x2, y2, label, confidence, pose):
         depth = self.hardcoded_depth(label)
@@ -523,7 +960,7 @@ class SemanticObstaclePerception(Node):
             center_body
             + (self.rotation_detection_camera_to_body @ corners_detection.T).T
         )
-        return self.obstacle_payload(
+        payload = self.obstacle_payload(
             center_body,
             corners_body,
             pose,
@@ -537,6 +974,10 @@ class SemanticObstaclePerception(Node):
             width_m,
             float(np.linalg.norm(center_body - self.detection_camera_translation_body)),
         )
+        payload["measured_depth_along_view_m"] = round(float(depth_m), 3)
+        payload["depth_method"] = "class_prior"
+        payload["depth_confidence"] = 0.0
+        return payload
 
     def obstacle_payload(
         self,
@@ -946,6 +1387,8 @@ class SemanticObstaclePerception(Node):
             "held_depth_grace_used": grace_used,
             "held_depth_grace_s": grace_s,
             "held_depth_grace_labels": grace_labels,
+            "depth_estimator": self.depth_estimator_mode(),
+            "outline": self.outline_status,
         }
 
     def log_summary(self, obstacles, no_depth_count, low_conf_count, status):
@@ -971,9 +1414,18 @@ class SemanticObstaclePerception(Node):
                 f"y=[{min_corner[1]:.2f},{max_corner[1]:.2f}] "
                 f"z=[{min_corner[2]:.2f},{max_corner[2]:.2f}] "
                 f"size={obstacle['size']} distance={obstacle['distance_m']:.2f}m "
+                f"depth={obstacle.get('measured_depth_along_view_m')}m ({obstacle.get('depth_method', 'front_spread')}) "
                 f"prompt='{self.prompt_obstacle_text(obstacle)}'"
             )
         self.get_logger().info("\n".join(lines))
+
+    def depth_estimator_mode(self):
+        mode = str(self.get_parameter("depth_estimator").value).strip().lower()
+        return mode if mode in ("outline", "shape_fit", "front_spread") else "outline"
+
+    def ros_time_s(self):
+        now = self.get_clock().now().nanoseconds * 1e-9
+        return now if now > 0.0 else time.time()
 
     def z_estimation_mode(self):
         mode = str(self.get_parameter("z_estimation_mode").value).strip().lower()

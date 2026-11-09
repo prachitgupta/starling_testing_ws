@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 import json
 import math
-import os
+import sys
+from pathlib import Path
 import time
 from typing import List
 
-import instructor
 import rclpy
-from openai import OpenAI
 from pydantic import BaseModel, Field
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import String
 
+try:
+    from waypoint_transformer import WaypointTransformerPlanner
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
+    from waypoint_transformer import WaypointTransformerPlanner
+from residual_certificate import resolve_data_path
+
 PROMPT_TOPIC = "/llm_vision/prompt"
 PLAN_TOPIC = "/llm_vision/plan_raw"
-MODEL_NAME = "gpt-5-mini"
-LLAMA_MODEL_NAME = "hrrt_planner"
-VLLM_BASE_URL = "http://172.22.224.93:8000/v1"
 GOAL_TOLERANCE_M = 0.05
 PROMPT_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
@@ -59,46 +62,27 @@ class LLMPlanner(Node):
         super().__init__("llm_planner")
         self.declare_parameter("prompt_topic", PROMPT_TOPIC)
         self.declare_parameter("plan_topic", PLAN_TOPIC)
-        self.declare_parameter("llm_provider", "llama")
-        self.declare_parameter("model_name", MODEL_NAME)
-        self.declare_parameter("chatgpt_model_name", MODEL_NAME)
-        self.declare_parameter("llama_model_name", LLAMA_MODEL_NAME)
-        self.declare_parameter("vllm_base_url", VLLM_BASE_URL)
-        self.declare_parameter("vllm_api_key", "EMPTY")
+        self.declare_parameter("llm_provider", "transformer")
+        self.declare_parameter("transformer_checkpoint", "")
+        self.declare_parameter("transformer_device", "auto")
         self.declare_parameter("goal_tolerance_m", GOAL_TOLERANCE_M)
         self.declare_parameter("debug", True)
 
         self.prompt_topic = str(self.get_parameter("prompt_topic").value)
         self.plan_topic = str(self.get_parameter("plan_topic").value)
         self.llm_provider = str(self.get_parameter("llm_provider").value).strip().lower()
-        self.chatgpt_model_name = str(self.get_parameter("chatgpt_model_name").value)
-        self.llama_model_name = str(self.get_parameter("llama_model_name").value)
-        self.vllm_base_url = str(self.get_parameter("vllm_base_url").value)
-        self.vllm_api_key = str(self.get_parameter("vllm_api_key").value)
-        self.model_name = self.resolve_model_name()
+        if self.llm_provider != "transformer":
+            raise ValueError("live waypoint planning requires llm_provider=transformer")
+        checkpoint = str(self.get_parameter("transformer_checkpoint").value)
+        if not checkpoint:
+            raise ValueError("transformer_checkpoint is required")
+        config = resolve_data_path(str(Path(checkpoint) / "config.json"))
+        self.model_name = str(config.parent)
+        self.transformer = WaypointTransformerPlanner(config.parent, str(self.get_parameter("transformer_device").value))
         self.goal_tolerance_m = float(self.get_parameter("goal_tolerance_m").value)
 
         self.prompt_sub = self.create_subscription(String, self.prompt_topic, self.prompt_callback, PROMPT_QOS)
         self.plan_pub = self.create_publisher(String, self.plan_topic, PLAN_QOS)
-        self.openai_raw_client = self.openai_client()
-        self.client = instructor.from_openai(self.openai_raw_client, mode=instructor.Mode.JSON)
-
-        if self.llm_provider == "chatgpt" and not os.getenv("OPENAI_API_KEY"):
-            self.log_warning("OPENAI_API_KEY is not set; planner requests will fail until it is provided.")
-
-    def resolve_model_name(self):
-        if self.llm_provider in ("llama", "vllm"):
-            return self.llama_model_name
-        if self.llm_provider != "chatgpt":
-            self.log_warning(f"Unsupported llm_provider '{self.llm_provider}'. Defaulting to chatgpt.")
-            self.llm_provider = "chatgpt"
-        legacy_model = str(self.get_parameter("model_name").value)
-        return self.chatgpt_model_name or legacy_model
-
-    def openai_client(self):
-        if self.llm_provider in ("llama", "vllm"):
-            return OpenAI(base_url=self.vllm_base_url, api_key=self.vllm_api_key)
-        return OpenAI()
 
     def log_info(self, *args, **kwargs):
         if bool(self.get_parameter("debug").value):
@@ -127,23 +111,23 @@ class LLMPlanner(Node):
         )
         start_time = time.time()
         try:
-            plan = self.request_plan(prompt)
+            plan = self.request_plan(payload)
         except Exception as exc:
             self.get_logger().error(f"{self.llm_provider} planner request failed: {exc}")
             return
         duration_s = time.time() - start_time
         self.log_info(
-            f"LLM response received for plan_id={plan_id} in {duration_s:.2f}s: "
+            f"Transformer response received for plan_id={plan_id} in {duration_s:.2f}s: "
             f"reasoning={plan.reasoning!r}; waypoints={[waypoint.model_dump() for waypoint in plan.waypoints]}"
         )
 
         fixed_z = self.fixed_z_from_payload(payload)
         if not all(self.z_matches(fixed_z, waypoint) for waypoint in plan.waypoints):
-            self.get_logger().error(f"Rejected LLM plan because at least one waypoint z does not match fixed_z={fixed_z:.2f}.")
+            self.get_logger().error(f"Rejected Transformer plan because at least one waypoint z does not match fixed_z={fixed_z:.2f}.")
             return
 
         if not self.goal_matches(payload.get("goal", {}), plan.waypoints[-1]):
-            self.get_logger().error("Rejected LLM plan because the final waypoint does not match the goal.")
+            self.get_logger().error("Rejected Transformer plan because the final waypoint does not match the goal.")
             return
 
         result = {
@@ -162,6 +146,9 @@ class LLMPlanner(Node):
         if "goal_relations" in payload:
             result["goal_relations"] = payload["goal_relations"]
         for field in (
+            "residual_calibration",
+            "ground_truth_obstacles",
+            "mission_id",
             "nominal_obstacles",
             "obstacle_safety",
             "obs_safety_bracket",
@@ -192,13 +179,12 @@ class LLMPlanner(Node):
         goal = payload.get("goal", {})
         return float(goal.get("z", -0.2))
 
-    def request_plan(self, prompt):
-        return self.client.chat.completions.create(
-            model=self.model_name,
-            response_model=WaypointPlan,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-        )
+    def request_plan(self, payload):
+        preference = payload.get("route_preference_text") or "Take the shortest safe route"
+        waypoints = self.transformer.predict(payload["start"], payload["goal"],
+                                             payload.get("obstacles", []), payload["workspace"], preference)
+        return WaypointPlan(reasoning="Local structured Transformer waypoint prediction",
+                            waypoints=[Waypoint(**point) for point in waypoints])
 
     def z_matches(self, fixed_z, waypoint):
         return abs(float(waypoint.z) - fixed_z) <= self.goal_tolerance_m

@@ -111,10 +111,9 @@ obstacle_perception:
 prompt_generator:
   ros__parameters:
     environment: real
-    llm_provider: llama
-    chatgpt_model_name: gpt-5.4-nano
-    # Override with launch argument llama_model_name for a DSS or DSS-SCOTT served adapter.
-    llama_model_name: hrrt_planner
+    llm_provider: transformer
+    transformer_checkpoint: fine_tuning/outputs/final-transformer-vertical-teacher_only_80_10_10/final_transformer_vertical_teacher_only_80_10_10_best/checkpoint
+    transformer_device: auto
     single_shot: True
     initial_plan_id: 1
     workspace_x_min: -4.0
@@ -152,9 +151,13 @@ interactive_mission_gateway:
     # perception: perception_detection.py's measured depth (outline + ToF);
     # gpt: GPT nano's estimate from the object label (original behaviour).
     nominal_depth_source: perception
-    planner_llm_provider: llama
+    planner_llm_provider: transformer
     # full_plot.launch.py maps its llama_model_name argument to this parameter.
-    planner_model_name: hrrt_planner
+    planner_model_name: structured_waypoint_transformer
+    calibration_csv: fine_tuning/datasets/calibration_residual_scored.csv
+    delta: 0.20
+    acp_gamma: 0.01
+    acp_state_file: ~/.ros/llm_vision/acp_state.json
     visualizer: contraction
     interaction_mode: MISSION_EXECUTION
     mode_topic: /llm_vision/interaction_mode
@@ -296,10 +299,9 @@ calibration_verifier_gateway:
     row: 2
     host: 127.0.0.1
     port: 8091
-    planner_provider: mock
+    planner_provider: transformer
     intent_provider: openai
     intent_model: gpt-5.4-nano
-    vllm_base_url: http://127.0.0.1:8000/v1
     llama_model: hrrt_planner
     fixed_z: -0.5
     clearance_m: 0.40
@@ -315,13 +317,9 @@ llm_planner:
   ros__parameters:
     prompt_topic: /llm_vision/prompt
     plan_topic: /llm_vision/plan_raw
-    model_name: gpt-5.4-nano
-    llm_provider: llama
-    chatgpt_model_name: gpt-5.4-nano
-    # Must match the model alias exposed by the OpenAI-compatible Llama server.
-    llama_model_name: hrrt_planner
-    vllm_base_url: http://172.22.224.93:8000/v1
-    vllm_api_key: EMPTY
+    llm_provider: transformer
+    transformer_checkpoint: fine_tuning/outputs/final-transformer-vertical-teacher_only_80_10_10/final_transformer_vertical_teacher_only_80_10_10_best/checkpoint
+    transformer_device: auto
     goal_tolerance_m: 0.05
     debug: True
 
@@ -396,11 +394,9 @@ verify_contraction:
     trajectory_dt: 0.1
     max_horizontal_speed_mps: 0.5
     max_horizontal_acceleration_mps2: 0.5
-    calibration_csv: config/certificates/calibration_min_control_qp_position_score_with_limits_2000.csv
-    calibration_samples: 2000
-    # Blue tube radius q_p is the (1 - delta_p) quantile of calibrated position errors.
-    delta_p: 0.10
-    delta_w: 0.10
+    calibration_csv: fine_tuning/datasets/calibration_residual_scored.csv
+    # All valid trajectory residuals; empirical probability 1-delta.
+    delta: 0.20
     drone_radius_m: 0.10
     # Exact segment/AABB checks need no extra sampling allowance for a piecewise-linear reference.
     discretization_allowance_m: 0.0
@@ -440,3 +436,11 @@ control_law_executer:
     max_horizontal_speed_mps: 0.5
     max_horizontal_acceleration_mps2: 0.5
     debug: true
+
+mission_data_logger:
+  ros__parameters:
+    log_directory: ~/.ros/llm_vision/mission_logs
+    pose_topic: /fmu/out/vehicle_odometry
+    vicon_vehicle_topic: /vicon/Starling2/Starling2
+    vicon_person_topic: /vicon/person/person
+    vicon_objects_json: "[]"

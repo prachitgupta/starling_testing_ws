@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Plot the live scene, candidate path, verified safety tubes, and PX4 odometry."""
 
-import csv
 import json
 import math
 import os
@@ -9,7 +8,6 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Patch, Rectangle
 import rclpy
@@ -19,16 +17,13 @@ from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReli
 from std_msgs.msg import String
 
 try:
-    from min_control_qp import evaluate_sample, generate_trajectory
+    from min_control_qp import evaluate_sample, generate_trajectory, generate_shared_pair
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
-    from min_control_qp import evaluate_sample, generate_trajectory
+    from min_control_qp import evaluate_sample, generate_trajectory, generate_shared_pair
 
-try:
-    from lqr import A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, certified_metric_alpha, solve_care
-except ModuleNotFoundError:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
-    from lqr import A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, certified_metric_alpha, solve_care
+from postprocess_residual_calibration import residual_score
+from residual_certificate import certificate, read_scores, resolve_data_path, NO_QUANTILE
 
 
 ODOM_QOS = QoSProfile(
@@ -128,11 +123,9 @@ def evaluate_swept_tube(reference_xy, obstacles, required_radius_m):
             maximum = obstacle.get("max_corner")
             if not isinstance(minimum, list) or not isinstance(maximum, list) or len(minimum) < 2 or len(maximum) < 2:
                 raise ValueError("tube verification requires obstacle min_corner and max_corner")
-            expanded_minimum = [float(minimum[0]) - radius, float(minimum[1]) - radius]
-            expanded_maximum = [float(maximum[0]) + radius, float(maximum[1]) + radius]
-            if segment_intersects_aabb(start, end, expanded_minimum, expanded_maximum):
-                colliding.add(str(obstacle.get("object_id", obstacle.get("id", index))))
             clearance = segment_to_aabb_distance(start, end, minimum, maximum) - radius
+            if clearance <= 0:
+                colliding.add(str(obstacle.get("object_id", obstacle.get("id", index))))
             minimum_clearance = min(minimum_clearance, clearance)
     passed = not colliding
     return {
@@ -172,11 +165,9 @@ class ContractionVisualizer(Node):
         self.declare_parameter("max_horizontal_acceleration_mps2", 0.5)
         self.declare_parameter(
             "calibration_csv",
-            "config/certificates/calibration_min_control_qp_position_score_with_limits_2000.csv",
+            "fine_tuning/datasets/calibration_residual_scored.csv",
         )
-        self.declare_parameter("calibration_samples", 0)
-        self.declare_parameter("delta_p", 0.10)
-        self.declare_parameter("delta_w", 0.10)
+        self.declare_parameter("delta", 0.20)
         self.declare_parameter("drone_radius_m", 0.10)
         self.declare_parameter("discretization_allowance_m", 0.0)
         self.declare_parameter("debug", False)
@@ -184,10 +175,15 @@ class ContractionVisualizer(Node):
         self.output_png = str(self.get_parameter("output_png").value)
         self.show_window = bool(self.get_parameter("show_window").value)
         self.pose_trail_limit = int(self.get_parameter("pose_trail_limit").value)
-        self.calibration_csv = self.resolve_calibration_csv(str(self.get_parameter("calibration_csv").value))
-        self.delta_p = float(self.get_parameter("delta_p").value)
-        self.delta_w = float(self.get_parameter("delta_w").value)
-        self.q_p, self.q_w, self.state_radius_4d, self.projected_radius = self.load_certificate()
+        self.calibration_csv = resolve_data_path(str(self.get_parameter("calibration_csv").value))
+        self.calibration = certificate(read_scores(self.calibration_csv), float(self.get_parameter("delta").value))
+        self.calibration.update(active_radius_m=self.calibration["calibrated_radius_m"],
+                                active_quantile=self.calibration["calibrated_quantile"])
+        self.q_p = self.projected_radius = self.calibration["calibrated_radius_m"] or 0.0
+        self.q_w = self.calibration["calibrated_quantile"] or 0.0
+        if self.calibration["calibrated_quantile"] is None:
+            self.get_logger().warning(NO_QUANTILE)
+        self.trajectory_record = {}
         self.drone_radius = float(self.get_parameter("drone_radius_m").value)
         self.discretization_allowance = float(
             self.get_parameter("discretization_allowance_m").value
@@ -219,6 +215,7 @@ class ContractionVisualizer(Node):
             plt.ion()
             self.figure.show()
 
+        self.optimized_pub = self.create_publisher(String, "/llm_vision/optimized_trajectory", PLAN_QOS)
         self.safety_tube_ready_pub = self.create_publisher(
             String,
             str(self.get_parameter("safety_tube_ready_topic").value),
@@ -263,63 +260,9 @@ class ContractionVisualizer(Node):
         )
         self.create_timer(float(self.get_parameter("plot_period_s").value), self.render)
         self.get_logger().info(
-            f"loaded contraction certificate from {self.calibration_csv}: q_p={self.q_p:.6f} m, "
-            f"q_w={self.q_w:.6f}, projected 2D radius={self.projected_radius:.6f} m; "
+            f"residual calibration from {self.calibration_csv}: {self.calibration}; "
             f"showing live obstacles from {obstacle_topic} while waiting for a plan"
         )
-
-    @staticmethod
-    def conformal_quantile(values, delta):
-        ordered = sorted(values)
-        rank = max(1, math.ceil((1.0 - delta) * (len(ordered) + 1)))
-        return ordered[min(rank, len(ordered)) - 1]
-
-    @staticmethod
-    def resolve_calibration_csv(value):
-        requested = Path(value).expanduser()
-        candidates = [requested, Path.cwd() / requested]
-        try:
-            from ament_index_python.packages import get_package_share_directory
-
-            candidates.append(Path(get_package_share_directory("llm_vision_planner")) / requested)
-        except Exception:
-            pass
-        for candidate in candidates:
-            if candidate.is_file():
-                return candidate
-        raise FileNotFoundError(f"contraction calibration CSV does not exist: {value}")
-
-    def load_certificate(self):
-        with self.calibration_csv.open(newline="", encoding="utf-8") as stream:
-            rows = list(csv.DictReader(stream))
-        limit = int(self.get_parameter("calibration_samples").value)
-        rows = rows[:limit] if limit > 0 else rows
-        position_scores = [float(row["s_p"]) for row in rows if row.get("s_p")]
-        state_scores = [float(row["s_w"]) for row in rows if row.get("s_w")]
-        if not position_scores or not state_scores:
-            raise ValueError(f"{self.calibration_csv} must contain non-empty s_p and s_w calibration scores")
-        expected_limits = {
-            "max_velocity_mps": float(self.get_parameter("max_horizontal_speed_mps").value),
-            "max_acceleration_mps2": float(
-                self.get_parameter("max_horizontal_acceleration_mps2").value
-            ),
-        }
-        for field, expected in expected_limits.items():
-            observed = {float(row[field]) for row in rows if row.get(field)}
-            if observed and any(not math.isclose(value, expected) for value in observed):
-                raise ValueError(
-                    f"{self.calibration_csv} uses {field}={sorted(observed)}, expected {expected}"
-                )
-        q_p = self.conformal_quantile(position_scores, self.delta_p)
-        q_w = self.conformal_quantile(state_scores, self.delta_w)
-        p, gain, _ = solve_care()
-        alpha = certified_metric_alpha(A_DOUBLE_INTEGRATOR, B_DOUBLE_INTEGRATOR, gain, p)
-        lambda_min = float(np.min(np.linalg.eigvalsh(p)))
-        position_output = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
-        projection_gain = math.sqrt(float(np.max(np.linalg.eigvalsh(position_output @ np.linalg.inv(p) @ position_output.T))))
-        state_radius = q_w / (alpha * math.sqrt(lambda_min))
-        projected_radius = projection_gain * q_w / alpha
-        return q_p, q_w, state_radius, projected_radius
 
     def parse_payload(self, msg, source):
         try:
@@ -392,13 +335,16 @@ class ContractionVisualizer(Node):
                     "sample_count": len(self.reference_xy),
                     "q_p": self.q_p,
                     "q_w": self.q_w,
-                    "q_p_scope": "simulated_rrt_relative_cross_track",
+                    "q_p_scope": "projected trajectory residual bound",
+                    "residual_calibration": self.calibration,
+                    "trajectory_evaluation": self.trajectory_record,
                     "tube_gate_passed": bool(gate.get("passed", False)),
                     "minimum_clearance_m": gate.get("minimum_clearance_m"),
                     "required_radius_m": gate.get("required_radius_m"),
                     "colliding_obstacle_ids": gate.get("colliding_obstacle_ids", []),
                     "reason": gate.get("reason", ""),
                     "llm_prediction_safety_certified": bool(gate.get("passed", False)),
+                    "interaction_mode": payload.get("interaction_mode", "MISSION_EXECUTION"),
                     "safety_warning": (
                         "LLM prediction safety not certified: the predicted tube intersects "
                         "an enlarged obstacle. Human approval is required to continue."
@@ -424,9 +370,11 @@ class ContractionVisualizer(Node):
                     "sample_count": 0,
                     "tube_gate_passed": False,
                     "minimum_clearance_m": None,
-                    "required_radius_m": self.drone_radius + self.q_p + self.discretization_allowance,
+                    "required_radius_m": None,
                     "colliding_obstacle_ids": [],
-                    "reason": "the QP reference could not be generated for tube verification",
+                    "reason": (NO_QUANTILE if self.calibration.get("active_radius_m") is None else "the QP reference could not be generated for tube verification"),
+                    "residual_calibration": self.calibration,
+                    "trajectory_evaluation": self.trajectory_record,
                 }
                 self.safety_tube_ready_pub.publish(String(data=json.dumps(failed)))
         self.dirty = True
@@ -462,47 +410,55 @@ class ContractionVisualizer(Node):
             if launched:
                 self.get_logger().info(f"launch approved for latched plan_id={payload.get('plan_id')}")
             return True
-        try:
-            trajectory = generate_trajectory(
-                payload.get("waypoints", []),
-                payload.get("workspace", {}),
-                payload.get("obstacles", []),
-                dt=float(self.get_parameter("trajectory_dt").value),
-                max_velocity_mps=float(self.get_parameter("max_horizontal_speed_mps").value),
-                max_acceleration_mps2=float(self.get_parameter("max_horizontal_acceleration_mps2").value),
-            )
-        except (RuntimeError, ValueError) as exc:
-            self.get_logger().error(f"could not generate verified QP reference: {exc}")
-            return False
-        self.plan = payload
-        self.launched = launched
-        self.reference_samples = trajectory["samples"]
-        self.reference_xy = [
-            (float(sample["x"][0]), float(sample["x"][1])) for sample in self.reference_samples
-        ]
+        self.trajectory_record = {}
+        self.calibration = payload.get("residual_calibration") or certificate(
+            read_scores(self.calibration_csv), float(self.get_parameter("delta").value))
+        self.calibration.setdefault("active_radius_m", self.calibration["calibrated_radius_m"])
+        self.calibration.setdefault("active_quantile", self.calibration["calibrated_quantile"])
+        self.q_p = self.projected_radius = self.calibration["active_radius_m"] or 0.0
+        self.q_w = self.calibration["active_quantile"] or 0.0
         self.expert_reference_samples = []
         self.expert_reference_xy = []
-        expert = payload.get("selected_expert_route_verification")
-        if isinstance(expert, dict) and expert.get("passed", False):
-            try:
-                expert_trajectory = generate_trajectory(
-                    expert.get("waypoints", []),
-                    payload.get("workspace", {}),
-                    payload.get("obstacles", []),
-                    dt=float(self.get_parameter("trajectory_dt").value),
-                    max_velocity_mps=float(self.get_parameter("max_horizontal_speed_mps").value),
-                    max_acceleration_mps2=float(
-                        self.get_parameter("max_horizontal_acceleration_mps2").value
-                    ),
-                )
+        mode = payload.get("interaction_mode", "MISSION_EXECUTION")
+        options = dict(workspace=payload.get("workspace", {}),
+                       dt=float(self.get_parameter("trajectory_dt").value), damping=0.0,
+                       max_velocity_mps=float(self.get_parameter("max_horizontal_speed_mps").value),
+                       max_acceleration_mps2=float(self.get_parameter("max_horizontal_acceleration_mps2").value))
+        try:
+            if mode == "ADAPTIVE_CONFORMAL_PREDICTION":
+                expert = payload.get("selected_expert_route_verification") or {}
+                if not expert.get("passed"):
+                    raise ValueError("ACP requires a verified HRRT expert trajectory")
+                expert_trajectory, trajectory = generate_shared_pair(
+                    expert["waypoints"], payload["waypoints"], **options)
                 self.expert_reference_samples = expert_trajectory["samples"]
-                self.expert_reference_xy = [
-                    (float(sample["x"][0]), float(sample["x"][1]))
-                    for sample in self.expert_reference_samples
-                ]
-            except (RuntimeError, ValueError) as exc:
-                self.get_logger().error(f"could not generate HRRT expert QP reference: {exc}")
-        required_radius = self.drone_radius + self.q_p + self.discretization_allowance
+                maximum, _, _ = residual_score(expert_trajectory["samples"], trajectory["samples"])
+                self.trajectory_record.update(score=float(maximum[0]), score_max_time_s=float(maximum[1]),
+                                              expert_samples=expert_trajectory["samples"],
+                                              expert_route_id=expert.get("route_id"))
+            else:
+                trajectory = generate_trajectory(payload.get("waypoints", []), **options)
+        except (RuntimeError, ValueError) as exc:
+            self.get_logger().error(f"could not generate QP reference: {exc}")
+            return False
+        self.trajectory_record.update(plan_id=payload.get("plan_id"), mission_id=payload.get("mission_id"),
+                                      interaction_mode=mode, predicted_samples=trajectory["samples"],
+                                      dynamics_model="ideal_planar_double_integrator", frame_id="local_ned",
+                                      residual_calibration=self.calibration, limits=trajectory.get("limits", {}))
+        self.optimized_pub.publish(String(data=json.dumps(self.trajectory_record, allow_nan=False)))
+        if self.calibration["active_radius_m"] is None:
+            self.get_logger().warning(NO_QUANTILE)
+            self.plan = None
+            self.reference_samples = self.reference_xy = []
+            return False
+        self.plan, self.launched = payload, launched
+        self.reference_samples = trajectory["samples"]
+        self.reference_xy = [(float(sample["x"][0]), float(sample["x"][1])) for sample in self.reference_samples]
+        self.expert_reference_xy = [(float(sample["x"][0]), float(sample["x"][1])) for sample in self.expert_reference_samples]
+        # Bound ideal-ZOH arc deviation from each plotted/gated chord.
+        chord_allowance = max((math.hypot(*a["u"]) * (b["t"] - a["t"]) ** 2 / 8
+                               for a, b in zip(self.reference_samples, self.reference_samples[1:])), default=0.0)
+        required_radius = self.drone_radius + self.projected_radius + self.discretization_allowance + chord_allowance
         try:
             self.tube_gate = evaluate_swept_tube(
                 self.reference_xy,
@@ -554,7 +510,7 @@ class ContractionVisualizer(Node):
         elapsed_s = max(0.0, (timestamp_us - self.reference_start_timestamp_us) / 1_000_000.0)
         reference_state, _ = evaluate_sample(
             self.reference_samples,
-            min(elapsed_s, float(self.reference_samples[-1]["t"])),
+            min(elapsed_s, float(self.reference_samples[-1]["t"])), damping=0.0,
         )
         self.latest_live_position_error = math.dist(point, (float(reference_state[0]), float(reference_state[1])))
         self.max_live_position_error = max(self.max_live_position_error or 0.0, self.latest_live_position_error)
@@ -649,18 +605,6 @@ class ContractionVisualizer(Node):
                 axis.add_patch(
                     Circle(
                         (x, y),
-                        self.projected_radius,
-                        facecolor="#c4b5fd",
-                        edgecolor="#7c3aed",
-                        linewidth=0.6,
-                        alpha=0.06,
-                        zorder=4,
-                    )
-                )
-            for x, y in self.reference_xy[::display_step]:
-                axis.add_patch(
-                    Circle(
-                        (x, y),
                         self.q_p,
                         facecolor="#60a5fa",
                         edgecolor="none",
@@ -674,17 +618,6 @@ class ContractionVisualizer(Node):
             expert_xs = [point[0] for point in self.expert_reference_xy]
             expert_ys = [point[1] for point in self.expert_reference_xy]
             display_step = max(1, len(self.expert_reference_xy) // 30)
-            for x, y in self.expert_reference_xy[::display_step]:
-                axis.add_patch(
-                    Circle(
-                        (x, y),
-                        self.q_p,
-                        facecolor="#34d399",
-                        edgecolor="none",
-                        alpha=0.09,
-                        zorder=5,
-                    )
-                )
             axis.plot(expert_xs, expert_ys, color="#059669", linewidth=2.2, zorder=6)
 
         if self.pose_trail:
@@ -730,6 +663,8 @@ class ContractionVisualizer(Node):
             f"Scene: {scene_health}\nObjects: {len(observed_obstacles)}\n"
             f"Obstacle safety: {strategy}\nq_obs: {quantile_text}\n"
             f"Placeholder: {'YES' if placeholder else 'NO'}\n"
+            f"Calibrated q: {self.calibration.get('calibrated_quantile')}\nCalibrated radius: {self.calibration.get('calibrated_radius_m')} m\n"
+            f"Adaptive q: {self.calibration.get('adaptive_quantile')}\nAdaptive radius: {self.calibration.get('adaptive_radius_m')} m\n"
             f"Tube gate: {gate_text}\nMinimum clearance: {clearance_text}\nPhase: {phase}"
         )
         if self.plan is not None:
@@ -750,15 +685,15 @@ class ContractionVisualizer(Node):
                     facecolor="#60a5fa",
                     edgecolor="none",
                     alpha=0.35,
-                    label=rf"LLM conformal tube $q_p={self.q_p:.2f}$ m",
+                    label=rf"Transformer XY radius $r={self.q_p:.2f}$ m",
                 ),
                 Patch(
                     facecolor="#c4b5fd",
                     edgecolor="#7c3aed",
                     alpha=0.35,
-                    label=rf"$q_w={self.q_w:.2f}$",
+                    label=rf"Residual quantile $q={self.q_w:.2f}$",
                 ),
-                Line2D([0], [0], color="#f97316", linewidth=2.2, label="LLM optimized QP"),
+                Line2D([0], [0], color="#f97316", linewidth=2.2, label="Transformer optimized QP"),
                 Line2D(
                     [0],
                     [0],
@@ -771,12 +706,6 @@ class ContractionVisualizer(Node):
                 legend_handles[3:3] = [
                     Line2D(
                         [0], [0], color="#059669", linewidth=2.2, label="HRRT optimized QP"
-                    ),
-                    Patch(
-                        facecolor="#34d399",
-                        edgecolor="none",
-                        alpha=0.35,
-                        label=rf"HRRT conformal tube $q_p={self.q_p:.2f}$ m",
                     ),
                 ]
             axis.legend(

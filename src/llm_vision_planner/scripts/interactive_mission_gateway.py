@@ -32,6 +32,8 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
     from hrrt_star import plan_hrrt_star
 
+from residual_certificate import AdaptiveResidualCalibration, read_scores, NO_QUANTILE
+
 try:
     from residual_calibration_recorder import (
         average_transforms,
@@ -1102,8 +1104,12 @@ class InteractiveMissionGateway(Node):
         # perception: thickness measured by perception_detection.py (outline +
         # ToF); gpt: GPT nano's estimate from the label (original behaviour).
         self.declare_parameter("nominal_depth_source", "perception")
-        self.declare_parameter("planner_llm_provider", "llama")
-        self.declare_parameter("planner_model_name", "hrrt_planner")
+        self.declare_parameter("planner_llm_provider", "transformer")
+        self.declare_parameter("planner_model_name", "structured_waypoint_transformer")
+        self.declare_parameter("calibration_csv", "fine_tuning/datasets/calibration_residual_scored.csv")
+        self.declare_parameter("delta", 0.20)
+        self.declare_parameter("acp_gamma", 0.01)
+        self.declare_parameter("acp_state_file", "~/.ros/llm_vision/acp_state.json")
         self.declare_parameter("visualizer", "contraction")
         self.declare_parameter("interaction_mode", "MISSION_EXECUTION")
         self.declare_parameter("mode_topic", "/llm_vision/interaction_mode")
@@ -1223,6 +1229,13 @@ class InteractiveMissionGateway(Node):
             ],
             "z": self.fixed_z,
         }
+        self.acp = AdaptiveResidualCalibration(
+            read_scores(str(self.get_parameter("calibration_csv").value)),
+            float(self.get_parameter("delta").value), float(self.get_parameter("acp_gamma").value),
+            str(self.get_parameter("acp_state_file").value))
+        if not self.acp.scores:
+            self.get_logger().warning(NO_QUANTILE)
+        self.acp_event_pub = self.create_publisher(String, "/llm_vision/acp_update", LATCHED_QOS)
         self.state = "WAITING_FOR_COMMAND"
         self.latest_scene = None
         self.latest_scene_received_s = None
@@ -1272,9 +1285,7 @@ class InteractiveMissionGateway(Node):
         self.calibration_frame_ready_s = None
         self.calibration_capture_count = 0
         self.last_calibration_capture_s = None
-        self.require_safety_tubes = (
-            str(self.get_parameter("visualizer").value).strip().lower() == "contraction"
-        )
+        self.require_safety_tubes = True
         self.intent_request_token = None
         self.intent_results = queue.Queue()
         self.intent_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="intent_parser")
@@ -2346,6 +2357,7 @@ class InteractiveMissionGateway(Node):
             "timestamp": time.time(),
             "llm_provider": str(self.get_parameter("planner_llm_provider").value),
             "requested_model": str(self.get_parameter("planner_model_name").value),
+            "residual_calibration": self.acp.snapshot(self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"),
             "interaction_mode": self.interaction_mode,
         }
         if mission.get("selected_expert_route"):
@@ -2427,7 +2439,10 @@ class InteractiveMissionGateway(Node):
             )
             self.pending_verified_plan = output
             self.state = "FORMING_SAFETY_TUBES"
-            self.maybe_publish_launch_proposal()
+            if (self.latest_safety_tube_ready or {}).get("plan_id") == self.active_plan_id:
+                self.safety_tube_ready_callback(String(data=json.dumps(self.latest_safety_tube_ready)))
+            else:
+                self.maybe_publish_launch_proposal()
             if self.state == "FORMING_SAFETY_TUBES":
                 self.publish_response(
                     "FORMING_SAFETY_TUBES",
@@ -2463,6 +2478,23 @@ class InteractiveMissionGateway(Node):
             self.get_logger().error(f"invalid safety-tube readiness JSON: {exc}")
             return
         tube_status = self.latest_safety_tube_ready
+        if str(tube_status.get("plan_id")) != str(self.active_plan_id):
+            return
+        evaluation = tube_status.get("trajectory_evaluation") or {}
+        if (self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                and evaluation.get("interaction_mode") == self.interaction_mode
+                and str(evaluation.get("plan_id")) == str(self.active_plan_id)
+                and "score" in evaluation and self.acp.scores):
+            already_updated = str(self.active_plan_id) in self.acp.records
+            try:
+                event = self.acp.update(self.active_plan_id, evaluation["score"],
+                                        evaluation["residual_calibration"])
+                if not already_updated:
+                    self.acp_event_pub.publish(String(data=json.dumps({**event,
+                        "interaction_mode": self.interaction_mode, "plan_id": self.active_plan_id,
+                        "timestamp": time.time(), "next_calibration": self.acp.snapshot(True)}, allow_nan=False)))
+            except (ValueError, KeyError, OSError) as exc:
+                tube_status.update(status="FAILED", reason=f"ACP update failed: {exc}")
         if (
             self.state == "FORMING_SAFETY_TUBES"
             and tube_status.get("status") == "FAILED"
@@ -2484,6 +2516,7 @@ class InteractiveMissionGateway(Node):
                 plan_id=self.active_plan_id,
                 minimum_clearance_m=tube_status.get("minimum_clearance_m"),
                 required_radius_m=tube_status.get("required_radius_m"),
+                residual_calibration=tube_status.get("residual_calibration", {}),
                 failed_constraints=["swept_tube_clearance"],
             )
             return
@@ -2530,9 +2563,17 @@ class InteractiveMissionGateway(Node):
             "tube_colliding_obstacle_ids": tube_status.get("colliding_obstacle_ids", []),
             "tube_minimum_clearance_m": tube_status.get("minimum_clearance_m"),
             "tube_required_radius_m": tube_status.get("required_radius_m"),
-            "q_p_scope": tube_status.get("q_p_scope", "simulated_rrt_relative_cross_track"),
+            "q_p_scope": tube_status.get("q_p_scope", "projected trajectory residual bound"),
+            "residual_calibration": tube_status.get("residual_calibration", {}),
             **copy.deepcopy(self.active_mission["obstacle_safety"]),
         }
+        evaluation = tube_status.get("trajectory_evaluation") or {}
+        self.pending_verified_plan["optimized_reference"] = {
+            "samples": evaluation.get("predicted_samples", []),
+            "dynamics_model": evaluation.get("dynamics_model"),
+            "limits": evaluation.get("limits", {}),
+        }
+        self.pending_verified_plan["residual_calibration"] = tube_status.get("residual_calibration", {})
         self.state = "AWAITING_LAUNCH_APPROVAL"
         self.launch_proposal_pub.publish(String(data=json.dumps(launch_proposal)))
         self.publish_response(

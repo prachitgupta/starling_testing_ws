@@ -59,9 +59,9 @@ class PromptGenerator(Node):
         self.declare_parameter("semantic_obstacle_topic", DEFAULT_SEMANTIC_OBSTACLE_TOPIC)
         self.declare_parameter("sim_obstacle_topic", "/llm_vision/sim_obstacles")
         self.declare_parameter("prompt_topic", DEFAULT_PROMPT_TOPIC)
-        self.declare_parameter("llm_provider", "llama")
-        self.declare_parameter("chatgpt_model_name", "gpt-5-mini")
-        self.declare_parameter("llama_model_name", "hrrt_planner")
+        self.declare_parameter("llm_provider", "transformer")
+        self.declare_parameter("transformer_checkpoint", "")
+        self.declare_parameter("transformer_device", "auto")
         self.declare_parameter("verified_plan_topic", DEFAULT_VERIFIED_PLAN_TOPIC)
         self.declare_parameter("mission_state_topic", DEFAULT_MISSION_STATE_TOPIC)
         self.declare_parameter("required_mission_state", "HOLDING_FOR_PLAN")
@@ -108,8 +108,7 @@ class PromptGenerator(Node):
         self.goal_clearance_m = float(self.get_parameter("goal_clearance_m").value)
         self.prompt_topic = str(self.get_parameter("prompt_topic").value)
         self.llm_provider = str(self.get_parameter("llm_provider").value).strip().lower()
-        self.chatgpt_model_name = str(self.get_parameter("chatgpt_model_name").value)
-        self.llama_model_name = str(self.get_parameter("llama_model_name").value)
+        self.transformer_checkpoint = str(self.get_parameter("transformer_checkpoint").value)
         self.verified_plan_topic = str(self.get_parameter("verified_plan_topic").value)
         self.mission_state_topic = str(self.get_parameter("mission_state_topic").value)
         self.required_mission_state = str(self.get_parameter("required_mission_state").value)
@@ -276,7 +275,7 @@ class PromptGenerator(Node):
             "latched_context_timestamp": context["timestamp"],
             "timestamp": time.time(),
             "llm_provider": self.llm_provider,
-            "requested_model": self.llama_model_name if self.llm_provider in ("llama", "vllm") else self.chatgpt_model_name,
+            "requested_model": self.transformer_checkpoint,
         }
 
         self.active_plan_id = self.next_plan_id

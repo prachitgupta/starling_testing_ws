@@ -10,6 +10,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclpy</depend>
+  <exec_depend>rosidl_runtime_py</exec_depend>
   <depend>launch</depend>
   <depend>launch_ros</depend>
   <depend>std_msgs</depend>

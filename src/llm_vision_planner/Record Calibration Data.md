@@ -613,9 +613,9 @@ PY
 
 ### 13.5 Compute the scored calibration CSV offline
 
-Section 3.1 must already be serving the trained adapter under its selected alias.
+Restore the selected local V1 Transformer weights using the final Transformer guide.
 Each command scores only the captures selected for that `L1`/`L2`/goal batch.
-The Llama adapter plans on perceived geometry; ChatGPT selects the expert HRRT
+The local Transformer plans on perceived geometry; ChatGPT selects the expert HRRT
 route on ground-truth geometry. If a human already selected an exact displayed
 route, replace `--expert-selector openai` with
 `--expert-route-id ROUTE_ID_FROM_GATEWAY`.
@@ -627,14 +627,11 @@ source install/setup.bash
 
 RAW_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw.csv"
 CALIBRATION_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_scored.csv"
-GPU_IP=172.22.224.93
-export VLLM_BASE_URL=http://$GPU_IP:8000/v1
+TRANSFORMER_CHECKPOINT="$PWD/src/llm_vision_planner/fine_tuning/outputs/final-transformer-vertical-teacher_only_80_10_10/final_transformer_vertical_teacher_only_80_10_10_best/checkpoint"
+DELTA=0.20
 read -rsp "OpenAI API key: " OPENAI_API_KEY
 export OPENAI_API_KEY
 export EXPERT_MODEL=gpt-5.4
-LLAMA_MODEL_NAME=hrrt_planner_dss
-
-curl --fail --silent --show-error "$VLLM_BASE_URL/models"
 
 python3 src/llm_vision_planner/fine_tuning/scripts/postprocess_residual_calibration.py \
   --raw-csv "$RAW_CSV" \
@@ -662,10 +659,9 @@ python3 src/llm_vision_planner/fine_tuning/scripts/postprocess_residual_calibrat
   --sample-seed 17 \
   --expert-selector openai \
   --expert-model "$EXPERT_MODEL" \
-  --planner-provider vllm \
-  --vllm-base-url "$VLLM_BASE_URL" \
-  --vllm-api-key EMPTY \
-  --llama-model "$LLAMA_MODEL_NAME" \
+  --planner-provider transformer \
+  --transformer-checkpoint "$TRANSFORMER_CHECKPOINT" \
+  --transformer-device auto --delta "$DELTA" \
   --append
 ```
 
@@ -722,4 +718,4 @@ when the adaptive conformal initial-radius loader is enabled.
 
 ## Final Transformer evaluation
 
-Use [the final V1 gateway guide](fine_tuning/final_transformer_vertical.md). The postprocessor above has its own supported providers; its mock/vLLM outputs are not automatically final-Transformer calibration certificates. The interactive gateway does not batch-score this entire dataset on startup or obtain human preference selections automatically. Freeze the exact deployed pipeline and separately validate its scored calibration before flight.
+Use [the final V1 gateway guide](fine_tuning/final_transformer_vertical.md). The postprocessor uses the same Transformer loader as both gateways. Mock fixture scores are excluded from real calibration. The quantile uses all valid scored rows at probability `1-delta`, with no sample-count threshold. The interactive gateway does not batch-score this entire dataset on startup or obtain human preference selections automatically. Freeze the exact deployed pipeline and separately validate its scored calibration before flight.

@@ -13,7 +13,7 @@ test -s "$LOCAL_FINAL/text_encoder/model.safetensors"
 sha256sum -c LOCAL_ASSETS.sha256
 ```
 
-Both weight files remain available in the prepared local checkout and original research checkout; they are NOT published to GitHub. On a new machine, copy these exact files from your trusted local backup into these paths and verify their hashes. Do not substitute a different checkpoint. Tokenizer, configuration, encoder configuration, metrics and training reports are tracked. Original NCSA paths inside saved configuration are preserved as provenance; the gateway receives an explicit local checkpoint path.
+Both weight files are absent in this checkout; zero-byte placeholders mark their required paths. They are NOT published to GitHub. On a new machine, copy these exact files from your trusted local backup into these paths and verify their hashes. Do not substitute a different checkpoint. Tokenizer, configuration, encoder configuration, metrics and training reports are tracked. Original NCSA paths inside saved configuration are preserved as provenance; the gateway receives an explicit local checkpoint path.
 
 Restore the exact training data only if needed (already unpacked in the prepared local checkout):
 
@@ -38,13 +38,14 @@ python3 fine_tuning/scripts/calibration_verifier_gateway.py \
   --dataset fine_tuning/datasets/calibration_residual_raw_person_outline.csv \
   --planner-provider transformer \
   --transformer-checkpoint "$LOCAL_FINAL/checkpoint" \
-  --transformer-device auto --intent-provider openai \
+  --transformer-device auto --intent-provider openai --delta 0.20 \
+  --scored-csv fine_tuning/datasets/calibration_residual_scored.csv \
   --host 127.0.0.1 --port 8091
 ```
 
 Open http://127.0.0.1:8091/. Environment uncertainty mode gives the Transformer and goal grounding perceived E-hat; HRRT uses ground-truth E. Planner-only mode gives all three ground-truth E. This is an offline inspection tool, not the live ROS mission controller.
 
-The gateway does not score the entire dataset at startup, does not automatically make human preference selections, and its current per-scene tube output must not be advertised as a 95% or 80% calibration-distribution guarantee. Retry feedback is not encoded into the Transformer input. See the implementation report and saved numerical audit before interpreting its blue tube.
+The gateway does not score the entire dataset at startup, does not automatically make human preference selections, and reads its empirical quantile from the postprocessed scored CSV. The probability is `1-delta`; this empirical percentile alone is not a finite-sample split-conformal guarantee. Retry feedback is not encoded into the Transformer input. See the implementation report and saved numerical audit before interpreting its blue tube.
 
 ## Evidence
 

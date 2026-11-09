@@ -24,6 +24,7 @@ install(PROGRAMS
   scripts/outline_depth_from_bag.py
   fine_tuning/scripts/hrrt_star.py
   fine_tuning/scripts/lqr.py
+  fine_tuning/scripts/mission_data_logger.py
   fine_tuning/scripts/residual_calibration_recorder.py
   fine_tuning/scripts/postprocess_residual_calibration.py
   fine_tuning/scripts/calibration_verifier_gateway.py
@@ -33,6 +34,8 @@ install(PROGRAMS
 install(FILES
   fine_tuning/scripts/min_control_qp.py
   fine_tuning/scripts/train_hrrt_waypoint_transformer.py
+  fine_tuning/scripts/residual_certificate.py
+  fine_tuning/scripts/waypoint_transformer.py
   scripts/obstacle_depth.py
   scripts/outline_depth.py
   scripts/outline_segmentation.py

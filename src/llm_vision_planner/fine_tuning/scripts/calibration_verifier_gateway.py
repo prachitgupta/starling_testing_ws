@@ -46,11 +46,12 @@ if str(MISSION_SCRIPT_DIR) not in sys.path:
 
 from hrrt_star import normalize_obstacles, plan_hrrt_star  # noqa: E402
 from min_control_qp import generate_shared_pair  # noqa: E402
+from waypoint_transformer import WaypointTransformerPlanner, refine_waypoints  # noqa: E402
+from residual_certificate import certificate, read_scores, empirical_quantile, NO_QUANTILE
 from postprocess_residual_calibration import (  # noqa: E402
     environments,
     residual_score,
     safe_path,
-    vllm_predicted_waypoints,
 )
 from interactive_mission_gateway import (  # noqa: E402
     MockIntentParser,
@@ -63,8 +64,11 @@ from interactive_mission_gateway import (  # noqa: E402
     route_cards as mission_route_cards,
 )
 from prompt_generator import INSTRUCTIONS, PromptGenerator  # noqa: E402
-from refinment import PathRefinement  # noqa: E402
 from verifier import PathVerifier  # noqa: E402
+
+
+def metric_text(value):
+    return NO_QUANTILE if value is None else f"{value:.5f}"
 
 
 def compact(value):
@@ -173,99 +177,6 @@ def plan_family(start, goal, obstacles, workspace, args):
     )
 
 
-class WaypointTransformerPlanner:
-    """Local inference wrapper for a saved structured waypoint checkpoint."""
-
-    def __init__(self, checkpoint: Path, device_name: str) -> None:
-        try:
-            import torch
-            from transformers import AutoTokenizer
-        except ImportError as exc:
-            raise RuntimeError(
-                "The transformer planner requires torch and transformers in the active Python environment."
-            ) from exc
-
-        checkpoint = checkpoint.expanduser().resolve()
-        config_path = checkpoint / "config.json"
-        weights_path = checkpoint / "model.pt"
-        tokenizer_path = checkpoint / "tokenizer"
-        for path in (config_path, weights_path, tokenizer_path):
-            if not path.exists():
-                raise FileNotFoundError(f"Transformer checkpoint is missing {path}")
-        with config_path.open(encoding="utf-8") as stream:
-            config = json.load(stream)
-        if not isinstance(config.get("model"), dict):
-            raise ValueError(f"{config_path} does not contain a model configuration")
-
-        model_config = dict(config["model"])
-        shared_encoder = checkpoint.parent / "text_encoder"
-        if shared_encoder.is_dir():
-            model_config["text_encoder_name"] = str(shared_encoder)
-        if model_config.get("architecture_version") == "transformer_2_0":
-            raise ValueError("This final-testing branch supports the final vertical V1 checkpoint; use the research branch for Transformer 2.0.")
-        else:
-            from train_hrrt_waypoint_transformer import build_model, encode_scene
-
-        if device_name == "auto":
-            device_name = "cuda" if torch.cuda.is_available() else "cpu"
-        if device_name.startswith("cuda") and not torch.cuda.is_available():
-            raise RuntimeError("--transformer-device requests CUDA, but CUDA is unavailable")
-        self.device = torch.device(device_name)
-        self.model_config = model_config
-        self.encode_scene = encode_scene
-        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
-        self.model = build_model(model_config).to(self.device)
-        self.model.load_state_dict(torch.load(weights_path, map_location=self.device), strict=True)
-        self.model.eval()
-
-    @staticmethod
-    def text_context(preference, obstacles):
-        if obstacles:
-            identities = "; ".join(
-                f"obstacle {index} is {str(obstacle.get('label', 'object')).replace('_', ' ')}"
-                for index, obstacle in enumerate(obstacles, start=1)
-            )
-        else:
-            identities = "there are no obstacles"
-        return f"Approved route preference: {str(preference).rstrip().rstrip('.')}. Scene-token identities: {identities}."
-
-    def predict(self, start, goal, obstacles, workspace, preference):
-        import torch
-
-        environment = {
-            "start": dict(start),
-            "goal": dict(goal),
-            "workspace": dict(workspace),
-            "obstacles": list(obstacles),
-        }
-        scene_tokens = self.encode_scene(environment)
-        if len(scene_tokens) > int(self.model_config["max_scene_tokens"]):
-            raise ValueError(
-                f"scene has {len(scene_tokens)} tokens, exceeding checkpoint limit "
-                f"{self.model_config['max_scene_tokens']}"
-            )
-        text = self.tokenizer(
-            [self.text_context(preference, obstacles)],
-            padding=True,
-            truncation=True,
-            max_length=int(self.model_config["max_text_length"]),
-            return_tensors="pt",
-        )
-        input_ids = text["input_ids"].to(self.device)
-        attention_mask = text["attention_mask"].to(self.device)
-        scene = torch.from_numpy(scene_tokens).unsqueeze(0).to(self.device)
-        scene_padding_mask = torch.zeros((1, len(scene_tokens)), dtype=torch.bool, device=self.device)
-        with torch.no_grad():
-            normalized = self.model(input_ids, attention_mask, scene, scene_padding_mask)[0]
-        lower = torch.tensor([workspace["x"][0], workspace["y"][0]], dtype=normalized.dtype, device=self.device)
-        upper = torch.tensor([workspace["x"][1], workspace["y"][1]], dtype=normalized.dtype, device=self.device)
-        coordinates = (lower + 0.5 * (normalized + 1.0) * (upper - lower)).detach().cpu().numpy()
-        z = float(workspace["z"])
-        waypoints = [{"x": float(x), "y": float(y), "z": z} for x, y in coordinates]
-        waypoints[0] = {"x": float(start["x"]), "y": float(start["y"]), "z": z}
-        waypoints[-1] = {"x": float(goal["x"]), "y": float(goal["y"]), "z": z}
-        return waypoints
-
 
 def planner_waypoints(start, goal, planning_obstacles, workspace, l1, args, feedback="", prompt_text=""):
     if args.planner_provider == "mock":
@@ -273,21 +184,12 @@ def planner_waypoints(start, goal, planning_obstacles, workspace, l1, args, feed
         return min(family["routes"], key=lambda route: (route["path_length_m"], route["route_id"]))["waypoints"]
     if args.planner_provider == "transformer":
         return args.transformer_planner.predict(start, goal, planning_obstacles, workspace, l1)
-    planner_args = SimpleNamespace(
-        vllm_base_url=args.vllm_base_url,
-        vllm_api_key=args.vllm_api_key,
-        llama_model=args.llama_model,
-        clearance_m=args.clearance_m,
-    )
-    return vllm_predicted_waypoints(
-        start, goal, planning_obstacles, workspace, l1, planner_args,
-        feedback=feedback, validate=False, prompt_text=prompt_text,
-    )
+    raise ValueError(f"Unsupported planner provider: {args.planner_provider}")
 
 
 def planner_display_name(args):
     """Return the user-facing name for the selected waypoint planner."""
-    return "Transformer" if args.planner_provider == "transformer" else "LLM"
+    return "Transformer" if args.planner_provider == "transformer" else "Mock (fixture only)"
 
 
 def configured_verifier(workspace, clearance):
@@ -302,15 +204,6 @@ def configured_verifier(workspace, clearance):
     verifier.start_tolerance_m = 0.10
     verifier.progress_tolerance_m = 1e-3
     return verifier
-
-
-def refine_waypoints(waypoints, workspace, obstacles, clearance, fixed_z):
-    refiner = PathRefinement.__new__(PathRefinement)
-    refiner.interpolation_spacing_m = 1.0
-    refiner.safety_margin_m = float(clearance)
-    refiner.nudge_epsilon_m = 0.02
-    refiner.fixed_z = float(fixed_z)
-    return refiner.interpolate_waypoints(waypoints, workspace, obstacles)
 
 
 def verify_waypoints(waypoints, start, goal, obstacles, workspace, clearance):
@@ -350,6 +243,7 @@ def score_pair(expert_waypoints, predicted_waypoints, args):
             "z": args.fixed_z,
         },
         dt=args.dt,
+        max_velocity_mps=0.5, max_acceleration_mps2=0.5,
         damping=0.0,
     )
     maximum, p_matrix, k_matrix = residual_score(
@@ -357,6 +251,7 @@ def score_pair(expert_waypoints, predicted_waypoints, args):
     )
     score = float(maximum[0])
     return {
+        **args.residual_certificate,
         "score": score,
         "max_time_s": float(maximum[1]),
         "residual": [float(value) for value in maximum[2]],
@@ -384,7 +279,10 @@ def public_result(capture_id, rows, mode, l1, l2, expert, raw_predicted, predict
         "score": result["score"],
         "score_max_time_s": result["max_time_s"],
         "residual": result["residual"],
-        "tube_quantile": result["score"],
+        "tube_quantile": result["calibrated_quantile"],
+        "tube_radius_m": result["calibrated_radius_m"],
+        "delta": result["delta"],
+        "calibration_sample_count": result["calibration_sample_count"],
         "expert_samples": result["expert_samples"],
         "predicted_samples": result["predicted_samples"],
         "ground_truth_obstacles": environments_used[0],
@@ -420,7 +318,7 @@ if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)button.onclick=(
 setupSpeech('speech-l1','speech-file-l1','l1','speech-status-l1');setupSpeech('speech-l2','speech-file-l2','l2','speech-status-l2');
 const scoreForm=document.getElementById('score-form'),scoreButton=document.getElementById('score-button'),pipelineStatus=document.getElementById('pipeline-status'),plotContainer=document.getElementById('plot-container'),plotLegend=document.getElementById('plot-legend'),scoreResults=document.getElementById('score-results'),resultJson=document.getElementById('result-json'),modeSelect=document.getElementById('mode-select');
 modeSelect?.addEventListener('change',async()=>{const mode=modeSelect.value;const hiddenMode=scoreForm?.querySelector('input[name="mode"]');if(hiddenMode)hiddenMode.value=mode;const response=await fetch(`/api/preview?mode=${encodeURIComponent(mode)}`,{cache:'no-store'});if(response.ok){const preview=await response.json();plotContainer.innerHTML=preview.plot;plotLegend.textContent=preview.legend}});
-function showScores(progress){scoreResults.replaceChildren();const box=document.createElement('div');box.className='score-lock';const title=document.createElement('div');title.className='metric';title.textContent=`Final scores — ${progress.selected_mode} displayed`;box.appendChild(title);for(const [name,item] of Object.entries(progress.scores||{})){const line=document.createElement('p');line.textContent=`${name}: score = ${Number(item.score).toFixed(5)} m · tube q = ${Number(item.tube_quantile).toFixed(5)} m · max residual at ${Number(item.max_time_s).toFixed(2)} s`;box.appendChild(line)}scoreResults.appendChild(box);if(progress.result)resultJson.textContent=JSON.stringify(progress.result,null,2)}
+function showScores(progress){scoreResults.replaceChildren();const box=document.createElement('div');box.className='score-lock';const title=document.createElement('div');title.className='metric';title.textContent=`Final scores — ${progress.selected_mode} displayed`;box.appendChild(title);for(const [name,item] of Object.entries(progress.scores||{})){const line=document.createElement('p');line.textContent=`${name}: score = ${Number(item.score).toFixed(5)} · calibrated q = ${item.tube_quantile===null?"no valid quantile found":Number(item.tube_quantile).toFixed(5)} · XY radius = ${item.tube_radius_m===null?"unavailable":Number(item.tube_radius_m).toFixed(5)} m · max residual at ${Number(item.max_time_s).toFixed(2)} s`;box.appendChild(line)}scoreResults.appendChild(box);if(progress.result)resultJson.textContent=JSON.stringify(progress.result,null,2)}
 function showHistory(history){const log=document.getElementById('pipeline-log');log.replaceChildren();for(const event of history||[]){const item=document.createElement('li');item.textContent=`${event.stage}: ${event.message}`;log.appendChild(item)}log.scrollTop=log.scrollHeight}
 async function pollPipeline(){const response=await fetch('/api/progress',{cache:'no-store'}),progress=await response.json();pipelineStatus.textContent=`${progress.stage}: ${progress.message}`;showHistory(progress.history);if(progress.plot)plotContainer.innerHTML=progress.plot;if(progress.legend)plotLegend.textContent=progress.legend;if(progress.done){if(progress.error){pipelineStatus.classList.add('error');scoreButton.disabled=false}else{showScores(progress);scoreButton.disabled=true;scoreButton.textContent='Final result locked — change row to run again'}return}setTimeout(pollPipeline,350)}
 scoreForm.addEventListener('submit',async event=>{event.preventDefault();scoreButton.disabled=true;scoreResults.replaceChildren();resultJson.textContent='';pipelineStatus.classList.remove('error');pipelineStatus.textContent='Starting LLM route selection…';const response=await fetch('/api/score',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(scoreForm))});const payload=await response.json();if(!response.ok){pipelineStatus.textContent=payload.error||'Unable to start scoring';pipelineStatus.classList.add('error');scoreButton.disabled=false;return}pollPipeline()});
@@ -455,13 +353,13 @@ def html_page(state, args, message=""):
         message = message or view_error
     score_block = (
         f"<div class='metric'>{result['score']:.5f}</div>"
-        f"<div class='hint'>Tube quantile q = score = {result['score']:.5f} m; max residual time = {result['score_max_time_s']:.2f} s</div>"
+        f"<div class='hint'>Calibrated q = {metric_text(result['tube_quantile'])}; XY radius = {metric_text(result['tube_radius_m'])} m; max residual time = {result['score_max_time_s']:.2f} s</div>"
         if result else ""
     )
     if results:
         score_block += ("<h3>Fixed E/Ē contract</h3>" if getattr(args, "strict_e_vs_ehat", False) else "<h3>Both uncertainty modes</h3>") + "".join(
-            f"<p><b>{html.escape(name)}</b>: <span class='metric'>{item['score']:.5f} m</span> "
-            f"(q = {item['tube_quantile']:.5f} m)</p>"
+            f"<p><b>{html.escape(name)}</b>: <span class='metric'>{item['score']:.5f}</span> "
+            f"(calibrated q = {metric_text(item['tube_quantile'])}; radius = {metric_text(item['tube_radius_m'])} m)</p>"
             for name, item in results.items()
         )
     stage_hint = "" if view_error else (f"Final view: verified HRRT and refined {planner_label} trajectories with QP-optimized samples and score tubes." if result else ("Select an HRRT route above; all generated candidates are shown in the plot." if routes else "Dataset scene loaded: red is ground truth, orange is perceived, and the blue marker is the drone pose."))
@@ -561,8 +459,10 @@ def plot_scene(scene):
     min_x, max_x = float(limits["x"][0]), float(limits["x"][1])
     min_y, max_y = float(limits["y"][0]), float(limits["y"][1])
     width, height, pad = 900, 650, 62
+    scale = min((width - 2 * pad) / (max_x - min_x), (height - 2 * pad) / (max_y - min_y))
     def xy(point):
-        return (pad + (point[0] - min_x) / max(max_x - min_x, 1e-6) * (width - 2 * pad), height - pad - (point[1] - min_y) / max(max_y - min_y, 1e-6) * (height - 2 * pad))
+        return (width / 2 + (point[0] - (min_x + max_x) / 2) * scale,
+                height / 2 - (point[1] - (min_y + max_y) / 2) * scale)
     def polyline(waypoints, color, width_px=3, dash=""):
         coords = " ".join(f"{xy((float(p['x']), float(p['y'])))[0]:.1f},{xy((float(p['x']), float(p['y'])))[1]:.1f}" for p in waypoints)
         dash_attr = f" stroke-dasharray='{dash}'" if dash else ""
@@ -611,15 +511,18 @@ def plot_svg(result):
     min_x, max_x = float(limits["x"][0]), float(limits["x"][1])
     min_y, max_y = float(limits["y"][0]), float(limits["y"][1])
     width, height, pad = 900, 650, 62
+    scale = min((width - 2 * pad) / (max_x - min_x), (height - 2 * pad) / (max_y - min_y))
     def xy(point):
-        return (pad + (point[0] - min_x) / max(max_x - min_x, 1e-6) * (width - 2 * pad), height - pad - (point[1] - min_y) / max(max_y - min_y, 1e-6) * (height - 2 * pad))
+        return (width / 2 + (point[0] - (min_x + max_x) / 2) * scale,
+                height / 2 - (point[1] - (min_y + max_y) / 2) * scale)
     def polyline(waypoints, color, width_px=4, dash=""):
         coords = " ".join(f"{xy((float(p['x']), float(p['y'])))[0]:.1f},{xy((float(p['x']), float(p['y'])))[1]:.1f}" for p in waypoints)
         dash_attr = f" stroke-dasharray='{dash}'" if dash else ""
         return f"<polyline points='{coords}' fill='none' stroke='{color}' stroke-width='{width_px}'{dash_attr}/>"
-    scale = min(width / (max_x - min_x), height / (max_y - min_y))
     def tube(samples, color):
-        radius = float(result["tube_quantile"]) * scale
+        if result["tube_radius_m"] is None:
+            return ""
+        radius = float(result["tube_radius_m"]) * scale
         stride = max(1, len(samples) // 28)
         return "".join(
             f"<circle cx='{xy((float(sample['x'][0]), float(sample['x'][1])))[0]:.1f}' "
@@ -642,11 +545,11 @@ def plot_svg(result):
         f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='{html.escape(result.get('planner_display_name', 'LLM'))} and HRRT trajectories'>"
         f"{grid}{''.join(shapes)}{tube(result['expert_samples'], '#16a34a')}"
         f"{tube(result['predicted_samples'], '#2563eb')}"
-        f"{polyline(result['expert_waypoints'], '#16a34a')}"
+        f"{polyline([{'x': s['x'][0], 'y': s['x'][1]} for s in result['expert_samples']], '#16a34a')}"
         f"{polyline(result.get('raw_predicted_waypoints', []), '#f97316', 4, '8 5')}"
-        f"{polyline(result['predicted_waypoints'], '#2563eb')}"
+        f"{polyline([{'x': s['x'][0], 'y': s['x'][1]} for s in result['predicted_samples']], '#2563eb')}"
         f"<circle cx='{xy((float(result['start']['x']), float(result['start']['y'])))[0]:.1f}' cy='{xy((float(result['start']['x']), float(result['start']['y'])))[1]:.1f}' r='9' fill='#2563eb' stroke='#fff' stroke-width='2'/><circle cx='{xy((float(result['goal']['x']), float(result['goal']['y'])))[0]:.1f}' cy='{xy((float(result['goal']['x']), float(result['goal']['y'])))[1]:.1f}' r='9' fill='#eab308' stroke='#111827' stroke-width='2'/>"
-        f"<rect x='12' y='10' width='220' height='34' rx='6' fill='#ffffffee' stroke='#334155'/><text x='23' y='32' fill='#111827' font-size='16' font-weight='700'>score = q = {result['tube_quantile']:.5f} m</text></svg>"
+        f"<rect x='12' y='10' width='600' height='34' rx='6' fill='#ffffffee' stroke='#334155'/><text x='23' y='32' fill='#111827' font-size='16' font-weight='700'>q = {metric_text(result['tube_quantile'])}; r = {metric_text(result['tube_radius_m'])} m</text></svg>"
     )
 
 
@@ -772,6 +675,7 @@ def run_scoring_job(state, args, form):
             name: {
                 "score": item["score"],
                 "tube_quantile": item["tube_quantile"],
+                "tube_radius_m": item["tube_radius_m"],
                 "max_time_s": item["score_max_time_s"],
             }
             for name, item in results.items()
@@ -950,10 +854,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True, help="Refined calibration raw CSV.")
+    parser.add_argument("--scored-csv", type=Path, default=Path("fine_tuning/datasets/calibration_residual_scored.csv"))
+    parser.add_argument("--delta", type=float, default=0.20, help="Miscoverage: quantile probability is 1-delta")
     parser.add_argument("--row", type=int, default=1, help="1-based capture row to select initially.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8091)
-    parser.add_argument("--planner-provider", choices=("mock", "vllm", "transformer"), default="mock")
+    parser.add_argument("--planner-provider", choices=("transformer", "mock"), default="transformer")
     parser.add_argument(
         "--strict-e-vs-ehat",
         action="store_true",
@@ -963,9 +869,6 @@ def build_parser():
     parser.add_argument("--intent-model", default="gpt-5.4-nano")
     parser.add_argument("--expert-model", default="gpt-6.1-sol")
     parser.add_argument("--route-nominal-speed-mps", type=float, default=0.5)
-    parser.add_argument("--vllm-base-url", default="http://127.0.0.1:8000/v1")
-    parser.add_argument("--vllm-api-key", default="EMPTY")
-    parser.add_argument("--llama-model", default="hrrt_planner")
     parser.add_argument(
         "--transformer-checkpoint",
         type=Path,
@@ -993,6 +896,9 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
+    args.residual_certificate = certificate(read_scores(args.scored_csv), args.delta)
+    if args.residual_certificate["calibrated_quantile"] is None:
+        print(NO_QUANTILE)
     if args.planner_provider == "transformer":
         if args.transformer_checkpoint is None:
             build_parser().error("--transformer-checkpoint is required for --planner-provider transformer")

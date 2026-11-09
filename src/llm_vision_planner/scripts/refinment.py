@@ -76,7 +76,7 @@ class PathRefinement(Node):
             expert_refined = dict(expert)
             expert_refined["waypoints_sparse"] = expert["waypoints"]
             expert_refined["waypoints"] = self.interpolate_waypoints(
-                expert["waypoints"], workspace, obstacles
+                expert["waypoints"], workspace, payload.get("ground_truth_obstacles", obstacles)
             )
             output["selected_expert_route_refined"] = expert_refined
 

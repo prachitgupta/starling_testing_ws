@@ -17,14 +17,15 @@ This branch is the curated testing snapshot: the multiple-trajectory implementat
 | `scripts/perception_detection.py` | Detection, ToF alignment and locally estimated obstacle depth |
 | `scripts/obstacle_depth.py`, `outline_depth.py`, `outline_segmentation.py` | Geometric/outline depth, segmentation and fallbacks |
 | `scripts/interactive_mission_gateway.py` | Mission state, grounding, approvals and planner coordination |
-| `scripts/llm_planner.py` | Live Llama/vLLM/ChatGPT planner interface |
+| `scripts/llm_planner.py` | Local structured Transformer waypoint inference |
 | `scripts/refinment.py`, `scripts/verifier.py` | Route refinement and geometric verification |
-| `scripts/verify_contraction.py` | Controller residual/certificate and tube checks |
+| `scripts/verify_contraction.py` | Dataset residual quantiles, trajectory QPs and projected tube checks |
+| `fine_tuning/scripts/mission_data_logger.py` | Independent sensor, trajectory and ACP JSONL logs |
 | `launch/full_plot.launch.py`, `web/interactive.html` | Integrated ROS launch and interactive mission UI |
 | `fine_tuning/scripts/calibration_verifier_gateway.py` | Offline HRRT/final Transformer comparison gateway |
 | `launch/vision_error_calibration.launch.py` | Integrated capture/replay pipeline |
 
-Paths in this table are relative to `src/llm_vision_planner`. Consult the report for important distinctions between offline Transformer prediction and live mission execution.
+Paths in this table are relative to `src/llm_vision_planner`. Both offline and live planning use the Transformer. See the hardware guide for trajectory-level ACP, user-configurable delta, and independent publication logging.
 
 ## Assets retained
 

@@ -9,7 +9,7 @@ For every capture this script:
 3. solves both minimum-control QPs with ideal double-integrator dynamics; and
 4. records ``max_t ||P^(1/2) B[(u_hat-u_d)+K(x_hat-x_d)]||_2``.
 
-Real runs use ``--planner-provider vllm``.  ``mock`` is deterministic and is
+Real runs use ``--planner-provider transformer``.  ``mock`` is deterministic and is
 provided only for schema smoke tests and the checked-in placeholder dataset.
 """
 
@@ -33,6 +33,8 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from hrrt_star import normalize_obstacles, plan_hrrt_star, segment_clear  # noqa: E402
 from min_control_qp import generate_shared_pair  # noqa: E402
+from waypoint_transformer import WaypointTransformerPlanner, refine_waypoints  # noqa: E402
+from residual_certificate import certificate, read_scores, empirical_quantile, NO_QUANTILE
 
 
 CSV_DELIMITER = ","
@@ -307,60 +309,6 @@ def mock_predicted_waypoints(start, goal, perceived, workspace, args):
     return min(payload["routes"], key=lambda route: (route["path_length_m"], route["route_id"]))["waypoints"]
 
 
-def vllm_predicted_waypoints(start, goal, perceived, workspace, l1_text, args, feedback="", validate=True, prompt_text=""):
-    try:
-        import instructor
-        from openai import OpenAI
-        from pydantic import BaseModel, ConfigDict, Field
-    except ImportError as exc:
-        raise RuntimeError("vLLM planning requires openai, instructor, and pydantic") from exc
-
-    class Waypoint(BaseModel):
-        model_config = ConfigDict(extra="forbid")
-        x: float
-        y: float
-        z: float
-
-    class Plan(BaseModel):
-        model_config = ConfigDict(extra="forbid")
-        reasoning: str
-        waypoints: List[Waypoint] = Field(min_length=2, max_length=8)
-
-    client = instructor.from_openai(
-        OpenAI(base_url=args.vllm_base_url, api_key=args.vllm_api_key),
-        mode=instructor.Mode.JSON,
-    )
-    request = {
-        "operator_goal_instruction": l1_text,
-        "start": start,
-        "goal": goal,
-        "workspace": workspace,
-        "perceived_obstacles": perceived,
-    }
-    if feedback:
-        request["verification_feedback"] = feedback
-    base_prompt = prompt_text or (
-        "Return sparse collision-free NED waypoints using only the supplied perceived environment. "
-        "The first and last waypoints must equal start and goal. "
-        "If verification feedback is supplied, correct that failure while preserving the approved task."
-    )
-    plan = client.chat.completions.create(
-        model=args.llama_model,
-        response_model=Plan,
-        messages=[{
-            "role": "user",
-            "content": base_prompt + "\n" + compact(request),
-        }],
-        temperature=0.0,
-    )
-    waypoints = [item.model_dump() for item in plan.waypoints]
-    waypoints[0] = dict(start)
-    waypoints[-1] = dict(goal)
-    if validate and not safe_path(waypoints, perceived, workspace, args.clearance_m):
-        raise ValueError("Llama returned a path that fails perceived-environment collision checking")
-    return waypoints
-
-
 def ideal_metric():
     try:
         from scipy.linalg import solve_continuous_are
@@ -426,14 +374,21 @@ def process_capture(capture_id, rows, args):
     )
     if args.planner_provider == "mock":
         predicted_waypoints = mock_predicted_waypoints(start, goal, perceived, workspace, args)
-    else:
-        predicted_waypoints = vllm_predicted_waypoints(
-            start, goal, perceived, workspace, args.l1_text, args
+    elif args.planner_provider == "transformer":
+        predicted_waypoints = args.transformer_planner.predict(
+            start, goal, perceived, workspace, args.l2_text
         )
+        predicted_waypoints = refine_waypoints(predicted_waypoints, workspace, perceived, args.clearance_m, args.fixed_z)
+        expert = dict(expert, waypoints=refine_waypoints(expert["waypoints"], workspace, ground_truth, args.clearance_m, args.fixed_z))
+        if not safe_path(predicted_waypoints, perceived, workspace, args.clearance_m):
+            raise ValueError("Transformer path fails perceived-environment collision checking")
+    else:
+        raise ValueError(f"Unsupported planner provider: {args.planner_provider}")
     expert_trajectory, predicted_trajectory = generate_shared_pair(
         expert["waypoints"], predicted_waypoints,
         workspace=workspace,
         dt=args.dt,
+        max_velocity_mps=0.5, max_acceleration_mps2=0.5,
         damping=0.0,
     )
     maximum, p, k = residual_score(
@@ -544,14 +499,14 @@ def build_parser():
     parser.add_argument("--workspace-y-max", type=float, default=3.0)
     parser.add_argument("--clearance-m", type=float, default=0.4)
     parser.add_argument("--dt", type=float, default=0.1)
+    parser.add_argument("--delta", type=float, default=0.20, help="Miscoverage: quantile probability is 1-delta")
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--hrrt-iterations", type=int, default=500)
     parser.add_argument("--max-candidates", type=int, default=8)
     parser.add_argument("--max-waypoints", type=int, default=8)
-    parser.add_argument("--planner-provider", choices=("vllm", "mock"), default="vllm")
-    parser.add_argument("--vllm-base-url", default="http://172.22.224.93:8000/v1")
-    parser.add_argument("--vllm-api-key", default="EMPTY")
-    parser.add_argument("--llama-model", default="hrrt_planner")
+    parser.add_argument("--planner-provider", choices=("transformer", "mock"), default="transformer")
+    parser.add_argument("--transformer-checkpoint", type=Path, help="Local V1 checkpoint directory; required for transformer scoring")
+    parser.add_argument("--transformer-device", default="auto", help="Torch device: auto, cpu, cuda, or cuda:0")
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument(
         "--capture-id",
@@ -577,6 +532,7 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
+    empirical_quantile([], args.delta)
     if len(args.delimiter) != 1:
         raise SystemExit("--delimiter must contain exactly one character")
     grouped = read_raw(args.raw_csv, args.delimiter)
@@ -599,6 +555,12 @@ def main():
         selected = selected_captures(grouped, args)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    if args.planner_provider == "transformer":
+        if args.transformer_checkpoint is None:
+            build_parser().error("--transformer-checkpoint is required for transformer scoring")
+        args.transformer_planner = WaypointTransformerPlanner(args.transformer_checkpoint, args.transformer_device)
+    elif not args.placeholder:
+        build_parser().error("mock scoring requires --placeholder; use transformer for calibration")
     processed = []
     failures = []
     for capture_id, rows in selected:
@@ -610,6 +572,8 @@ def main():
         raise SystemExit("No captures were scored. " + "; ".join(failures))
     write_rows(args.output_csv, processed, args.delimiter, append=args.append)
     print(f"Wrote {len(processed)} scored captures to {args.output_csv}")
+    calibration = certificate(read_scores(args.output_csv, args.delimiter), args.delta)
+    print(json.dumps(calibration) if calibration["calibrated_quantile"] is not None else NO_QUANTILE)
     if failures:
         print(f"Skipped {len(failures)} captures:")
         for failure in failures:

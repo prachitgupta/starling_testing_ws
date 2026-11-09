@@ -86,6 +86,7 @@ class PathVerifier(Node):
         if isinstance(expert, dict) and len(expert.get("waypoints", [])) >= 2:
             expert_payload = dict(payload)
             expert_payload["waypoints"] = expert["waypoints"]
+            expert_payload["obstacles"] = payload.get("ground_truth_obstacles", payload.get("obstacles", []))
             expert_metrics = self.compute_metrics(expert_payload)
             output["selected_expert_route_verification"] = {
                 **expert,

@@ -105,6 +105,7 @@ class ControlLawExecuter(Node):
         self.offboard_pub = self.create_publisher(OffboardControlMode, "/fmu/in/offboard_control_mode", 10)
         self.setpoint_pub = self.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
         self.command_pub = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", 10)
+        self.reference_pub = self.create_publisher(String, "/llm_vision/executed_reference", LATCHED_QOS)
         self.mission_state_pub = self.create_publisher(String, self.mission_state_topic, 10)
         self.owner_pub = self.create_publisher(String, self.owner_topic, LATCHED_QOS)
         self.odom_sub = self.create_subscription(VehicleOdometry, self.pose_topic, self.odom_callback, ODOM_QOS)
@@ -229,19 +230,50 @@ class ControlLawExecuter(Node):
             self.fail_or_land("verified plan start mismatch")
             return
         try:
-            trajectory = generate_trajectory(
-                waypoints,
-                payload.get("workspace", {}),
-                payload.get("obstacles", []),
-                dt=float(self.get_parameter("trajectory_dt").value),
-                max_velocity_mps=float(self.get_parameter("max_horizontal_speed_mps").value),
-                max_acceleration_mps2=float(self.get_parameter("max_horizontal_acceleration_mps2").value),
-            )
-        except (RuntimeError, ValueError, np.linalg.LinAlgError) as exc:
+            reference = payload.get("optimized_reference")
+            if reference is not None:
+                if reference.get("dynamics_model") != "ideal_planar_double_integrator":
+                    raise ValueError("optimized reference dynamics mismatch")
+                samples = reference.get("samples", [])
+                if len(samples) < 2:
+                    raise ValueError("empty optimized reference")
+                speed_limit = float(self.get_parameter("max_horizontal_speed_mps").value)
+                acceleration_limit = float(self.get_parameter("max_horizontal_acceleration_mps2").value)
+                for sample in samples:
+                    if len(sample["x"]) != 4 or len(sample["u"]) != 2 or not all(
+                            math.isfinite(float(v)) for v in [sample["t"], *sample["x"], *sample["u"]]):
+                        raise ValueError("invalid optimized reference sample")
+                    if math.hypot(*sample["x"][2:]) > speed_limit + 1e-5 or math.hypot(*sample["u"]) > acceleration_limit + 1e-5:
+                        raise ValueError("optimized reference exceeds motion limits")
+                if abs(samples[0]["t"]) > 1e-6:
+                    raise ValueError("reference must begin at t=0")
+                for previous, following in zip(samples, samples[1:]):
+                    dt = following["t"] - previous["t"]
+                    if dt <= 0:
+                        raise ValueError("reference times must increase")
+                    x, u = np.asarray(previous["x"]), np.asarray(previous["u"])
+                    expected = np.concatenate((x[:2] + dt*x[2:] + 0.5*dt*dt*u, x[2:] + dt*u))
+                    if not np.allclose(expected, following["x"], atol=1e-5, rtol=0):
+                        raise ValueError("reference violates ideal dynamics")
+                for sample, waypoint in ((samples[0], waypoints[0]), (samples[-1], waypoints[-1])):
+                    if math.hypot(sample["x"][0]-waypoint["x"], sample["x"][1]-waypoint["y"]) > 1e-4:
+                        raise ValueError("reference endpoints mismatch")
+                trajectory = {"samples": samples}
+            else:
+                trajectory = generate_trajectory(
+                    waypoints, payload.get("workspace", {}), payload.get("obstacles", []),
+                    dt=float(self.get_parameter("trajectory_dt").value), damping=0.0,
+                    max_velocity_mps=float(self.get_parameter("max_horizontal_speed_mps").value),
+                    max_acceleration_mps2=float(self.get_parameter("max_horizontal_acceleration_mps2").value))
+        except (RuntimeError, ValueError, KeyError, TypeError, np.linalg.LinAlgError) as exc:
             self.get_logger().error(f"minimum-control QP failed: {exc}")
             self.fail_or_land("minimum-control QP failure")
             return
         self.samples = trajectory["samples"]
+        self.reference_pub.publish(String(data=json.dumps({"plan_id": payload.get("plan_id"),
+            "interaction_mode": payload.get("interaction_mode", "MISSION_EXECUTION"),
+            "samples": self.samples, "dynamics_model": "ideal_planar_double_integrator",
+            "frame_id": "local_ned", "hardware_command_interface": "velocity", "timestamp": time.time()})))
         self.goal_target = [waypoints[-1]["x"], waypoints[-1]["y"], waypoints[-1]["z"]]
         self.track_start_s = time.monotonic()
         self.last_track_command = None
@@ -307,7 +339,7 @@ class ControlLawExecuter(Node):
 
         elif self.state == "TRACK_QP":
             elapsed = now - self.track_start_s
-            reference_state, reference_control = evaluate_sample(self.samples, elapsed)
+            reference_state, reference_control = evaluate_sample(self.samples, elapsed, damping=0.0)
             actual_state = [self.position[0], self.position[1], self.velocity[0], self.velocity[1]]
             command = self.limit_tracking_command(feedback_control(actual_state, reference_state, reference_control), now)
             self.last_setpoint_position = [math.nan, math.nan, self.takeoff_target[2]]

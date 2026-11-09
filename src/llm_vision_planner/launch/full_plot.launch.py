@@ -31,16 +31,19 @@ def generate_launch_description():
         default_value="1.5",
         description="Fixed mission goal y coordinate in local NED metres.",
     )
-    llm_provider_arg = DeclareLaunchArgument(
-        "llm_provider",
-        default_value="llama",
-        description="Planner LLM provider: chatgpt or llama",
-    )
-    llama_model_name_arg = DeclareLaunchArgument(
-        "llama_model_name",
-        default_value="hrrt_planner",
-        description="OpenAI-compatible served model name for the DSS or DSS-SCOTT Llama adapter.",
-    )
+    transformer_checkpoint_arg = DeclareLaunchArgument(
+        "transformer_checkpoint", default_value=PathJoinSubstitution([
+            FindPackageShare("llm_vision_planner"), "fine_tuning", "outputs",
+            "final-transformer-vertical-teacher_only_80_10_10",
+            "final_transformer_vertical_teacher_only_80_10_10_best", "checkpoint"]),
+        description="Local structured Transformer checkpoint directory")
+    transformer_device_arg = DeclareLaunchArgument("transformer_device", default_value="auto")
+    calibration_csv_arg = DeclareLaunchArgument("calibration_csv", default_value="fine_tuning/datasets/calibration_residual_scored.csv")
+    delta_arg = DeclareLaunchArgument("delta", default_value="0.20", description="Residual miscoverage; quantile probability=1-delta")
+    acp_gamma_arg = DeclareLaunchArgument("acp_gamma", default_value="0.01")
+    acp_state_file_arg = DeclareLaunchArgument("acp_state_file", default_value="~/.ros/llm_vision/acp_state.json")
+    log_mission_arg = DeclareLaunchArgument("log_mission", default_value="true")
+    log_directory_arg = DeclareLaunchArgument("log_directory", default_value="~/.ros/llm_vision/mission_logs")
     show_rrt_arg = DeclareLaunchArgument(
         "show_rrt",
         default_value="true",
@@ -161,8 +164,9 @@ def generate_launch_description():
             params_file,
             {
                 "environment": LaunchConfiguration("environment"),
-                "llm_provider": LaunchConfiguration("llm_provider"),
-                "llama_model_name": LaunchConfiguration("llama_model_name"),
+                "llm_provider": "transformer",
+                "transformer_checkpoint": LaunchConfiguration("transformer_checkpoint"),
+                "transformer_device": LaunchConfiguration("transformer_device"),
                 **fixed_goal,
             },
         ],
@@ -179,8 +183,12 @@ def generate_launch_description():
             {
                 "environment": LaunchConfiguration("environment"),
                 "intent_provider": LaunchConfiguration("intent_provider"),
-                "planner_llm_provider": LaunchConfiguration("llm_provider"),
-                "planner_model_name": LaunchConfiguration("llama_model_name"),
+                "planner_llm_provider": "transformer",
+                "planner_model_name": LaunchConfiguration("transformer_checkpoint"),
+                "calibration_csv": LaunchConfiguration("calibration_csv"),
+                "delta": ParameterValue(LaunchConfiguration("delta"), value_type=float),
+                "acp_gamma": ParameterValue(LaunchConfiguration("acp_gamma"), value_type=float),
+                "acp_state_file": LaunchConfiguration("acp_state_file"),
                 "visualizer": LaunchConfiguration("visualizer"),
                 "obs_safety_bracket": LaunchConfiguration("obs_safety_bracket"),
                 "vision_error_calibration_csv": LaunchConfiguration(
@@ -229,8 +237,9 @@ def generate_launch_description():
         parameters=[
             params_file,
             {
-                "llm_provider": LaunchConfiguration("llm_provider"),
-                "llama_model_name": LaunchConfiguration("llama_model_name"),
+                "llm_provider": "transformer",
+                "transformer_checkpoint": LaunchConfiguration("transformer_checkpoint"),
+                "transformer_device": LaunchConfiguration("transformer_device"),
             },
         ],
     )
@@ -290,9 +299,16 @@ def generate_launch_description():
         executable="verify_contraction.py",
         name="verify_contraction",
         output="screen",
-        parameters=[params_file, {"environment": LaunchConfiguration("environment")}],
-        condition=IfCondition(PythonExpression(["'", LaunchConfiguration("visualizer"), "' == 'contraction'"])),
+        parameters=[params_file, {"environment": LaunchConfiguration("environment"),
+            "calibration_csv": LaunchConfiguration("calibration_csv"),
+            "delta": ParameterValue(LaunchConfiguration("delta"), value_type=float)}],
     )
+
+    mission_logger = Node(
+        package="llm_vision_planner", executable="mission_data_logger.py", name="mission_data_logger",
+        output="screen", condition=IfCondition(LaunchConfiguration("log_mission")),
+        parameters=[params_file, {"log_directory": LaunchConfiguration("log_directory"),
+                                  "vicon_objects_json": LaunchConfiguration("vicon_objects_json")}])
 
     return LaunchDescription(
         [
@@ -300,8 +316,9 @@ def generate_launch_description():
             params_file_arg,
             goal_x_arg,
             goal_y_arg,
-            llm_provider_arg,
-            llama_model_name_arg,
+            transformer_checkpoint_arg, transformer_device_arg,
+            calibration_csv_arg, delta_arg, acp_gamma_arg, acp_state_file_arg,
+            log_mission_arg, log_directory_arg,
             show_rrt_arg,
             visualizer_arg,
             land_after_complete_arg,
@@ -316,6 +333,7 @@ def generate_launch_description():
             vision_error_calibration_csv_arg,
             vision_error_delta_arg,
             vicon_objects_json_arg,
+            mission_logger,
             semantic_perception,
             dataset_scene,
             llm_planner,

@@ -44,7 +44,7 @@ recording guides linked above.
 
 This procedure uses:
 
-- Starling 2 / VOXL at `10.117.229.1`
+- Starling 2 / VOXL at `192.168.0.28`
 - Vicon Tracker computer at `10.117.229.124`
 - MAVROS on the ground-station laptop
 - Vicon pose through MAVROS into the PX4 EKF2
@@ -62,7 +62,7 @@ network.
 On the ground station:
 
 ```bash
-export Starling2=10.117.229.1
+export Starling2=192.168.0.28
 export VICON_COMPUTER_IP=10.117.229.124
 
 ping -c 3 "$Starling2"
@@ -274,7 +274,7 @@ source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dd
   enable auto 42
 ros2 daemon start
 
-export Starling2=10.117.229.1
+export Starling2=192.168.0.28
 ros2 launch mavros px4.launch \
   fcu_url:="udp://0.0.0.0:14550@${Starling2}:14550" \
   gcs_url:="udp://0.0.0.0:14556@127.0.0.1:14551"
@@ -447,7 +447,7 @@ Do not hide bridge drop warnings by changing only `expected_rate_hz`.
 Open a separate ground-station terminal:
 
 ```bash
-export Starling2=10.117.229.1
+export Starling2=192.168.0.28
 ssh root@"$Starling2"
 ```
 

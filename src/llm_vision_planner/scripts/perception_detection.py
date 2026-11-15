@@ -201,6 +201,7 @@ class SemanticObstaclePerception(Node):
         self.detector_image_size = None
         self.last_sync_basis = "unavailable"
         self.last_point_cloud_sync_delta_s = None
+        self.last_matched_point_cloud = None
         self.last_pose_sync_delta_s = None
         self.last_log_stamp = 0.0
         self.obstacle_tracks = []
@@ -1187,6 +1188,7 @@ class SemanticObstaclePerception(Node):
         matched["sync_delta_s"] = delta_s
         self.last_sync_basis = sync_basis
         self.last_point_cloud_sync_delta_s = delta_s
+        self.last_matched_point_cloud = sample
         return matched, None
 
     def match_pose(self, point_cloud_sample, fallback_arrival_s):
@@ -1345,6 +1347,7 @@ class SemanticObstaclePerception(Node):
         latest_sample = self.point_cloud_samples[-1] if self.point_cloud_samples else None
         current_detections = self.current_detections()
         latest_detection = current_detections[-1][0] if current_detections else None
+        matched_cloud = getattr(self, "last_matched_point_cloud", None)
         return {
             "healthy": bool(healthy),
             "detector": detector,
@@ -1376,6 +1379,15 @@ class SemanticObstaclePerception(Node):
                 int(getattr(latest_detection, "frame_id", 0))
                 if latest_detection is not None
                 else None
+            ),
+            "detection_age_s": (
+                now - current_detections[-1][1] if current_detections else None
+            ),
+            "point_cloud_age_s": (
+                now - matched_cloud["arrival_s"] if matched_cloud is not None else None
+            ),
+            "measurement_timestamp": (
+                self.ros_time_s() - (now - matched_cloud["arrival_s"]) if matched_cloud is not None else None
             ),
             "image_size": [self.image_width, self.image_height],
             "range_is_measured": (

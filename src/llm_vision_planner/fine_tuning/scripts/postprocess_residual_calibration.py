@@ -310,36 +310,51 @@ def mock_predicted_waypoints(start, goal, perceived, workspace, args):
 
 
 def ideal_metric():
-    try:
-        from scipy.linalg import solve_continuous_are
-    except ImportError as exc:
-        raise RuntimeError("residual scoring requires scipy") from exc
-    a = np.array(
-        [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0],
-         [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]],
-        dtype=float,
-    )
-    b = np.array([[0.0, 0.0], [0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=float)
-    q = np.diag([10.0, 10.0, 1.0, 1.0])
-    r = np.eye(2)
-    p = solve_continuous_are(a, b, q, r)
-    k = np.linalg.solve(r, b.T @ p)
-    return b, p, k
+    from lqr import B_DOUBLE_INTEGRATOR, solve_care
+    p, k, _ = solve_care()
+    return B_DOUBLE_INTEGRATOR.copy(), p, k
 
 
 def residual_score(expert_samples, predicted_samples):
-    if len(expert_samples) != len(predicted_samples):
+    """Exact interval supremum under ideal zero-order-held controls.
+
+    R is quadratic on each interval, so R.T P R is quartic. Check its
+    derivative's real roots as well as both one-sided knot values.
+    """
+    if len(expert_samples) != len(predicted_samples) or not expert_samples:
         raise ValueError("expert and predicted QP samples must share one horizon")
     b, p, k = ideal_metric()
     maximum = None
-    for expert, predicted in zip(expert_samples, predicted_samples):
+    for index, (expert, predicted) in enumerate(zip(expert_samples, predicted_samples)):
+        if not math.isclose(float(expert["t"]), float(predicted["t"]), abs_tol=1e-9, rel_tol=0):
+            raise ValueError("expert and predicted sample times differ")
         x_delta = np.asarray(predicted["x"], dtype=float) - np.asarray(expert["x"], dtype=float)
         u_delta = np.asarray(predicted["u"], dtype=float) - np.asarray(expert["u"], dtype=float)
-        residual = b @ (u_delta + k @ x_delta)
-        value = float(math.sqrt(max(0.0, residual.T @ p @ residual)))
-        candidate = (value, float(expert["t"]), residual)
-        if maximum is None or candidate[0] > maximum[0]:
-            maximum = candidate
+        if x_delta.shape != (4,) or u_delta.shape != (2,) or not np.all(np.isfinite(np.r_[x_delta, u_delta])):
+            raise ValueError("invalid trajectory state/control")
+        coefficients = np.array([
+            b @ (u_delta + k @ x_delta),
+            b @ k @ np.r_[x_delta[2:], u_delta],
+            b @ k @ np.r_[0.5 * u_delta, [0.0, 0.0]],
+        ])
+        candidates = [0.0]
+        if index + 1 < len(expert_samples):
+            duration = float(expert_samples[index + 1]["t"]) - float(expert["t"])
+            if not math.isfinite(duration) or duration <= 0:
+                raise ValueError("trajectory times must increase")
+            polynomial = np.zeros(5)
+            for i in range(3):
+                for j in range(3):
+                    polynomial[i + j] += coefficients[i] @ p @ coefficients[j]
+            roots = np.polynomial.polynomial.polyroots(np.polynomial.polynomial.polyder(polynomial))
+            candidates += [duration] + [float(root.real) for root in roots
+                                       if abs(root.imag) < 1e-9 and 0 < root.real < duration]
+        for elapsed in candidates:
+            residual = coefficients[0] + elapsed * coefficients[1] + elapsed**2 * coefficients[2]
+            value = float(math.sqrt(max(0.0, residual.T @ p @ residual)))
+            candidate = (value, float(expert["t"]) + elapsed, residual)
+            if maximum is None or candidate[0] > maximum[0]:
+                maximum = candidate
     return maximum, p, k
 
 
@@ -358,6 +373,8 @@ def process_capture(capture_id, rows, args):
         "y": float(first["observer_y"] or args.start_y),
         "z": float(first["observer_z"] or args.fixed_z),
     }
+    if getattr(args, "fixed_start", False):
+        start = {"x": args.start_x, "y": args.start_y, "z": args.fixed_z}
     goal = {"x": args.goal_x, "y": args.goal_y, "z": args.fixed_z}
     workspace = {"x": [args.workspace_x_min, args.workspace_x_max],
                  "y": [args.workspace_y_min, args.workspace_y_max], "z": args.fixed_z}
@@ -388,7 +405,8 @@ def process_capture(capture_id, rows, args):
         expert["waypoints"], predicted_waypoints,
         workspace=workspace,
         dt=args.dt,
-        max_velocity_mps=0.5, max_acceleration_mps2=0.5,
+        max_velocity_mps=getattr(args, "max_velocity_mps", 0.5),
+        max_acceleration_mps2=getattr(args, "max_acceleration_mps2", 0.5),
         damping=0.0,
     )
     maximum, p, k = residual_score(
@@ -416,7 +434,7 @@ def process_capture(capture_id, rows, args):
         "expert_control_samples_json": compact(expert_controls),
         "predicted_state_samples_json": compact(predicted_states),
         "predicted_control_samples_json": compact(predicted_controls),
-        "conformity_score": f"{maximum[0]:.9f}",
+        "conformity_score": f"{maximum[0]:.17g}",
         "score_max_time_s": f"{maximum[1]:.9f}",
         "score_max_residual_json": compact([float(value) for value in maximum[2]]),
         "p_matrix_json": compact(p.tolist()),
@@ -570,14 +588,15 @@ def main():
             failures.append(f"{capture_id}: {exc}")
     if not processed:
         raise SystemExit("No captures were scored. " + "; ".join(failures))
+    if failures:
+        raise SystemExit("No output/certificate written: scheduled captures failed. " + "; ".join(failures))
     write_rows(args.output_csv, processed, args.delimiter, append=args.append)
     print(f"Wrote {len(processed)} scored captures to {args.output_csv}")
+    if args.placeholder:
+        print("Placeholder smoke data only; no deployment certificate generated.")
+        return
     calibration = certificate(read_scores(args.output_csv, args.delimiter), args.delta)
-    print(json.dumps(calibration) if calibration["calibrated_quantile"] is not None else NO_QUANTILE)
-    if failures:
-        print(f"Skipped {len(failures)} captures:")
-        for failure in failures:
-            print(f"- {failure}")
+    print(json.dumps(calibration, allow_nan=False))
 
 
 if __name__ == "__main__":

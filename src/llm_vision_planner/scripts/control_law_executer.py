@@ -23,9 +23,11 @@ from std_msgs.msg import String
 
 try:
     from min_control_qp import evaluate_sample, generate_trajectory
+    from lqr import solve_care
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
     from min_control_qp import evaluate_sample, generate_trajectory
+    from lqr import solve_care
 
 
 PLAN_TOPIC = "/llm_vision/plan_verified"
@@ -34,13 +36,7 @@ OWNER_TOPIC = "/llm_vision/offboard_owner"
 EXECUTOR_COMMAND_TOPIC = "/llm_vision/executor_command"
 POSE_TOPIC = "/fmu/out/vehicle_odometry"
 LAND_DETECTED_TOPIC = "/fmu/out/vehicle_land_detected"
-FEEDBACK_K = np.array(
-    [
-        [3.1622776601683786, 0.0, 1.7838095742634217, 0.0],
-        [0.0, 3.1622776601683786, 0.0, 1.7838095742634217],
-    ],
-    dtype=float,
-)
+FEEDBACK_K = solve_care()[1]
 ODOM_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.BEST_EFFORT,
     history=QoSHistoryPolicy.KEEP_LAST,
@@ -106,7 +102,9 @@ class ControlLawExecuter(Node):
         self.setpoint_pub = self.create_publisher(TrajectorySetpoint, "/fmu/in/trajectory_setpoint", 10)
         self.command_pub = self.create_publisher(VehicleCommand, "/fmu/in/vehicle_command", 10)
         self.reference_pub = self.create_publisher(String, "/llm_vision/executed_reference", LATCHED_QOS)
-        self.mission_state_pub = self.create_publisher(String, self.mission_state_topic, 10)
+        # Guided collection subscribes transient-local so a late-starting
+        # recorder immediately receives the current hover state.
+        self.mission_state_pub = self.create_publisher(String, self.mission_state_topic, LATCHED_QOS)
         self.owner_pub = self.create_publisher(String, self.owner_topic, LATCHED_QOS)
         self.odom_sub = self.create_subscription(VehicleOdometry, self.pose_topic, self.odom_callback, ODOM_QOS)
         self.land_sub = self.create_subscription(
@@ -162,10 +160,13 @@ class ControlLawExecuter(Node):
         if self.takeoff_gate_ready:
             return
         try:
-            status = str(json.loads(msg.data).get("status", "")).strip()
+            payload = json.loads(msg.data)
+            status = str(payload.get("status", "")).strip()
         except (AttributeError, json.JSONDecodeError):
             return
-        if status == self.takeoff_gate_status:
+        if status == self.takeoff_gate_status or (
+            self.takeoff_gate_status == "FRAME_READY" and payload.get("frame_ready") is True
+        ):
             self.takeoff_gate_ready = True
             self.get_logger().info(
                 f"takeoff gate opened by status={status} on {self.takeoff_gate_topic}"

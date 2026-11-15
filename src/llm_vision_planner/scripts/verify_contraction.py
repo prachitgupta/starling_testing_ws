@@ -23,7 +23,7 @@ except ModuleNotFoundError:
     from min_control_qp import evaluate_sample, generate_trajectory, generate_shared_pair
 
 from postprocess_residual_calibration import residual_score
-from residual_certificate import certificate, read_scores, resolve_data_path, NO_QUANTILE
+from residual_certificate import certificate, certificate_from_csv, resolve_data_path, NO_QUANTILE
 
 
 ODOM_QOS = QoSProfile(
@@ -168,6 +168,7 @@ class ContractionVisualizer(Node):
             "fine_tuning/datasets/calibration_residual_scored.csv",
         )
         self.declare_parameter("delta", 0.20)
+        self.declare_parameter("interaction_mode", "MISSION_EXECUTION")
         self.declare_parameter("drone_radius_m", 0.10)
         self.declare_parameter("discretization_allowance_m", 0.0)
         self.declare_parameter("debug", False)
@@ -176,7 +177,14 @@ class ContractionVisualizer(Node):
         self.show_window = bool(self.get_parameter("show_window").value)
         self.pose_trail_limit = int(self.get_parameter("pose_trail_limit").value)
         self.calibration_csv = resolve_data_path(str(self.get_parameter("calibration_csv").value))
-        self.calibration = certificate(read_scores(self.calibration_csv), float(self.get_parameter("delta").value))
+        try:
+            self.calibration = certificate_from_csv(self.calibration_csv, float(self.get_parameter("delta").value))
+        except ValueError:
+            if str(self.get_parameter("interaction_mode").value).strip().upper() != "ADAPTIVE_CONFORMAL_PREDICTION":
+                raise
+            # The gateway supplies the adaptive snapshot with each plan. Do not
+            # present legacy history as a frozen split certificate at startup.
+            self.calibration = certificate([], float(self.get_parameter("delta").value))
         self.calibration.update(active_radius_m=self.calibration["calibrated_radius_m"],
                                 active_quantile=self.calibration["calibrated_quantile"])
         self.q_p = self.projected_radius = self.calibration["calibrated_radius_m"] or 0.0
@@ -411,8 +419,8 @@ class ContractionVisualizer(Node):
                 self.get_logger().info(f"launch approved for latched plan_id={payload.get('plan_id')}")
             return True
         self.trajectory_record = {}
-        self.calibration = payload.get("residual_calibration") or certificate(
-            read_scores(self.calibration_csv), float(self.get_parameter("delta").value))
+        self.calibration = payload.get("residual_calibration") or certificate_from_csv(
+            self.calibration_csv, float(self.get_parameter("delta").value))
         self.calibration.setdefault("active_radius_m", self.calibration["calibrated_radius_m"])
         self.calibration.setdefault("active_quantile", self.calibration["calibrated_quantile"])
         self.q_p = self.projected_radius = self.calibration["active_radius_m"] or 0.0

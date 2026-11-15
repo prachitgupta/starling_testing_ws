@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import random
@@ -485,13 +486,8 @@ def verify_waypoints_offline(
 
 
 def conformal_quantile(values: Sequence[float], delta: float) -> float:
-    values = sorted(float(value) for value in values)
-    if not values:
-        return math.inf
-    rank = int(math.ceil((len(values) + 1) * (1.0 - delta)))
-    if rank > len(values):
-        return math.inf
-    return values[max(0, rank - 1)]
+    from residual_certificate import split_quantile
+    return split_quantile(values, delta)
 
 
 def projected_radius_from_scores(scores: Sequence[float], delta: float) -> tuple[float, float]:
@@ -657,6 +653,10 @@ def main() -> None:
     set_seed(seed)
     train_path = resolve_path(data_config["train_csv"])
     validation_path = resolve_path(data_config["validation_csv"])
+    effective_config["data"]["file_sha256"] = {
+        "Dtrain": hashlib.sha256(train_path.read_bytes()).hexdigest(),
+        "Dval": hashlib.sha256(validation_path.read_bytes()).hexdigest(),
+    }
     output_dir = resolve_path(training_config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
     waypoint_count = int(model_config["waypoint_count"])

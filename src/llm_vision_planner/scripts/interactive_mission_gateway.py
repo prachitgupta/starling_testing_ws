@@ -32,7 +32,7 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fine_tuning" / "scripts"))
     from hrrt_star import plan_hrrt_star
 
-from residual_certificate import AdaptiveResidualCalibration, read_scores, NO_QUANTILE
+from residual_certificate import AdaptiveResidualCalibration, read_scores, certificate_from_csv, NO_QUANTILE
 
 try:
     from residual_calibration_recorder import (
@@ -1229,10 +1229,22 @@ class InteractiveMissionGateway(Node):
             ],
             "z": self.fixed_z,
         }
+        configured_mode = str(self.get_parameter("interaction_mode").value).strip().upper()
+        scores = read_scores(str(self.get_parameter("calibration_csv").value))
+        split_metadata = None
+        try:
+            split_metadata = certificate_from_csv(str(self.get_parameter("calibration_csv").value),
+                                                  float(self.get_parameter("delta").value))
+        except ValueError:
+            if configured_mode != "ADAPTIVE_CONFORMAL_PREDICTION":
+                raise
+            self.get_logger().warning("ACP using legacy calibration history; frozen split mode remains unavailable")
+        self.split_certificate_available = split_metadata is not None
         self.acp = AdaptiveResidualCalibration(
-            read_scores(str(self.get_parameter("calibration_csv").value)),
+            scores,
             float(self.get_parameter("delta").value), float(self.get_parameter("acp_gamma").value),
-            str(self.get_parameter("acp_state_file").value))
+            str(self.get_parameter("acp_state_file").value),
+            split_metadata)
         if not self.acp.scores:
             self.get_logger().warning(NO_QUANTILE)
         self.acp_event_pub = self.create_publisher(String, "/llm_vision/acp_update", LATCHED_QOS)
@@ -1677,6 +1689,9 @@ class InteractiveMissionGateway(Node):
         if requested not in ("ADAPTIVE_CONFORMAL_PREDICTION", "MISSION_EXECUTION"):
             self.publish_response("MODE_REJECTED", "Unsupported interaction mode.")
             return
+        if requested == "MISSION_EXECUTION" and not self.split_certificate_available:
+            self.publish_response("MODE_REJECTED", "Frozen Dcal split certificate is required for mission execution.")
+            return
         if self.state not in (
             "WAITING_FOR_COMMAND",
             "CANCELLED",
@@ -1717,7 +1732,7 @@ class InteractiveMissionGateway(Node):
             payload = json.loads(msg.data)
         except json.JSONDecodeError:
             return
-        if payload.get("status") == "FRAME_READY" and self.calibration_frame_ready_s is None:
+        if (payload.get("status") == "FRAME_READY" or payload.get("frame_ready")) and self.calibration_frame_ready_s is None:
             self.calibration_frame_ready_s = time.time()
             self.publish_response(
                 "CALIBRATION_FRAME_READY",
@@ -1741,7 +1756,12 @@ class InteractiveMissionGateway(Node):
             reference_s = self.last_calibration_capture_s
         if now - reference_s < delay:
             return
-        if self.context_error() is not None:
+        error = self.context_error()
+        if error is not None:
+            previous, last_time = getattr(self, "_calibration_wait_notice", (None, 0.0))
+            if error != previous or now - last_time >= 15.0:
+                self.get_logger().info(f"Calibration waiting: {error}")
+                self._calibration_wait_notice = (error, now)
             return
         self.calibration_capture_count += 1
         self.last_calibration_capture_s = now

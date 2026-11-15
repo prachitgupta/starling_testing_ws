@@ -301,7 +301,8 @@ def generate_launch_description():
         output="screen",
         parameters=[params_file, {"environment": LaunchConfiguration("environment"),
             "calibration_csv": LaunchConfiguration("calibration_csv"),
-            "delta": ParameterValue(LaunchConfiguration("delta"), value_type=float)}],
+            "delta": ParameterValue(LaunchConfiguration("delta"), value_type=float),
+            "interaction_mode": LaunchConfiguration("interaction_mode")}],
     )
 
     mission_logger = Node(

@@ -25,6 +25,8 @@ install(PROGRAMS
   fine_tuning/scripts/hrrt_star.py
   fine_tuning/scripts/lqr.py
   fine_tuning/scripts/mission_data_logger.py
+  fine_tuning/scripts/person_experiment.py
+  fine_tuning/scripts/person_workspace_survey.py
   fine_tuning/scripts/residual_calibration_recorder.py
   fine_tuning/scripts/postprocess_residual_calibration.py
   fine_tuning/scripts/calibration_verifier_gateway.py
@@ -36,6 +38,8 @@ install(FILES
   fine_tuning/scripts/train_hrrt_waypoint_transformer.py
   fine_tuning/scripts/residual_certificate.py
   fine_tuning/scripts/waypoint_transformer.py
+  fine_tuning/scripts/finalize_hrrt_sft_dataset.py
+  fine_tuning/scripts/generate_hrrt_finetuning_dataset.py
   scripts/obstacle_depth.py
   scripts/outline_depth.py
   scripts/outline_segmentation.py
@@ -59,6 +63,14 @@ install(DIRECTORY test/fixtures DESTINATION share/${PROJECT_NAME}/test)
 
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(
+    NAME person_split_cp
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/test/test_person_split_cp.py
+  )
+  add_test(
+    NAME person_collection_replay
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/test/test_person_collection_replay.py
+  )
   add_test(
     NAME interactive_web_ui
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_interactive_web_ui.py

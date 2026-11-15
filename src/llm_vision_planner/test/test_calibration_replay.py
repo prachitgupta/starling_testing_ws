@@ -193,11 +193,11 @@ def install_fake_launch():
 
     names = ("LaunchConfiguration", "PathJoinSubstitution", "PythonExpression", "FindPackageShare",
              "ParameterValue", "DeclareLaunchArgument", "TimerAction", "IfCondition", "UnlessCondition",
-             "LaunchDescription", "Node")
+             "LaunchDescription", "Node", "OpaqueFunction")
     classes = {name: type(name, (Subst,), {}) for name in names}
     module("launch", LaunchDescription=classes["LaunchDescription"])
     module("launch.actions", DeclareLaunchArgument=classes["DeclareLaunchArgument"],
-           TimerAction=classes["TimerAction"])
+           TimerAction=classes["TimerAction"], OpaqueFunction=classes["OpaqueFunction"])
     module("launch.conditions", IfCondition=classes["IfCondition"], UnlessCondition=classes["UnlessCondition"])
     module("launch.substitutions", LaunchConfiguration=classes["LaunchConfiguration"],
            PathJoinSubstitution=classes["PathJoinSubstitution"], PythonExpression=classes["PythonExpression"])

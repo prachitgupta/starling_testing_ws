@@ -5,21 +5,20 @@ import json
 import numpy as np
 
 
-DAMPING = 1.1
 A_DOUBLE_INTEGRATOR = np.array(
     [
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
-        [0.0, 0.0, -DAMPING, 0.0],
-        [0.0, 0.0, 0.0, -DAMPING],
+        [0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0],
     ]
 )
 B_DOUBLE_INTEGRATOR = np.array(
     [
         [0.0, 0.0],
         [0.0, 0.0],
-        [DAMPING, 0.0],
-        [0.0, DAMPING],
+        [1.0, 0.0],
+        [0.0, 1.0],
     ]
 )
 
@@ -97,7 +96,7 @@ def solve_tvlqr(a_seq, b_seq, q, r, qf, t_grid):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Solve CARE for the damped double-integrator model.")
+    parser = argparse.ArgumentParser(description="Solve CARE for p_dot=v, v_dot=u (ideal double integrator).")
     parser.add_argument("--json", action="store_true", help="Print machine-readable P, K, and alpha.")
     args = parser.parse_args()
     p, k, alpha = solve_care()

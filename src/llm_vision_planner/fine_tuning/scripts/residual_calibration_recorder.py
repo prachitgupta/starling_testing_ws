@@ -4,12 +4,13 @@
 This node intentionally does not compute a conformity score.  Hardware
 collection records only the synchronized environment estimate ``E_hat`` and
 ground-truth environment ``E``.  ``postprocess_residual_calibration.py`` later
-runs HRRT-star, the Llama planner, the shared QP, and the residual score.
+runs HRRT-star, the Transformer, the shared QP, and the residual score.
 """
 
 import csv
 import json
 import math
+import os
 import re
 import time
 from collections import deque
@@ -155,7 +156,7 @@ def parse_objects(value):
     parsed = []
     for item in raw:
         dimensions = np.asarray(item.get("dimensions_m", []), dtype=float)
-        if dimensions.shape not in ((2,), (3,)) or np.any(dimensions <= 0):
+        if dimensions.shape not in ((2,), (3,)) or not np.all(np.isfinite(dimensions)) or np.any(dimensions <= 0):
             raise ValueError("each Vicon object requires positive dimensions_m")
         parsed.append(
             {
@@ -241,6 +242,7 @@ class ResidualCalibrationRecorder(Node):
         self.declare_parameter("object_stability_position_tolerance_m", 0.02)
         self.declare_parameter("capture_position_change_threshold_m", 0.15)
         self.declare_parameter("capture_yaw_change_threshold_rad", 0.261799)
+        self.declare_parameter("scheduled_capture", False)
 
         self.session_id = str(self.get_parameter("trial_id").value).strip()
         if not self.session_id or self.session_id.lower() in ("unset", "placeholder"):
@@ -285,11 +287,14 @@ class ResidualCalibrationRecorder(Node):
         self.output_csv.parent.mkdir(parents=True, exist_ok=True)
         existed = self.output_csv.exists() and self.output_csv.stat().st_size > 0
         self.stream = self.output_csv.open("a+", newline="", encoding="utf-8")
+        previous_rows = []
         if existed:
             self.stream.seek(0)
             if (csv.DictReader(self.stream, delimiter=CSV_DELIMITER).fieldnames or []) != RAW_FIELDS:
                 self.stream.close()
                 raise ValueError(f"incompatible existing raw CSV header: {self.output_csv}")
+            self.stream.seek(0)
+            previous_rows = list(csv.DictReader(self.stream, delimiter=CSV_DELIMITER))
             self.stream.seek(0, 2)
         self.writer = csv.DictWriter(
             self.stream, fieldnames=RAW_FIELDS, delimiter=CSV_DELIMITER, lineterminator="\n"
@@ -298,7 +303,9 @@ class ResidualCalibrationRecorder(Node):
             self.writer.writeheader()
             self.stream.flush()
 
-        self.capture_index = 0
+        self.capture_index = max((int(row["capture_index"]) for row in previous_rows
+                                  if row["session_id"] == self.session_id), default=0)
+        self.recorded_count = len({row["capture_id"] for row in previous_rows})
         self.latest_nominal = None
         self.world_to_ned = None
         self.frame_candidates = deque(maxlen=max(80, self.frame_count * 4))
@@ -306,10 +313,18 @@ class ResidualCalibrationRecorder(Node):
         self.vehicle_vicon = deque(maxlen=100)
         self.vehicle_px4 = deque(maxlen=100)
         self.object_history = {item["topic"]: deque(maxlen=500) for item in self.objects}
-        self.recorded = set()
+        self.recorded = {(row["capture_id"], row["object_id"]) for row in previous_rows}
         self.pending_rows = {}
         self.rejected_captures = set()
         self.last_accepted_scene = None
+        if previous_rows:
+            last_id = previous_rows[-1]["capture_id"]
+            self.last_accepted_scene = {
+                row["object_id"]: {"center": [float(row["gt_center_x"]), float(row["gt_center_y"])],
+                                   "yaw": float(row["gt_yaw_rad"])}
+                for row in previous_rows if row["capture_id"] == last_id}
+        self._last_notice = (None, 0.0)
+        self._last_write_s = time.monotonic()
         self.status = self.create_publisher(
             String, str(self.get_parameter("calibration_status_topic").value), LATCHED_QOS
         )
@@ -333,11 +348,35 @@ class ResidualCalibrationRecorder(Node):
             for item in self.objects
         ]
         self.publish_status("WAITING_FOR_FRAME_ALIGNMENT", "Keep Starling 2 still while frames align.")
+        self.get_logger().info(f"Recording to {self.output_csv.resolve()} ({self.recorded_count} existing captures).")
+        self.create_timer(5.0, self.recording_watchdog)
 
     def publish_status(self, status, message, **metadata):
         payload = {"status": status, "message": message, "session_id": self.session_id,
-                   "timestamp": time.time(), **metadata}
+                   "timestamp": time.time(), "frame_ready": self.world_to_ned is not None, **metadata}
         self.status.publish(String(data=json.dumps(payload)))
+        now = time.monotonic()
+        key = (status, message)
+        if key != self._last_notice[0] or now - self._last_notice[1] >= 15.0:
+            self.get_logger().info(message)
+            self._last_notice = (key, now)
+
+    def recording_watchdog(self):
+        if self.world_to_ned is None:
+            missing = []
+            if not self.vehicle_px4:
+                missing.append(str(self.get_parameter("pose_topic").value))
+            if not self.vehicle_vicon:
+                missing.append(str(self.get_parameter("vicon_vehicle_topic").value))
+            detail = f" Missing: {', '.join(missing)}." if missing else f" Aligned pairs: {len(self.frame_candidates)}/{self.frame_count}; check clocks and keep vehicle still."
+            self.publish_status("WAITING_FOR_FRAME_ALIGNMENT", "Waiting for synchronized vehicle pose." + detail)
+        elif self.latest_nominal is None:
+            self.publish_status("WAITING_FOR_SNAPSHOT", "Waiting for a nominal snapshot; check hover state and perception health.")
+        elif time.monotonic() - self._last_write_s > 15.0:
+            missing = [topic for topic, history in self.object_history.items() if not history]
+            self.publish_status("WAITING_FOR_RECORDING", "No new capture: " + (
+                f"waiting for Vicon {', '.join(missing)}." if missing else
+                "check snapshot/Vicon timestamps, stability, and move to a new location."))
 
     def vehicle_vicon_callback(self, message):
         try:
@@ -459,6 +498,7 @@ class ResidualCalibrationRecorder(Node):
             history, key=lambda item: abs(item[0] - nominal["timestamp"])
         )
         if abs(vicon_timestamp - nominal["timestamp"]) > self.sync_tolerance:
+            self.publish_status("WAITING_FOR_SYNC", "Snapshot and person Vicon timestamps do not match; check clocks/time offset.")
             return
         key = (nominal["capture_id"], configured["object_id"])
         if key in self.recorded:
@@ -530,7 +570,7 @@ class ResidualCalibrationRecorder(Node):
             object_id: {"center": value[1]["center"], "yaw": value[1]["yaw"]}
             for object_id, value in pending.items()
         }
-        different = self.last_accepted_scene is None or set(scene) != set(self.last_accepted_scene)
+        different = bool(self.get_parameter("scheduled_capture").value) or self.last_accepted_scene is None or set(scene) != set(self.last_accepted_scene)
         if not different:
             for object_id, pose in scene.items():
                 previous = self.last_accepted_scene[object_id]
@@ -558,10 +598,13 @@ class ResidualCalibrationRecorder(Node):
             self.writer.writerow(pending[object_id][0])
             self.recorded.add((nominal["capture_id"], object_id))
         self.stream.flush()
+        os.fsync(self.stream.fileno())
+        self.recorded_count += 1
+        self._last_write_s = time.monotonic()
         self.last_accepted_scene = scene
         self.pending_rows.pop(nominal["capture_id"], None)
         self.publish_status(
-            "RECORDED", f"Recorded complete environment {nominal['capture_id']}.",
+            "RECORDED", f"Snapshot recorded: {self.recorded_count}. Move to the next location.",
             capture_id=nominal["capture_id"], object_count=len(scene),
             output_csv=str(self.output_csv),
         )
@@ -570,6 +613,7 @@ class ResidualCalibrationRecorder(Node):
         if hasattr(self, "stream") and not self.stream.closed:
             self.stream.flush()
             self.stream.close()
+            self.get_logger().info(f"Recording stopped: {self.recorded_count} complete captures in {self.output_csv.resolve()}.")
         return super().destroy_node()
 
 

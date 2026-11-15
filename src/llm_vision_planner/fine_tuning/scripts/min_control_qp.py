@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Minimum-control trajectories for the damped planar double integrator."""
+"""Minimum-control trajectories for the ideal planar double integrator."""
 
 import math
 
 import numpy as np
 
 
-DAMPING = 1.1
+DAMPING = 0.0
 DT = 0.1
 CRUISE_SPEED_MPS = 0.3
 _BOUNDED_DURATION_SCALES = (1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)
@@ -48,7 +48,7 @@ def discrete_dynamics(dt=DT, damping=DAMPING):
     """Exact zero-order-hold dynamics.
 
     ``damping=0`` selects the ideal double integrator ``p_ddot=u`` used by
-    residual calibration.  The historical damped model remains the default.
+    residual calibration. Nonzero damping is an explicit legacy opt-in.
     """
     if math.isclose(float(damping), 0.0, abs_tol=1e-12):
         a = np.array([[1.0, dt], [0.0, 1.0]], dtype=float)

@@ -380,11 +380,33 @@ def test_takeoff_waits_for_calibration_frame():
         assert len(harness.setpoints) >= 5
         assert not harness.commands, "executor armed before calibration FRAME_READY"
 
-        harness.publish_takeoff_gate("FRAME_READY")
+        # A newer guided status retains the frame-alignment latch.
+        harness.takeoff_gate_pub.publish(String(data=json.dumps({"status": "POSITIONING", "frame_ready": True})))
         spin_until(executor, node, harness, lambda: len(harness.commands) >= 2, 0.5)
         assert node.state == "ARM_TAKEOFF"
         assert node.takeoff_gate_ready is True
     finally:
+        destroy_nodes(executor, node, harness)
+
+
+def test_late_guided_subscriber_receives_hover_state():
+    executor, node, harness = make_nodes("latched_mission_state")
+    late = None
+    states = []
+    try:
+        spin_until(executor, node, harness, lambda: node.state == "ARM_TAKEOFF", 1.0)
+        harness.landed = False
+        harness.position = [0.0, 0.0, -0.5]
+        spin_until(executor, node, harness, lambda: node.state == "HOLDING_FOR_PLAN", 1.0)
+        late = Node("late_guided_mission_subscriber")
+        late.create_subscription(String, "/llm_vision/mission_state",
+                                 lambda msg: states.append(json.loads(msg.data)["state"]), LATCHED_QOS)
+        executor.add_node(late)
+        spin_until(executor, node, harness, lambda: "HOLDING_FOR_PLAN" in states, 0.5)
+    finally:
+        if late is not None:
+            executor.remove_node(late)
+            late.destroy_node()
         destroy_nodes(executor, node, harness)
 
 

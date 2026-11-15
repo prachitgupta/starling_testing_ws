@@ -1,6 +1,10 @@
 # Record Calibration Data
 
+For new person-only split-CP experiments, use [Record Calibration Data 2.0](Record%20Calibration%20Data%202.0.md). This older guide retains hardware setup and legacy free-form/bag-replay commands; its arbitrary captures are not a frozen Dcal/Dtest experiment. Version 2.0 adds workspace survey, preselected sample counts/delta, checkpoint freezing and strict scene accounting.
+
 Run commands from the workspace root unless a command explicitly changes directory. These procedures are separated from mission execution. Raw captures are not calibrated scores and must retain misses. Never use dummy fixtures as a real-flight certificate.
+
+Current Starling/VOXL IP: `192.168.0.28`.
 
 The retained capture dataset is `fine_tuning/datasets/calibration_residual_raw_person_outline.csv` (59 captures, including 8 misses). Before recording, choose a **new output filename**; preserve this reference dataset. Outline perception estimates depth locally; optional EfficientSAM weights remain local, and the configured fallback is shape fitting. Validate the estimator actually used in capture metadata.
 
@@ -197,7 +201,7 @@ include the perceived front center, view/lateral axes, visible width, the
 depth behind the front surface (measured by perception, Section 12; the column
 keeps its old name `pred_chatgpt_depth_m`), and four reconstructed NED
 footprint corners. Offline processing
-then runs HRRT-star on ground truth, the Llama planner on perception, both
+then runs HRRT-star on ground truth, the Transformer planner on perception, both
 ideal-double-integrator QPs, and writes one residual conformity score per
 capture. Never use the raw CSV as the conformal calibration input.
 
@@ -370,8 +374,8 @@ print(json.dumps([
 PY
 )"
 
-RAW_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw_person_outline.csv"
 TRIAL_ID="person-residual-$(date +%Y%m%d-%H%M%S)"
+RAW_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/${TRIAL_ID}.csv"
 POSITION_CHANGE_M=0.15
 YAW_CHANGE_RAD=0.261799
 
@@ -517,8 +521,8 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 
 VICON_OBJECTS_JSON='[{"object_id": "person-1", "label": "person", "topic": "/vicon/person/person", "dimensions_m": [0.38, 0.29]}]'
-RAW_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_raw_person_outline.csv"
 TRIAL_ID="person-residual-replay-$(date +%Y%m%d-%H%M%S)"
+RAW_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/${TRIAL_ID}.csv"
 
 ros2 launch llm_vision_planner vision_error_calibration.launch.py \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \

@@ -1,10 +1,94 @@
+import json
+import os
+from pathlib import Path
+import sys
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction
-from launch.conditions import UnlessCondition
+from launch.actions import DeclareLaunchArgument, TimerAction, OpaqueFunction
+from launch.conditions import UnlessCondition, IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+
+
+def collection_preflight(context):
+    """Fail before vehicle nodes start; report the actual installation and paths."""
+    def value(name):
+        return LaunchConfiguration(name).perform(context)
+    from ament_index_python.packages import get_package_prefix
+    prefix = Path(get_package_prefix("llm_vision_planner"))
+    params = Path(value("params_file")).expanduser().resolve()
+    if not params.is_file():
+        raise RuntimeError(f"Calibration YAML does not exist: {params}; source the final-testing install and supply an absolute params_file.")
+    mode = value("collection_mode")
+    print(f"Calibration package: {prefix}\nConfiguration: {params}\nCollection mode: {mode}", flush=True)
+    if mode == "legacy":
+        output = Path(value("output_csv")).expanduser()
+        if not output.is_absolute():
+            raise RuntimeError("output_csv must be an absolute path in the source dataset directory")
+        if value("trial_id").lower() in ("", "unset", "placeholder"):
+            raise RuntimeError("provide a unique trial_id before starting collection")
+        sys.path.insert(0, str(prefix / "lib" / "llm_vision_planner"))
+        from residual_calibration_recorder import parse_objects
+        objects = json.loads(value("vicon_objects_json")) or [{"object_id": value("object_id"),
+            "label": value("object_label"), "topic": value("object_vicon_topic"),
+            "dimensions_m": [float(value("object_width_m")), float(value("object_depth_m"))]}]
+        parse_objects(json.dumps(objects))
+        if not output.parent.is_dir() or not os.access(output.parent, os.W_OK):
+            raise RuntimeError(f"create a writable output directory first: {output.parent}")
+        return []
+    if mode not in ("survey", "scheduled"):
+        raise RuntimeError("collection_mode must be legacy, survey, or scheduled")
+    sys.path.insert(0, str(prefix / "lib" / "llm_vision_planner"))
+    from person_experiment import checked_manifest, file_hash, verify_model, verify_survey_profile
+    manifest_path = Path(value("experiment_manifest")).expanduser().resolve()
+    manifest = checked_manifest(manifest_path, "survey" if mode == "survey" else "experiment")
+    survey = manifest if mode == "survey" else manifest["domain"]["survey"]
+    verify_survey_profile(survey)
+    if abs(float(survey["person"]["yaw_rad"])) > 1e-12 or abs(float(survey["hover"][3])) > 1e-12:
+        raise RuntimeError("version 2.0 fixes hover and person yaw to 0 degrees NED; create a new survey manifest")
+    if file_hash(params) != survey["params_sha256"]:
+        raise RuntimeError("params_file differs from frozen survey configuration")
+    installed_script = prefix / "lib" / "llm_vision_planner" / "person_experiment.py"
+    source_script = Path(survey["source_root"]) / "fine_tuning" / "scripts" / "person_experiment.py"
+    if file_hash(installed_script) != file_hash(source_script):
+        raise RuntimeError("installed code differs from frozen source package; rebuild and source its install/setup.bash")
+    if mode == "scheduled":
+        verify_model(manifest)
+    replay = value("replay").lower() in ("true", "1")
+    use_sim_time = value("use_sim_time").lower() in ("true", "1")
+    if replay or use_sim_time:
+        raise RuntimeError("guided domain/certification evidence requires live clocks; use legacy replay or isolated tests for validation")
+    output = Path(survey["output_dir"]) / ("survey.raw.csv" if mode == "survey" else "measured.raw.csv")
+    if not output.parent.is_dir() or not os.access(output.parent, os.W_OK):
+        raise RuntimeError(f"output directory is not writable: {output.parent}")
+    from residual_calibration_recorder import parse_objects
+    parse_objects(json.dumps([survey["person"]]))
+    if not output.resolve().is_relative_to(Path(survey["source_root"]) / "fine_tuning" / "datasets"):
+        raise RuntimeError("guided output must be inside the source dataset directory")
+    recorder_params = {
+        "use_sim_time": use_sim_time, "trial_id": output.parent.name,
+        "output_csv": str(output), "vicon_objects_json": json.dumps([survey["person"]]),
+        "scheduled_capture": True, "collection_mode": mode, "experiment_manifest": str(manifest_path),
+        "replay": replay, "sync_tolerance_s": survey["sync_tolerance_s"],
+        "object_stability_window_s": survey["stability_window_s"],
+        "object_stability_min_samples": survey["stability_min_samples"],
+        "object_stability_position_tolerance_m": survey["stability_position_tolerance_m"],
+        "match_distance_m": survey["match_distance_m"],
+    }
+    nodes = [Node(package="llm_vision_planner", executable="person_workspace_survey.py",
+                  name="residual_calibration_recorder", output="screen", parameters=[str(params), recorder_params]),
+             Node(package="llm_vision_planner", executable="perception_detection.py", name="semantic_obstacle_perception",
+                  output="screen", parameters=[str(params), {"use_sim_time": use_sim_time, "debug": False}])]
+    if not replay:
+        nodes.append(Node(package="llm_vision_planner", executable="control_law_executer.py",
+            name="control_law_executer", output="screen", parameters=[str(params), {
+                "takeoff_gate_topic": "/llm_vision/vision_calibration_status", "takeoff_gate_status": "FRAME_READY",
+                "takeoff_z": survey["hover"][2], "debug": False}]))
+    count = len(survey["locations"]) * survey["visits"] * survey["checks_per_visit"] if mode == "survey" else len(manifest["collection_schedule"])
+    print(f"Person-only {mode}; {count} scheduled observations; dataset: {output}", flush=True)
+    return nodes
 
 
 def generate_launch_description():
@@ -17,6 +101,8 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument("trial_id", default_value="unset"),
+        DeclareLaunchArgument("collection_mode", default_value="legacy"),
+        DeclareLaunchArgument("experiment_manifest", default_value=""),
         DeclareLaunchArgument(
             "output_csv",
             default_value="fine_tuning/datasets/calibration_residual_raw.csv",
@@ -69,6 +155,7 @@ def generate_launch_description():
         executable="residual_calibration_recorder.py",
         name="residual_calibration_recorder",
         output="screen",
+        condition=IfCondition(PythonExpression(["'", LaunchConfiguration("collection_mode"), "' == 'legacy'"])),
         parameters=[
             params_file,
             {
@@ -122,12 +209,14 @@ def generate_launch_description():
         executable="perception_detection.py",
         name="semantic_obstacle_perception",
         output="screen",
+        condition=IfCondition(PythonExpression(["'", LaunchConfiguration("collection_mode"), "' == 'legacy'"])),
         parameters=[
             params_file,
             {
                 "use_sim_time": use_sim_time,
                 "depth_estimator": LaunchConfiguration("depth_estimator"),
                 "efficientsam_model": LaunchConfiguration("efficientsam_model"),
+                "debug": False,
             },
         ],
     )
@@ -145,14 +234,15 @@ def generate_launch_description():
                 "takeoff_gate_status": "FRAME_READY",
             },
         ],
-        condition=UnlessCondition(LaunchConfiguration("replay")),
+        condition=IfCondition(PythonExpression(["'", LaunchConfiguration("collection_mode"), "' == 'legacy' and '", LaunchConfiguration("replay"), "'.lower() not in ('true', '1')"])),
     )
 
     nominal_environment = Node(
         package="llm_vision_planner",
         executable="interactive_mission_gateway.py",
-        name="vision_calibration_environment",
+        name="interactive_mission_gateway",
         output="screen",
+        condition=IfCondition(PythonExpression(["'", LaunchConfiguration("collection_mode"), "' == 'legacy'"])),
         parameters=[
             params_file,
             {
@@ -164,6 +254,7 @@ def generate_launch_description():
                 "visualizer": "standard",
                 "require_mission_state": live,
                 "calibration_only": True,
+                "debug": False,
                 "auto_calibration_capture": True,
                 "continuous_calibration_capture": True,
                 "calibration_capture_delay_s": ParameterValue(
@@ -180,6 +271,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             *common_arguments,
+            OpaqueFunction(function=collection_preflight),
             recorder,
             perception,
             takeoff,

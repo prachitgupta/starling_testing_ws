@@ -45,7 +45,7 @@ recording guides linked above.
 This procedure uses:
 
 - Starling 2 / VOXL at `192.168.0.28`
-- Vicon Tracker computer at `10.117.229.124`
+- Vicon Tracker computer at `192.168.0.130`
 - MAVROS on the ground-station laptop
 - Vicon pose through MAVROS into the PX4 EKF2
 - VOXL MPA-to-ROS 2 and PX4 microDDS for perception and `/fmu/*` topics
@@ -63,7 +63,7 @@ On the ground station:
 
 ```bash
 export Starling2=192.168.0.28
-export VICON_COMPUTER_IP=10.117.229.124
+export VICON_COMPUTER_IP=192.168.0.130
 
 ping -c 3 "$Starling2"
 ping -c 3 "$VICON_COMPUTER_IP"
@@ -388,7 +388,7 @@ ros2 daemon start
 For a Vicon rate of 50 Hz:
 
 ```bash
-export VICON_COMPUTER_IP=10.117.229.124
+export VICON_COMPUTER_IP=192.168.0.130
 ros2 run vicon_bridge vicon_bridge --ros-args \
   -p host_name:="${VICON_COMPUTER_IP}:801" \
   -p stream_mode:="ServerPush" \
@@ -405,7 +405,7 @@ ros2 run vicon_bridge vicon_bridge --ros-args \
 For a Vicon rate of 100 Hz:
 
 ```bash
-export VICON_COMPUTER_IP=10.117.229.124
+export VICON_COMPUTER_IP=192.168.0.130
 ros2 run vicon_bridge vicon_bridge --ros-args \
   -p host_name:="${VICON_COMPUTER_IP}:801" \
   -p stream_mode:="ServerPush" \

@@ -243,7 +243,7 @@ not be mixed with real calibration data.
 Stop any other Vicon bridge first. Run this on the ground station:
 
 ```bash
-export VICON_COMPUTER_IP=10.117.229.124
+export VICON_COMPUTER_IP=192.168.0.130
 
 ros2 run vicon_bridge vicon_bridge --ros-args \
   -p host_name:="${VICON_COMPUTER_IP}:801" \

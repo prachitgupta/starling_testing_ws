@@ -31,7 +31,7 @@ On the ground station, use the established DDS settings (the vehicle must use th
 ```bash
 source "$(ros2 pkg prefix llm_vision_planner)/lib/llm_vision_planner/ros_wifi_dds.sh" enable auto 42
 ros2 daemon start
-export VICON_COMPUTER_IP=10.117.229.124
+export VICON_COMPUTER_IP=192.168.0.130
 ros2 run vicon_bridge vicon_bridge --ros-args \
   -p host_name:="${VICON_COMPUTER_IP}:801" \
   -p stream_mode:="ServerPush" \

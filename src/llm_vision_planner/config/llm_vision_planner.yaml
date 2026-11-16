@@ -265,6 +265,10 @@ residual_calibration_recorder:
     collection_mode: legacy
     experiment_manifest: ""
     scheduled_capture: False
+    # Survey-only operator display. With no desktop display, survey.live.png
+    # is refreshed instead; plotting never changes acceptance decisions.
+    survey_plot_enabled: True
+    survey_plot_refresh_s: 0.2
     nominal_obstacle_topic: /llm_vision/nominal_obstacles
     calibration_status_topic: /llm_vision/vision_calibration_status
     trial_id: unset

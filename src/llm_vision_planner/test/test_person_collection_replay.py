@@ -56,7 +56,8 @@ def run_scenario(scenario):
             "trial_id": "test", "output_csv": str(root / "measured.raw.csv"),
             "collection_mode": "survey" if surveying else "scheduled",
             "experiment_manifest": str(root / ("survey.json" if surveying else "experiment.json")),
-            "scheduled_capture": True, "vicon_objects_json": json.dumps([survey["person"]])}
+            "scheduled_capture": True, "survey_plot_enabled": False,
+            "vicon_objects_json": json.dumps([survey["person"]])}
         node = guide.PersonWorkspaceSurvey()
         node.world_to_ned = (np.zeros(3), np.eye(3))
         start = replay.BUS.t

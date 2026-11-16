@@ -8,6 +8,7 @@ import copy
 import csv
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -27,6 +28,85 @@ except ModuleNotFoundError:
     from interactive_mission_gateway import nominal_obstacles_from_depth
 
 
+def survey_location_states(config, events):
+    """Return pending/validated/rejected IDs from recorded survey evidence."""
+    observations = [event for event in events if event.get("type") == "observation"]
+    by_location = {location["location_id"]: [] for location in config["locations"]}
+    trial_locations = {item["trial_id"]: item["location_id"] for item in survey_schedule(config)}
+    for event in observations:
+        location_id = trial_locations.get(event.get("trial_id"))
+        if location_id in by_location:
+            by_location[location_id].append(event)
+    expected = int(config["visits"]) * int(config["checks_per_visit"])
+    rejected = {location_id for location_id, rows in by_location.items()
+                if any(row.get("errors") for row in rows)}
+    validated = {location_id for location_id, rows in by_location.items()
+                 if len(rows) == expected and location_id not in rejected}
+    pending = set(by_location) - rejected - validated
+    return pending, validated, rejected
+
+
+class SurveyLivePlot:
+    """Small operator display; it has no role in survey acceptance decisions."""
+    def __init__(self, config, output_path):
+        display_available = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+        import matplotlib
+        if not display_available:
+            matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        self.plt = plt
+        self.config = config
+        self.output_path = Path(output_path)
+        self.figure, self.axes = plt.subplots(figsize=(8, 7))
+        self.show_window = (display_available and
+                            getattr(self.figure.canvas, "required_interactive_framework", None) is not None)
+        if self.show_window:
+            plt.ion()
+            self.figure.show()
+
+    def render(self, events, target=None, person_xy=None, status="", save=False):
+        pending, validated, rejected = survey_location_states(self.config, events)
+        locations = {item["location_id"]: item for item in self.config["locations"]}
+        axes = self.axes
+        axes.clear()
+
+        def scatter(ids, **style):
+            points = [locations[location_id] for location_id in ids]
+            if points:
+                axes.scatter([point["x"] for point in points], [point["y"] for point in points], **style)
+
+        # Rejected locations are deliberately omitted from the grid.
+        scatter(sorted(pending), c="#a7adb4", s=28, marker="o", label="pending grid")
+        scatter(sorted(validated), c="#228833", s=48, marker="s", label="validated")
+        if target is not None:
+            axes.scatter([target["x"]], [target["y"]], c="#ee7733", s=180, marker="*",
+                         edgecolors="black", linewidths=.7, label="current target", zorder=4)
+        if person_xy is not None:
+            axes.scatter([person_xy[0]], [person_xy[1]], c="#0077bb", s=90, marker="X",
+                         edgecolors="white", linewidths=.7, label="Vicon person", zorder=5)
+
+        all_x = [point["x"] for point in locations.values()]
+        all_y = [point["y"] for point in locations.values()]
+        margin = max(float(self.config.get("spacing_m", .25)), .25)
+        axes.set_xlim(min(all_x) - margin, max(all_x) + margin)
+        axes.set_ylim(min(all_y) - margin, max(all_y) + margin)
+        axes.set_aspect("equal", adjustable="box")
+        axes.grid(True, alpha=.25)
+        axes.set_xlabel("NED x (m)")
+        axes.set_ylabel("NED y (m)")
+        axes.set_title(status or "Person workspace survey")
+        axes.legend(loc="best")
+        self.figure.tight_layout()
+        self.figure.canvas.draw_idle()
+        if self.show_window:
+            self.figure.canvas.flush_events()
+        if save or not self.show_window:
+            self.figure.savefig(self.output_path, dpi=120)
+
+    def close(self):
+        self.plt.close(self.figure)
+
+
 class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
     def __init__(self):
         super().__init__()
@@ -36,6 +116,8 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
         self.declare_parameter("mission_state_topic", "/llm_vision/mission_state")
         self.declare_parameter("required_mission_state", "HOLDING_FOR_PLAN")
         self.declare_parameter("replay", False)
+        self.declare_parameter("survey_plot_enabled", True)
+        self.declare_parameter("survey_plot_refresh_s", 0.2)
         self.mode = str(self.get_parameter("collection_mode").value)
         if self.mode not in ("survey", "scheduled"):
             raise ValueError("guided collection_mode must be survey or scheduled")
@@ -52,6 +134,7 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
         self.schedule = survey_schedule(manifest) if self.mode == "survey" else manifest["collection_schedule"]
         self.events_path = self.root / ("survey.events.jsonl" if self.mode == "survey" else "collection.events.jsonl")
         events = read_events(self.events_path)
+        self.survey_events = list(events) if self.mode == "survey" else []
         if any(e.get("type") == "failure" for e in events):
             raise ValueError("a scheduled trial failed; review this experiment before starting a new version")
         completed_type = "observation" if self.mode == "survey" else "recorded"
@@ -79,6 +162,17 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
         self.due = None
         self.stopped = False
         self.done_notice = False
+        self.plot = None
+        self.plot_status = "Survey starting. Waiting for synchronized inputs."
+        self.last_plot_refresh = -math.inf
+        if self.mode == "survey" and bool(self.get_parameter("survey_plot_enabled").value):
+            try:
+                self.plot = SurveyLivePlot(self.config, self.root / "survey.live.png")
+                self.refresh_plot(force=True)
+                self.get_logger().info(f"Live survey plot: {self.root / 'survey.live.png'}")
+            except Exception as exc:
+                self.get_logger().warning(f"Live survey plot unavailable; collection will continue: {exc}")
+                self.plot = None
         self.create_subscription(String, str(self.get_parameter("semantic_obstacle_topic").value), self.scene_callback, 10)
         self.create_subscription(String, str(self.get_parameter("mission_state_topic").value), self.mission_callback, LATCHED_QOS)
         self.create_timer(0.1, self.step)
@@ -115,7 +209,30 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
             self.mission = None
 
     def wait(self, code, message):
+        self.plot_status = message
         self.publish_status(code, message)
+
+    def person_xy(self):
+        if self.world_to_ned is None:
+            return None
+        history = self.object_history[self.objects[0]["topic"]]
+        if not history:
+            return None
+        try:
+            return ground_truth_aabb(self.objects[0], history[-1][1], self.world_to_ned)["center"]
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def refresh_plot(self, force=False):
+        if self.plot is None:
+            return
+        now = time.monotonic()
+        refresh_s = max(float(self.get_parameter("survey_plot_refresh_s").value), 0.05)
+        if not force and now - self.last_plot_refresh < refresh_s:
+            return
+        target = self.schedule[self.index] if self.index < len(self.schedule) else None
+        self.plot.render(self.survey_events, target, self.person_xy(), self.plot_status, save=force)
+        self.last_plot_refresh = now
 
     def infrastructure_error(self):
         now = time.monotonic()
@@ -177,10 +294,13 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
         return None
 
     def step(self):
+        self.refresh_plot()
         if self.stopped:
             return
         if self.index >= len(self.schedule):
             if not self.done_notice:
+                self.plot_status = f"Survey complete: {self.index}/{len(self.schedule)} checks accounted for."
+                self.refresh_plot(force=True)
                 self.publish_status("COMPLETE", f"Complete: {self.index}/{len(self.schedule)}. Files: {self.root}. Stop the launch using the documented vehicle procedure.")
                 self.done_notice = True
             return
@@ -307,14 +427,29 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
                          and self.schedule[self.index]["location_id"] == old["location_id"]
                          and self.schedule[self.index]["visit"] == old["visit"])
         if self.mode == "survey":
+            self.survey_events.append(event)
             result = "passed" if not event["errors"] else "failed: " + "; ".join(event["errors"])
-            self.publish_status("SURVEY_CHECK", f"Survey check {self.index}/{len(self.schedule)} {result}.")
+            _, validated, rejected = survey_location_states(self.config, self.survey_events)
+            location_id = old["location_id"]
+            if location_id in rejected:
+                point_result = f" Location {location_id} rejected and removed from the grid."
+            elif location_id in validated:
+                point_result = f" Location {location_id} validated and latched green."
+            else:
+                point_result = ""
+            self.plot_status = f"Survey check {self.index}/{len(self.schedule)} {result}.{point_result}"
+            self.refresh_plot(force=True)
+            self.publish_status("SURVEY_CHECK", self.plot_status)
         else:
             self.publish_status("RECORDED_GUIDED", f"Snapshot recorded: {self.index}/{len(self.schedule)}. Move to the next location.")
 
     def destroy_node(self):
         if hasattr(self, "index"):
             self.get_logger().info(f"Guided {self.mode} stopped: {self.index}/{len(self.schedule)} accounted observations; files: {self.root}.")
+        if getattr(self, "plot", None) is not None:
+            self.refresh_plot(force=True)
+            self.plot.close()
+            self.plot = None
         return super().destroy_node()
 
 

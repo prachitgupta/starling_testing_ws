@@ -96,6 +96,8 @@ Hold still. Scheduled check 12/….
 Survey check 12/… passed.
 ```
 
+A minimal live survey window shows the complete grid in grey, the current requested point as an orange star and the Vicon person pose as a blue X. Once all scheduled checks for a point pass, it remains latched green. A point is removed immediately after its first recorded rejection (although its remaining frozen checks are still performed). The title repeats the current positioning/hold/result guidance. The same view is saved at `$PERSON_EXP/survey.live.png`; on a headless terminal that PNG is refreshed instead of opening a window. Plotting is operator guidance only and does not alter, retry or filter survey evidence. Set `survey_plot_enabled: False` in the YAML only when deliberately running without this display, before freezing a new survey configuration.
+
 Follow the locations/headings exactly; each visit has ten checks at least one second apart. Leave the previous location by more than 0.15 m between visits, including successive visits to the same point. Do not move the hovering aircraft by hand. Missing infrastructure pauses visibly. Scheduled observations require fresh, distinct detector frames, measured depth, exactly one non-held person, sufficient confidence, valid matched geometry and synchronized stationary Vicon. A failed check is retained and excludes that location; it is not replaced by a successful retry. All other scheduled checks still run. Additional visible obstacles are rejected, not silently discarded.
 
 At completion, land **before** stopping the launch. In another sourced terminal:

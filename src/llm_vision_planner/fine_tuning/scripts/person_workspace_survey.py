@@ -125,6 +125,12 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
                                     "survey" if self.mode == "survey" else "experiment")
         self.config = manifest if self.mode == "survey" else manifest["domain"]["survey"]
         self.root = Path(self.config["output_dir"])
+        # Old sealed manifests used one shared position gate.  New manifests
+        # keep the camera fixed more tightly than the human target region.
+        self.vehicle_position_tolerance = float(self.config.get(
+            "vehicle_position_tolerance_m", self.config.get("position_tolerance_m", 0.10)))
+        self.person_position_tolerance = float(self.config.get(
+            "person_position_tolerance_m", self.config.get("position_tolerance_m", 0.20)))
         if file_hash(self.config["params_file"]) != self.config["params_sha256"]:
             raise ValueError("YAML changed after survey configuration was frozen")
         if len(self.objects) != 1 or self.objects[0]["label"] != "person":
@@ -265,7 +271,7 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
     def pose_error(self, target):
         position, rotation = self.vehicle_px4[-1][1]
         hover = self.config["hover"]
-        if math.dist(position, hover[:3]) > self.config["position_tolerance_m"]:
+        if math.dist(position, hover[:3]) > self.vehicle_position_tolerance:
             return "Vehicle drifted from the frozen hover position."
         yaw = math.atan2(float(rotation[1, 0]), float(rotation[0, 0]))
         if angle_distance(yaw, hover[3]) > self.config["yaw_tolerance_rad"]:
@@ -277,7 +283,7 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
             if math.dist(ground_truth["center"], old) <= 0.15:
                 return "Step away from the previous location by more than 0.15 m, then move to the next target."
             self.departed = True
-        if math.dist(ground_truth["center"], [target["x"], target["y"]]) > self.config["position_tolerance_m"]:
+        if math.dist(ground_truth["center"], [target["x"], target["y"]]) > self.person_position_tolerance:
             return f"Hover ready. Move to target {self.index + 1}/{len(self.schedule)}: x={target['x']:.2f}, y={target['y']:.2f} (NED)."
         if angle_distance(ground_truth["yaw"], self.config["person"]["yaw_rad"]) > self.config["yaw_tolerance_rad"]:
             return f"Face the frozen person heading: {math.degrees(self.config['person']['yaw_rad']):.1f} degrees NED."
@@ -382,7 +388,7 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
                   if abs(t - stamp) <= 0.5 * self.stability_window]
         if len(window) < self.stability_min_samples:
             errors.append("insufficient synchronized stability samples")
-        elif any(math.dist(s["center"], [target["x"], target["y"]]) > self.config["position_tolerance_m"]
+        elif any(math.dist(s["center"], [target["x"], target["y"]]) > self.person_position_tolerance
                  or angle_distance(s["yaw"], self.config["person"]["yaw_rad"]) > self.config["yaw_tolerance_rad"] for s in window):
             errors.append("person moved outside the target/orientation tolerance")
         else:

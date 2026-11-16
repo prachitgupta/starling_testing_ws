@@ -20,6 +20,7 @@ import yaml
 from residual_certificate import certificate, split_rank
 
 VERSION = 2
+STARLING_FIXED_CAMERA_YAW_RAD = math.radians(84.426)
 PIPELINE_FILES = (
     "lqr.py", "min_control_qp.py", "postprocess_residual_calibration.py",
     "residual_certificate.py", "waypoint_transformer.py", "hrrt_star.py",
@@ -505,10 +506,15 @@ def init_survey(args):
         "perception_fingerprint": perception_fingerprint(source, perception),
         "locations": grid_locations(args.bounds, args.spacing),
         "spacing_m": args.spacing, "visits": args.visits, "checks_per_visit": args.checks,
-        "interval_s": args.interval, "seed": args.seed, "hover": [*args.hover, 0.0],
+        "interval_s": args.interval, "seed": args.seed,
+        # PX4/NED yaw measured at Starling's fixed takeoff heading.  This is
+        # a fixed camera-domain reference, not an operator-provided value.
+        "hover": [*args.hover, STARLING_FIXED_CAMERA_YAW_RAD],
         "person": {"object_id": "person-1", "label": "person", "topic": args.person_topic,
                    "dimensions_m": [args.person_width, args.person_depth], "yaw_rad": 0.0},
-        "position_tolerance_m": 0.05, "yaw_tolerance_rad": math.radians(5),
+        "vehicle_position_tolerance_m": 0.10,
+        "person_position_tolerance_m": 0.20,
+        "yaw_tolerance_rad": math.radians(12),
         "min_confidence": float(perception.get("min_confidence", 0.7)), "freshness_s": 1.0,
         "sync_tolerance_s": 0.1, "match_distance_m": 0.75, "stability_window_s": 0.5,
         "stability_min_samples": 5, "stability_position_tolerance_m": 0.02,
@@ -526,7 +532,7 @@ def main():
     survey.add_argument("--person-width", type=float, required=True)
     survey.add_argument("--person-depth", type=float, required=True)
     survey.add_argument("--person-topic", default="/vicon/person/person")
-    survey.add_argument("--spacing", type=float, default=0.25)
+    survey.add_argument("--spacing", type=float, default=0.50)
     survey.add_argument("--visits", type=int, default=3)
     survey.add_argument("--checks", type=int, default=10)
     survey.add_argument("--interval", type=float, default=1.0)

@@ -64,7 +64,7 @@ read -rp "New experiment version (letters, digits, _ or -): " PERSON_VERSION
 [[ "$PERSON_VERSION" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "Invalid version name"; exit 1; }
 export PERSON_EXP="$PERSON_PKG/fine_tuning/datasets/person_split_cp/$PERSON_VERSION"
 read -rp "Survey bounds XMIN XMAX YMIN YMAX, aligned NED metres: " -a PERSON_BOUNDS
-read -rp "Fixed hover X Y Z_NED (negative Z is up; heading is fixed to 0): " -a PERSON_HOVER
+read -rp "Fixed hover X Y Z_NED (negative Z is up): " -a PERSON_HOVER
 read -rp "Measured person body-local X width, metres: " PERSON_WIDTH
 read -rp "Measured person body-local Y depth, metres: " PERSON_DEPTH
 ros2 run llm_vision_planner person_experiment.py init-survey \
@@ -72,10 +72,10 @@ ros2 run llm_vision_planner person_experiment.py init-survey \
   --bounds "${PERSON_BOUNDS[@]}" --hover "${PERSON_HOVER[@]}" \
   --person-width "$PERSON_WIDTH" --person-depth "$PERSON_DEPTH" \
   --person-topic /vicon/person/person \
-  --spacing 0.25 --visits 3 --checks 10 --interval 1.0 --seed 17
+  --spacing 0.50 --visits 3 --checks 10 --interval 1.0 --seed 17
 ```
 
-The hover/camera heading and person heading are both fixed automatically to **0 degrees aligned NED**; neither is an operator choice. The initializer rejects missing configuration, invalid dimensions and existing version directories. `survey.json` freezes the grid, tolerance values, camera/perception configuration, output path and sampling seed. Defaults are 0.05 m position, 5 degrees heading, 0.1 s synchronization and 1 s observation freshness. Use physically reachable/safe arena bounds; a large grid takes substantial time (30 observations plus movement per point). Read the printed scheduled count before flight: for example, `5850` means 195 grid locations and is probably too large for one practical session unless deliberately intended.
+The person heading is fixed automatically to **0 degrees aligned NED**. The camera heading is fixed automatically to Starling's measured PX4/NED takeoff heading, **84.426 degrees**, so it matches the vehicle's stable camera orientation; neither value is an operator choice. The initializer rejects missing configuration, invalid dimensions and existing version directories. `survey.json` freezes the grid, tolerance values, camera/perception configuration, output path and sampling seed. Defaults are 0.50 m grid spacing, 0.10 m vehicle-hover tolerance, 0.20 m person-target tolerance, 12 degrees heading, 0.1 s synchronization and 1 s observation freshness. Use physically reachable/safe arena bounds; a large grid takes substantial time (30 observations plus movement per point). Read the printed scheduled count before flight.
 
 ## 2. Hover and survey the restricted workspace
 

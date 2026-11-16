@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -46,8 +47,10 @@ def collection_preflight(context):
     manifest = checked_manifest(manifest_path, "survey" if mode == "survey" else "experiment")
     survey = manifest if mode == "survey" else manifest["domain"]["survey"]
     verify_survey_profile(survey)
-    if abs(float(survey["person"]["yaw_rad"])) > 1e-12 or abs(float(survey["hover"][3])) > 1e-12:
-        raise RuntimeError("version 2.0 fixes hover and person yaw to 0 degrees NED; create a new survey manifest")
+    if abs(float(survey["person"]["yaw_rad"])) > 1e-12:
+        raise RuntimeError("version 2.0 fixes person yaw to 0 degrees NED; create a new survey manifest")
+    if not math.isfinite(float(survey["hover"][3])):
+        raise RuntimeError("survey hover camera yaw must be finite")
     if file_hash(params) != survey["params_sha256"]:
         raise RuntimeError("params_file differs from frozen survey configuration")
     installed_script = prefix / "lib" / "llm_vision_planner" / "person_experiment.py"

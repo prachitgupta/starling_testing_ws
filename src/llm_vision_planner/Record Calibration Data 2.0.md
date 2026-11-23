@@ -209,6 +209,26 @@ The frozen loader accepts only the matching `Dcal.scored.csv` and adjacent certi
 
 ## 7. Runtime modes and recovery
 
+Select the residual domain at launch; both choices use the same
+`full_plot.launch.py`:
+
+```bash
+# Perception/environment residual certificate from this hardware workflow.
+ros2 launch llm_vision_planner full_plot.launch.py \
+  calibration_mode:=env_uncertainty calibration_csv:="$PERSON_EXP/Dcal.scored.csv" \
+  delta:="$PERSON_DELTA"
+
+# Test-derived Case-A planner-only demonstration (fixed offline radius).
+ros2 launch llm_vision_planner full_plot.launch.py \
+  calibration_mode:=planner_only \
+  planner_only_calibration_csv:="$PERSON_PKG/fine_tuning/datasets/planner_only_case_a/Dcal.scored.csv" \
+  delta:=0.10
+```
+
+The second command uses exact/Vicon obstacle boxes on both sides and excludes
+environment uncertainty. It is a demonstration certificate, not a substitute
+for the person-only hardware certificate produced above.
+
 Do not launch a new hardware mission merely to view results. For subsequent separately approved mission testing, set `calibration_csv` to the absolute `$PERSON_EXP/Dcal.scored.csv` and `delta` to the frozen value in both gateway and contraction verifier (the existing `full_plot.launch.py` forwards both). The ordinary calibrated mode uses frozen split CP. To intentionally select the retained ACP mode in an already running interactive system:
 
 ```bash
@@ -247,3 +267,154 @@ colcon test-result --verbose
 ```
 
 Replay uses isolated test observations; it is not empirical evidence. Live guided manifests reject replay/simulated-clock collection. Legacy free-form recording and bag replay remain available with `collection_mode:=legacy`; they do not produce a version-2 frozen certificate.
+
+## 8. Five-flight tube-containment study
+
+This optional study produces the requested side-by-side hardware figure: every
+row is one flight, the left panel applies the fixed Case-A planner-only tube,
+and the right panel applies the fixed perception/environment-aware tube to the
+**same recorded trajectory and executed Transformer/QP reference**. The person,
+start, goal, language prompt, checkpoint, controller settings and ground-truth
+layout stay fixed across all five flights. Natural changes in the live
+perception output may still produce different Transformer plans. Do not move
+the person, tune either certificate, or select only favorable flights after
+seeing their trajectories.
+
+### 8.1 Freeze the study inputs before flying
+
+Use the environment-aware certificate generated in Section 6 and the existing
+Case-A `shortest`/`balanced`, language-regret, beta=1 planner-only certificate.
+The `_400` path below is intentional: the similarly named certificate without
+that suffix records beta=2 and must not be presented as beta=1 evidence.
+
+```bash
+export FLIGHT_STUDY="$PERSON_EXP/flight_tube_study"
+export FLIGHT_LOG_ROOT="$FLIGHT_STUDY/raw_runs"
+export ENV_TUBE_CERT="$PERSON_EXP/split_certificate.json"
+export PLANNER_TUBE_CERT="$PERSON_PKG/fine_tuning/datasets/planner_only_case_a_400/split_certificate.json"
+mkdir -p "$FLIGHT_LOG_ROOT" "$FLIGHT_STUDY/results"
+
+python3 - "$ENV_TUBE_CERT" "$PLANNER_TUBE_CERT" <<'PY'
+import json, math, pathlib, sys
+for label, name in zip(("environment-aware", "planner-only beta=1"), sys.argv[1:]):
+    path = pathlib.Path(name).expanduser().resolve()
+    data = json.loads(path.read_text())
+    radius = data.get("calibrated_radius_m")
+    if data.get("quantile_unbounded") or radius is None or not math.isfinite(float(radius)):
+        raise SystemExit(f"{label} certificate has no finite radius: {path}")
+    print(f"{label}: radius={float(radius):.6f} m, delta={data.get('delta')}, file={path}")
+planner = json.loads(pathlib.Path(sys.argv[2]).read_text())
+if float(planner.get("beta", float("nan"))) != 1.0:
+    raise SystemExit("planner-only certificate is not beta=1")
+PY
+```
+
+Write the five planned flight labels into the lab notebook before Flight 1.
+Five flights are a small demonstration set; keeping all five attempts prevents
+the final 5/5 number from being created by rerunning and retaining only passes.
+
+### 8.2 Record one immutable log directory per flight
+
+Run the normal mission once for each flight. `full_plot.launch.py` already
+starts the passive `mission_data_logger.py` process when `log_mission:=true`;
+no second odometry publisher or flight-control node is added. The logger saves
+the verified plan, executed QP reference, perceived/ground-truth obstacle
+messages, mission state, PX4 odometry and timing metadata. It never publishes a
+control command.
+
+Use the environment-aware mode for every operational flight so the active
+safety policy is not changed between trials. The planner-only tube is applied
+offline to those exact same logs:
+
+```bash
+ros2 launch llm_vision_planner full_plot.launch.py \
+  params_file:="$PERSON_PARAMS" \
+  calibration_mode:=env_uncertainty \
+  calibration_csv:="$PERSON_EXP/Dcal.scored.csv" \
+  delta:="$PERSON_DELTA" \
+  log_mission:=true \
+  log_directory:="$FLIGHT_LOG_ROOT"
+```
+
+Complete the approved mission and landing procedure, then stop the launch. The
+logger prints a directory such as
+`$FLIGHT_LOG_ROOT/20261123T120000Z_a1b2c3d4`. Record that exact path as Flight
+1. Restart the complete launch for Flights 2–5 so every flight receives a
+different immutable run directory. After each flight, verify that both files
+exist; do not edit `events.jsonl`:
+
+```bash
+test -s "$FLIGHT_LOG_ROOT/RUN_ID/events.jsonl"
+test -s "$FLIGHT_LOG_ROOT/RUN_ID/metadata.json"
+```
+
+An aborted or failed preselected attempt remains part of the experiment record.
+The plotting command intentionally rejects a run without a complete executed
+reference and time-aligned PX4 odometry; report that failed attempt separately
+rather than silently replacing it.
+
+### 8.3 Generate the side-by-side figure and coverage table
+
+Enter the five printed run directories in the frozen flight order:
+
+```bash
+FLIGHT_RUNS=(
+  "$FLIGHT_LOG_ROOT/RUN_ID_FLIGHT_1"
+  "$FLIGHT_LOG_ROOT/RUN_ID_FLIGHT_2"
+  "$FLIGHT_LOG_ROOT/RUN_ID_FLIGHT_3"
+  "$FLIGHT_LOG_ROOT/RUN_ID_FLIGHT_4"
+  "$FLIGHT_LOG_ROOT/RUN_ID_FLIGHT_5"
+)
+
+FLIGHT_RUN_ARGS=()
+for run in "${FLIGHT_RUNS[@]}"; do
+  FLIGHT_RUN_ARGS+=(--run-dir "$run")
+done
+
+ros2 run llm_vision_planner plot_flight_tube_coverage.py \
+  "${FLIGHT_RUN_ARGS[@]}" \
+  --expected-flights 5 \
+  --planner-certificate "$PLANNER_TUBE_CERT" \
+  --environment-certificate "$ENV_TUBE_CERT" \
+  --output-dir "$FLIGHT_STUDY/results"
+```
+
+The command is offline and does not require a vehicle connection. It writes:
+
+| File | Meaning |
+| --- | --- |
+| `flight_tube_comparison.png` | Five rows × two columns; both fixed tubes are applied to each identical recorded flight |
+| `flight_tube_coverage.csv` | Per-flight maximum/mean time-aligned error, pointwise coverage and whole-flight pass/fail |
+| `flight_tube_coverage.json` | Aggregate covered-flight counts, observed coverage and 95% Wilson intervals |
+
+For odometry sample (k) in flight (i), the plotter evaluates the ideal QP
+reference at the same elapsed time and computes
+
+\[
+d_{ik}=\left\|p^{\mathrm{PX4}}_i(t_k)-\hat p_i(t_k)\right\|_2.
+\]
+
+For fixed tube radius (r_m), pointwise empirical coverage and the stricter
+whole-flight indicator are
+
+\[
+\widehat C^{\mathrm{point}}_{im}
+=\frac{1}{N_i}\sum_k\mathbf 1\{d_{ik}\le r_m\},
+\qquad
+C^{\mathrm{flight}}_{im}
+=\mathbf 1\left\{\max_k d_{ik}\le r_m\right\}.
+\]
+
+The headline `5/5 = 100%` is therefore **observed whole-flight containment for
+these five fixed trials**. Samples within a flight are temporally dependent and
+must not be counted as independent experiments. Even 5/5 has a wide 95% Wilson
+interval (approximately 0.57–1.00), so it is not evidence of a universal 100%
+flight guarantee.
+
+This flight figure is also distinct from the split-conformal theorem. The
+certificate in Section 6 bounds the offline
+Transformer-versus-ground-truth-expert residual under the ideal
+double-integrator/perfect-tracking assumptions. Section 8 additionally checks
+whether the physical UAV centre stayed inside those plan-centred radii. It does
+not recalibrate either tube, establish vehicle-footprint obstacle clearance, or
+replace `test.report.json` as the held-out residual-score coverage result.

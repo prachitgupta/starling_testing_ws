@@ -29,6 +29,8 @@ install(PROGRAMS
   fine_tuning/scripts/person_workspace_survey.py
   fine_tuning/scripts/residual_calibration_recorder.py
   fine_tuning/scripts/postprocess_residual_calibration.py
+  fine_tuning/scripts/calibrate_planner_only.py
+  fine_tuning/scripts/plot_flight_tube_coverage.py
   fine_tuning/scripts/calibration_verifier_gateway.py
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -86,6 +88,14 @@ if(BUILD_TESTING)
   add_test(
     NAME residual_calibration_pipeline
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_residual_calibration_pipeline.py
+  )
+  add_test(
+    NAME planner_only_calibration
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/test/test_planner_only_calibration.py
+  )
+  add_test(
+    NAME flight_tube_coverage
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/test/test_flight_tube_coverage.py
   )
   add_test(
     NAME obstacle_depth

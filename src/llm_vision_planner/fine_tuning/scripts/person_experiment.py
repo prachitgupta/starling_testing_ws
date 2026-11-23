@@ -542,8 +542,12 @@ def init_survey(args):
         raise ValueError("a verified camera calibration and measured depth are required")
     if not 0 < float(perception.get("min_confidence", 0.7)) <= 1:
         raise ValueError("min_confidence must be in (0,1]")
-    require_finite([*args.hover, args.person_width, args.person_depth, args.interval], "survey settings")
-    if min(args.person_width, args.person_depth) <= 0 or min(args.visits, args.checks) <= 0 or args.interval < 1:
+    require_finite([*args.hover, args.person_width, args.person_depth, args.interval,
+                    args.vehicle_position_tolerance, args.person_position_tolerance,
+                    args.stability_position_tolerance, args.yaw_tolerance_deg], "survey settings")
+    if (min(args.person_width, args.person_depth, args.vehicle_position_tolerance,
+            args.person_position_tolerance, args.stability_position_tolerance, args.yaw_tolerance_deg) <= 0
+            or min(args.visits, args.checks) <= 0 or args.interval < 1):
         raise ValueError("positive dimensions/counts and interval >=1 second required")
     return seal(root / "survey.json", {
         "kind": "survey", "output_dir": str(root), "params_file": str(params), "params_sha256": file_hash(params),
@@ -557,12 +561,12 @@ def init_survey(args):
         "hover": [*args.hover, STARLING_FIXED_CAMERA_YAW_RAD],
         "person": {"object_id": "person-1", "label": "person", "topic": args.person_topic,
                    "dimensions_m": [args.person_width, args.person_depth], "yaw_rad": 0.0},
-        "vehicle_position_tolerance_m": 0.10,
-        "person_position_tolerance_m": 0.20,
-        "yaw_tolerance_rad": math.radians(12),
+        "vehicle_position_tolerance_m": args.vehicle_position_tolerance,
+        "person_position_tolerance_m": args.person_position_tolerance,
+        "yaw_tolerance_rad": math.radians(args.yaw_tolerance_deg),
         "min_confidence": float(perception.get("min_confidence", 0.7)), "freshness_s": 1.0,
         "sync_tolerance_s": 0.1, "match_distance_m": 0.75, "stability_window_s": 0.5,
-        "stability_min_samples": 5, "stability_position_tolerance_m": 0.02,
+        "stability_min_samples": 5, "stability_position_tolerance_m": args.stability_position_tolerance,
         "capture_rule": "first scheduled fresh observation after Vicon-only settling; never best-of/retry"})
 
 
@@ -582,6 +586,10 @@ def main():
     survey.add_argument("--checks", type=int, default=10)
     survey.add_argument("--interval", type=float, default=1.0)
     survey.add_argument("--seed", type=int, default=17)
+    survey.add_argument("--vehicle-position-tolerance", type=float, default=0.10)
+    survey.add_argument("--person-position-tolerance", type=float, default=0.20)
+    survey.add_argument("--stability-position-tolerance", type=float, default=0.02)
+    survey.add_argument("--yaw-tolerance-deg", type=float, default=12.0)
     domain = sub.add_parser("freeze-domain")
     domain.add_argument("--survey", required=True)
     prep = sub.add_parser("prepare")

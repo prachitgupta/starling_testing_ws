@@ -72,10 +72,14 @@ ros2 run llm_vision_planner person_experiment.py init-survey \
   --bounds "${PERSON_BOUNDS[@]}" --hover "${PERSON_HOVER[@]}" \
   --person-width "$PERSON_WIDTH" --person-depth "$PERSON_DEPTH" \
   --person-topic /vicon/person/person \
-  --spacing 0.50 --visits 3 --checks 10 --interval 1.0 --seed 17
+  --spacing 0.50 --visits 3 --checks 10 --interval 1.0 --seed 17 \
+  --vehicle-position-tolerance 0.15 \
+  --person-position-tolerance 0.25 \
+  --stability-position-tolerance 0.03 \
+  --yaw-tolerance-deg 10.0
 ```
 
-The person heading is fixed automatically to **0 degrees aligned NED**. The camera heading is fixed automatically to Starling's measured PX4/NED takeoff heading, **84.426 degrees**, so it matches the vehicle's stable camera orientation; neither value is an operator choice. The initializer rejects missing configuration, invalid dimensions and existing version directories. `survey.json` freezes the grid, tolerance values, camera/perception configuration, output path and sampling seed. Defaults are 0.50 m grid spacing, 0.10 m vehicle-hover tolerance, 0.20 m person-target tolerance, 12 degrees heading, 0.1 s synchronization and 1 s observation freshness. Use physically reachable/safe arena bounds; a large grid takes substantial time (30 observations plus movement per point). Read the printed scheduled count before flight.
+The person heading is fixed automatically to **0 degrees aligned NED** and remains checked by the current survey; this command does not remove person-yaw gating. The camera heading is fixed automatically to Starling's measured PX4/NED takeoff heading, **84.426 degrees**, so it matches the vehicle's stable camera orientation. The proof-of-concept command uses a 0.50 m grid, 0.15 m vehicle-hover tolerance, 0.25 m person-target tolerance, 0.03 m person stability tolerance and 10 degrees of vehicle/person yaw tolerance. The initializer rejects missing configuration, invalid dimensions and existing version directories. `survey.json` freezes the grid, tolerance values, camera/perception configuration, output path and sampling seed. The independent Vicon/PX4 frame-alignment gate remains 0.15 m translation error and 5 degrees rotation error. Use physically reachable/safe arena bounds; a large grid takes substantial time. Read the printed scheduled count before flight.
 
 ## 2. Hover and survey the restricted workspace
 

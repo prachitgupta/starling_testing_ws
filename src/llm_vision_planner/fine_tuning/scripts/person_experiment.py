@@ -21,6 +21,8 @@ from residual_certificate import certificate, split_rank
 
 VERSION = 2
 STARLING_FIXED_CAMERA_YAW_RAD = math.radians(84.426)
+HARDWARE_TRANSFORMER_NAME = "HRRT hardware transformer"
+CASE_A_PREFERENCE_TYPES = ("shortest", "balanced")
 PIPELINE_FILES = (
     "lqr.py", "min_control_qp.py", "postprocess_residual_calibration.py",
     "residual_certificate.py", "waypoint_transformer.py", "hrrt_star.py",
@@ -251,6 +253,16 @@ def freeze_domain(config_path):
     return domain
 
 
+def case_a_preferences(layout_index):
+    """Use the exact shortest/balanced prompts from the Transformer dataset generator."""
+    from generate_hrrt_finetuning_dataset import preference_requests
+    requests = preference_requests({"scene_id": int(layout_index), "obstacles": []}, [])
+    selected = [item for item in requests if item["preference_type"] in CASE_A_PREFERENCE_TYPES]
+    if tuple(item["preference_type"] for item in selected) != CASE_A_PREFERENCE_TYPES:
+        raise ValueError("canonical Case-A preferences changed unexpectedly")
+    return selected
+
+
 def prepare(domain_path, counts, delta, seed, task, expert):
     domain = checked_manifest(domain_path, "domain")
     if set(counts) != {"Dtrain", "Dval", "Dcal", "Dtest"} or any(n <= 0 for n in counts.values()):
@@ -258,8 +270,8 @@ def prepare(domain_path, counts, delta, seed, task, expert):
     if split_rank(counts["Dcal"], delta) > counts["Dcal"]:
         raise ValueError("planned Dcal cannot produce a finite split-CP quantile; increase n or preselect a larger delta")
     require_finite([*task["goal"], *task["workspace"], task["clearance_m"]], "task")
-    if not task["l1_text"].strip() or not task["l2_text"].strip():
-        raise ValueError("fixed L1 and L2 are required")
+    if not task["l1_text"].strip():
+        raise ValueError("fixed L1 is required")
     xmin, xmax, ymin, ymax = task["workspace"]
     if xmin >= xmax or ymin >= ymax or task["clearance_m"] < 0:
         raise ValueError("invalid vehicle navigation bounds or clearance")
@@ -273,25 +285,38 @@ def prepare(domain_path, counts, delta, seed, task, expert):
     root = Path(domain["survey"]["output_dir"])
     rng = random.Random(seed)
     splits = {}
+    layout_index = 0
     for split, count in counts.items():
-        splits[split] = [{**rng.choice(domain["locations"]), "split": split,
-                          "trial_id": f"{root.name}-{split}-{i:06d}"} for i in range(count)]
+        splits[split] = []
+        for i in range(count):
+            trial = {**rng.choice(domain["locations"]), "split": split, "layout_index": layout_index,
+                     "trial_id": f"{root.name}-{split}-{i:06d}"}
+            if split in ("Dcal", "Dtest"):
+                preference = rng.choice(case_a_preferences(layout_index))
+                trial.update(preference_type=preference["preference_type"],
+                             preference_text=preference["text"])
+            splits[split].append(trial)
+            layout_index += 1
     measured = splits["Dcal"] + splits["Dtest"]
     rng.shuffle(measured)
     return seal(root / "experiment.json", {
         "kind": "experiment", "domain": domain, "counts": counts, "delta": delta,
         "seed": seed, "task": task, "expert": expert, "splits": splits,
         "collection_schedule": measured, "output_dir": str(root),
-        "sampling": "uniform locations with replacement; fixed task and person orientation",
-        "observations": {"Dtrain": "synthetic geometry", "Dval": "synthetic geometry",
-                         "Dcal": "measured perception/Vicon", "Dtest": "measured perception/Vicon"},
+        "training_model": HARDWARE_TRANSFORMER_NAME,
+        "training_preferences": list(CASE_A_PREFERENCE_TYPES),
+        "sampling": "uniform person locations with replacement; fixed start, goal, task and person orientation",
+        "observations": {"Dtrain": "synthetic geometry; two preferences per layout",
+                         "Dval": "synthetic geometry; two preferences per layout",
+                         "Dcal": "measured perception/Vicon; one frozen preference per trial",
+                         "Dtest": "measured perception/Vicon; one frozen preference per trial"},
         "tracking_assumption": "perfect_tracking_ideal_double_integrator"})
 
 
 def scoring_args(experiment):
     task, survey, expert = experiment["task"], experiment["domain"]["survey"], experiment["expert"]
     return SimpleNamespace(
-        l1_text=task["l1_text"], l2_text=task["l2_text"],
+        l1_text=task["l1_text"], l2_text="",
         start_x=survey["hover"][0], start_y=survey["hover"][1], fixed_z=survey["hover"][2],
         goal_x=task["goal"][0], goal_y=task["goal"][1],
         workspace_x_min=task["workspace"][0], workspace_x_max=task["workspace"][1],
@@ -311,7 +336,8 @@ def synthetic_environment(experiment, trial):
     corners = [[trial["x"] + c*x - s*y, trial["y"] + s*x + c*y]
                for x, y in [(-width/2, -depth/2), (-width/2, depth/2), (width/2, -depth/2), (width/2, depth/2)]]
     z = survey["hover"][2]
-    return {"start": dict(zip(("x", "y", "z"), survey["hover"][:3])),
+    return {"scene_id": trial["layout_index"],
+            "start": dict(zip(("x", "y", "z"), survey["hover"][:3])),
             "goal": {"x": task["goal"][0], "y": task["goal"][1], "z": z},
             "workspace": {"x": task["workspace"][:2], "y": task["workspace"][2:], "z": z},
             "obstacles": [{"object_id": "person-1", "label": "person", "yaw_rad": yaw,
@@ -322,8 +348,9 @@ def synthetic_environment(experiment, trial):
 
 def export_synthetic(experiment_path):
     from hrrt_star import plan_hrrt_star
-    from postprocess_residual_calibration import choose_expert, route_cards
+    from postprocess_residual_calibration import choose_expert
     from finalize_hrrt_sft_dataset import build_prompt, completed_row, write_csv
+    from generate_hrrt_finetuning_dataset import mock_select, route_cards, selected_route
     experiment = checked_manifest(experiment_path, "experiment")
     root = Path(experiment["output_dir"])
     args = scoring_args(experiment)
@@ -338,19 +365,35 @@ def export_synthetic(experiment_path):
             env = synthetic_environment(experiment, trial)
             family = plan_hrrt_star(env["start"], env["goal"], env["obstacles"], env["workspace"],
                                    clearance_m=args.clearance_m, max_iterations=args.hrrt_iterations,
-                                   max_candidates=args.max_candidates, max_waypoints=args.max_waypoints, seed=args.seed)
-            route, selector, _ = choose_expert(family["routes"], env["obstacles"], args)
-            raw = {"sample_id": trial["trial_id"], "scene_id": trial["trial_id"], "environment": env,
-                   "preference": {"text": args.l2_text, "preference_type": "fixed"},
-                   "route_cards": route_cards(family["routes"], env["obstacles"]), "routes": family["routes"]}
-            rows.append(completed_row(raw, None, "train" if split == "Dtrain" else "validation",
-                                      selector, "dss", trial["trial_id"], "waypoints", route["route_id"],
-                                      build_prompt(env, args.l2_text, args.clearance_m), {"waypoints": route["waypoints"]}))
+                                   max_candidates=args.max_candidates, max_waypoints=args.max_waypoints,
+                                   seed=args.seed + trial["layout_index"] * 1000)
+            cards = route_cards(family["routes"], env["obstacles"], args.max_velocity_mps)
+            for preference in case_a_preferences(trial["layout_index"]):
+                if args.expert_selector == "heuristic":
+                    selection = mock_select(preference, cards)
+                    route = selected_route(family["routes"], selection["selected_route_id"])
+                    selector = "heuristic"
+                else:
+                    preference_args = SimpleNamespace(**vars(args))
+                    preference_args.l2_text = preference["text"]
+                    route, selector, _ = choose_expert(family["routes"], env["obstacles"], preference_args)
+                sample_id = f'{trial["trial_id"]}-pref-{preference["preference_type"]}'
+                raw = {"sample_id": sample_id, "scene_id": trial["trial_id"], "environment": env,
+                       "preference": preference, "route_cards": cards, "routes": family["routes"]}
+                rows.append(completed_row(
+                    raw, None, "train" if split == "Dtrain" else "validation", selector, "dss",
+                    sample_id, "waypoints", route["route_id"],
+                    build_prompt(env, preference["text"], args.clearance_m),
+                    {"waypoints": route["waypoints"]}))
         outputs[split] = rows
     for split, rows in outputs.items():
         write_csv(root / f"{split}.csv", rows)
     write_json(root / "synthetic.provenance.json", {
         "experiment_fingerprint": experiment["fingerprint"],
+        "training_model": HARDWARE_TRANSFORMER_NAME,
+        "preferences": list(CASE_A_PREFERENCE_TYPES),
+        "layout_counts": {split: len(experiment["splits"][split]) for split in outputs},
+        "row_counts": {split: len(rows) for split, rows in outputs.items()},
         "files": {split: file_hash(root / f"{split}.csv") for split in outputs}})
 
 
@@ -451,7 +494,9 @@ def score_experiment(experiment_path, device="auto"):
         scored[split] = []
         for trial in experiment["splits"][split]:
             try:
-                record = process_capture(trial["trial_id"], grouped[trial["trial_id"]], args)
+                trial_args = SimpleNamespace(**vars(args))
+                trial_args.l2_text = trial["preference_text"]
+                record = process_capture(trial["trial_id"], grouped[trial["trial_id"]], trial_args)
             except (ValueError, RuntimeError) as exc:
                 append_event(root / "scoring.failures.jsonl", {"trial_id": trial["trial_id"], "reason": str(exc)})
                 raise ValueError(f"scoring stopped at {trial['trial_id']}; no subset certificate written: {exc}") from exc
@@ -548,7 +593,7 @@ def main():
     prep.add_argument("--goal", type=float, nargs=2, required=True)
     prep.add_argument("--workspace", type=float, nargs=4, required=True)
     prep.add_argument("--l1", required=True)
-    prep.add_argument("--l2", required=True)
+    prep.add_argument("--l2", help=argparse.SUPPRESS)
     prep.add_argument("--clearance", type=float, default=0.4)
     prep.add_argument("--expert-selector", choices=("heuristic", "openai"), required=True)
     prep.add_argument("--expert-model", default="gpt-5.4")
@@ -569,7 +614,7 @@ def main():
         elif args.command == "prepare":
             result = prepare(args.domain, dict(Dtrain=args.n_train, Dval=args.n_val, Dcal=args.n_cal, Dtest=args.n_test),
                              args.delta, args.seed, {"goal": args.goal, "workspace": args.workspace,
-                             "l1_text": args.l1, "l2_text": args.l2, "clearance_m": args.clearance},
+                             "l1_text": args.l1, "clearance_m": args.clearance},
                              {"selector": args.expert_selector, "model": args.expert_model, "iterations": args.hrrt_iterations})
         elif args.command == "export-synthetic":
             export_synthetic(args.experiment)

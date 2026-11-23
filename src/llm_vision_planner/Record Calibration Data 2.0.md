@@ -2,7 +2,7 @@
 
 Use this workflow for the initial residual experiments. ACP remains available separately. The vehicle only takes off and holds its initial position during collection; it does not fly the planned task. A trained checkpoint, a completed live survey and new measured data are required. This guide does not supply empirical results or certify flight safety.
 
-The experiment fixes one person's measured dimensions and heading, camera/hover pose, camera calibration, perception settings, start, goal and language preference. The person-location domain is a finite set of tested points, separate from the vehicle's navigation bounds. Synthetic Dtrain/Dval and measured Dcal/Dtest share **only the location sampling law**; synthetic geometry does not reproduce sensor errors. Perfect tracking is a modeling assumption, not evidence of hardware accuracy or exchangeability. Fixed settings and randomized interleaved trials reduce known distribution differences; drift, temporal dependence and unmodeled effects can still invalidate exchangeability.
+The experiment fixes one person's measured dimensions and heading, camera/hover pose, camera calibration, perception settings, start and goal. The **HRRT hardware transformer** is trained on exactly the Case-A `shortest` and `balanced` preferences used by the main Transformer dataset generator. The person-location domain is a finite set of tested points, separate from the vehicle's navigation bounds. Synthetic Dtrain/Dval and measured Dcal/Dtest share **only the location sampling law**; synthetic geometry does not reproduce sensor errors. Perfect tracking is a modeling assumption, not evidence of hardware accuracy or exchangeability. Fixed settings and randomized interleaved trials reduce known distribution differences; drift, temporal dependence and unmodeled effects can still invalidate exchangeability.
 
 ## 1. Setup and preflight (no vehicle motion)
 
@@ -118,7 +118,7 @@ ros2 run llm_vision_planner person_experiment.py freeze-domain --survey "$PERSON
 
 Inspect `survey.map.svg`, `survey.map.csv`, `survey.report.json` and `survey.events.jsonl`. `domain.json` retains **every tested location with zero observed failures** including disconnected sets. It does not fill gaps or claim future 100% detection. Survey observations never enter any dataset split.
 
-Before any measured dataset capture, explicitly choose split sizes, delta, seed, fixed task and expert settings. Freeze these choices before inspecting calibration scores. At delta=0.10 at least 9 Dcal scenes are necessary for a finite quantile; 9 is a mathematical minimum, not a recommended experimental sample size. For delta=0.05 the minimum is 19. Choose larger counts based on the intended study.
+Before any measured dataset capture, explicitly choose split sizes, delta, seed, fixed task and expert settings. Dtrain and Dval counts are **person-layout counts**; export creates two rows per layout, one `shortest` and one `balanced`, from the same HRRT candidate family. Dcal and Dtest counts remain measured-trial counts, with one of those two preferences frozen per trial to avoid treating dependent preference variants as independent conformal samples. Freeze these choices before inspecting calibration scores. At delta=0.10 at least 9 Dcal scenes are necessary for a finite quantile; 9 is a mathematical minimum, not a recommended experimental sample size. For delta=0.05 the minimum is 19. Choose larger counts based on the intended study.
 
 ```bash
 read -rp "Dtrain Dval Dcal Dtest counts: " PERSON_NTRAIN PERSON_NVAL PERSON_NCAL PERSON_NTEST
@@ -127,19 +127,18 @@ read -rp "Sampling seed: " PERSON_SEED
 read -rp "Fixed task goal X Y, NED metres: " -a PERSON_GOAL
 read -rp "Vehicle navigation bounds XMIN XMAX YMIN YMAX: " -a PERSON_NAV
 read -rp "Fixed L1 task text: " PERSON_L1
-read -rp "Fixed L2 preference text: " PERSON_L2
 ros2 run llm_vision_planner person_experiment.py prepare \
   --domain "$PERSON_EXP/domain.json" \
   --n-train "$PERSON_NTRAIN" --n-val "$PERSON_NVAL" --n-cal "$PERSON_NCAL" --n-test "$PERSON_NTEST" \
   --delta "$PERSON_DELTA" --seed "$PERSON_SEED" \
   --goal "${PERSON_GOAL[@]}" --workspace "${PERSON_NAV[@]}" \
-  --l1 "$PERSON_L1" --l2 "$PERSON_L2" --clearance 0.40 \
+  --l1 "$PERSON_L1" --clearance 0.40 \
   --expert-selector heuristic --hrrt-iterations 500
 ```
 
-The example explicitly selects the existing deterministic heuristic expert. For an OpenAI-selected HRRT expert, preselect `--expert-selector openai --expert-model` with your intended model and supply `OPENAI_API_KEY`; API availability and model drift are additional dependencies. Do not change selector after seeing residuals. An infeasible fixed task or planner failure is a failed experiment, not permission to drop difficult scenes.
+The exporter imports the canonical prompt variants directly from `generate_hrrt_finetuning_dataset.py`; no separate L2 text is entered for this proof of concept. The example explicitly selects the same deterministic teacher logic used by that generator: minimum path length for `shortest`, and normalized path-length/clearance compromise for `balanced`. For an OpenAI-selected HRRT expert, preselect `--expert-selector openai --expert-model` with your intended model and supply `OPENAI_API_KEY`; API availability and model drift are additional dependencies. Do not change selector after seeing residuals. An infeasible fixed task or planner failure is a failed experiment, not permission to drop difficult scenes.
 
-`experiment.json` assigns unique scene/trial IDs before observing data, uniformly samples locations with replacement independently for each split, and randomly interleaves Dcal/Dtest assignments. Independently drawn trials may revisit the same location. All rows derived from one scene stay together. Navigation bounds are not replaced by the person domain.
+`experiment.json` assigns unique scene/trial IDs before observing data, uniformly samples locations with replacement independently for each split, and randomly interleaves Dcal/Dtest assignments. Independently drawn trials may revisit the same location. The fixed start and fixed goal are identical across layouts; only person position and the two language preferences are ablated. Both training rows derived from one layout stay in the same split. Navigation bounds are not replaced by the person domain.
 
 ## 4. Prepare synthetic training/validation and freeze the model
 
@@ -148,10 +147,10 @@ ros2 run llm_vision_planner person_experiment.py export-synthetic --experiment "
 python3 "$PERSON_PKG/fine_tuning/scripts/train_hrrt_waypoint_transformer.py" \
   --config "$PERSON_PKG/fine_tuning/configs/hrrt_waypoint_transformer.yaml" \
   --train "$PERSON_EXP/Dtrain.csv" --validation "$PERSON_EXP/Dval.csv" \
-  --output-dir "$PERSON_EXP/checkpoints"
+  --output-dir "$PERSON_EXP/hrrt_hardware_transformer"
 ```
 
-This reuses HRRT generation, expert selection, the existing DSS trainer format and Transformer trainer. Inspect training history; choose the checkpoint using Dtrain/Dval only, before Dcal/Dtest. The trainer writes `checkpoint-epoch-NNN` directories, adjacent `text_encoder`, and `training_summary.json`. Its Dval stopping metric is a selection diagnostic, **not** the held-out Dcal certificate. Do not pass `--smoke-test` for an experimental checkpoint. No existing model is silently substituted.
+This trains the **HRRT hardware transformer** using the same DSS row schema, HRRT generation, preference prompts, expert-selection rules and Transformer trainer as the main dataset. Each person layout generates one shared route family and exactly two rows: `shortest` and `balanced`. Inspect training history; choose the checkpoint using Dtrain/Dval only, before Dcal/Dtest. The trainer writes `checkpoint-epoch-NNN` directories, adjacent `text_encoder`, and `training_summary.json` under `$PERSON_EXP/hrrt_hardware_transformer`. Its Dval stopping metric is a selection diagnostic, **not** the held-out Dcal certificate. Do not pass `--smoke-test` for an experimental checkpoint. No existing model is silently substituted.
 
 ```bash
 read -erp "Absolute selected checkpoint directory produced above: " PERSON_CHECKPOINT

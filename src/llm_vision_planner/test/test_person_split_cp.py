@@ -171,7 +171,7 @@ def prepared(tmp_path):
     complete_survey(tmp_path)
     return exp.prepare(tmp_path / "domain.json", dict(Dtrain=8, Dval=2, Dcal=9, Dtest=5), .1, 17,
                        {"goal": [3.5, 0], "workspace": [-4, 4, -3, 3], "l1_text": "Go to the goal.",
-                        "l2_text": "Stay far from the person.", "clearance_m": .4},
+                        "clearance_m": .4},
                        {"selector": "heuristic", "model": "", "iterations": 500})
 
 
@@ -181,6 +181,9 @@ def test_splits_with_replacement_are_frozen_and_disjoint(tmp_path):
     assert len(set(ids)) == len(ids) == 24
     assert len({s["location_id"] for s in experiment["splits"]["Dcal"]}) <= 2
     assert {s["split"] for s in experiment["collection_schedule"]} == {"Dcal", "Dtest"}
+    assert experiment["training_model"] == "HRRT hardware transformer"
+    assert experiment["training_preferences"] == ["shortest", "balanced"]
+    assert {s["preference_type"] for s in experiment["collection_schedule"]} <= {"shortest", "balanced"}
     assert exp.checked_manifest(tmp_path / "experiment.json") == experiment
     manifest = exp.load_json(tmp_path / "experiment.json")
     manifest["delta"] = .2
@@ -250,10 +253,25 @@ def test_synthetic_export_matches_trainer_schema(tmp_path):
     for split, count in (("Dtrain", 8), ("Dval", 2)):
         with (tmp_path / f"{split}.csv").open() as stream:
             rows = list(csv.DictReader(stream))
-        assert len(rows) == count
+        assert len(rows) == 2 * count
         assert all(r["distillation_mode"] == "dss" for r in rows)
         assert all(len(json.loads(r["completion"])["waypoints"]) >= 2 for r in rows)
         assert all(len(json.loads(r["environment"])["obstacles"]) == 1 for r in rows)
+        by_layout = {}
+        for row in rows:
+            by_layout.setdefault(row["parent_sample_id"].rsplit("-pref-", 1)[0], []).append(row)
+        assert len(by_layout) == count
+        for pair in by_layout.values():
+            assert {row["preference_type"] for row in pair} == {"shortest", "balanced"}
+            assert len({row["environment"] for row in pair}) == 1
+            assert len({row["candidate_routes"] for row in pair}) == 1
+            layout_index = json.loads(pair[0]["environment"])["scene_id"]
+            expected = {item["preference_type"]: item["text"] for item in exp.case_a_preferences(layout_index)}
+            assert {row["preference_type"]: row["preference_text"] for row in pair} == expected
+    provenance = exp.load_json(tmp_path / "synthetic.provenance.json")
+    assert provenance["training_model"] == "HRRT hardware transformer"
+    assert provenance["layout_counts"] == {"Dtrain": 8, "Dval": 2}
+    assert provenance["row_counts"] == {"Dtrain": 16, "Dval": 4}
     with pytest.raises(ValueError, match="replace"):
         exp.export_synthetic(tmp_path / "experiment.json")
 
@@ -273,11 +291,14 @@ def test_scoring_split_integrity_and_planner_failure(tmp_path, monkeypatch, plan
         rows.append(row)
         exp.append_event(tmp_path / "collection.events.jsonl", {"type": "recorded", "trial_id": trial["trial_id"],
                                                                "raw_row_fingerprint": exp.digest(row)})
+    frozen_preferences = {trial["trial_id"]: trial["preference_text"]
+                          for trial in experiment["collection_schedule"]}
     with (tmp_path / "measured.raw.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
     def process(trial_id, raw_rows, args):
+        assert args.l2_text == frozen_preferences[trial_id]
         if planner_failure and "Dtest" in trial_id:
             raise ValueError("planner rejected test scene")
         result = {field: "" for field in post.SCORED_FIELDS}

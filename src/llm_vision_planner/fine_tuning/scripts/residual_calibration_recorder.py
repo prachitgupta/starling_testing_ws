@@ -169,11 +169,18 @@ def parse_objects(value):
     return parsed
 
 
-def ground_truth_aabb(config, marker_pose, world_to_ned):
+def ground_truth_aabb(config, marker_pose, world_to_ned, fixed_yaw_rad=None):
     marker_position, marker_rotation = marker_pose
     translation, rotation = world_to_ned
     center = translation + rotation @ marker_position
-    object_rotation = rotation @ marker_rotation
+    if fixed_yaw_rad is None:
+        object_rotation = rotation @ marker_rotation
+    else:
+        cosine, sine = math.cos(float(fixed_yaw_rad)), math.sin(float(fixed_yaw_rad))
+        object_rotation = np.array(
+            [[cosine, -sine, 0.0], [sine, cosine, 0.0], [0.0, 0.0, 1.0]],
+            dtype=float,
+        )
     width, depth = [float(value) for value in config["dimensions"][:2]]
     local = np.array(
         [[-width / 2, -depth / 2, 0], [-width / 2, depth / 2, 0],
@@ -464,6 +471,9 @@ class ResidualCalibrationRecorder(Node):
             "observer_z": f"{float(pose[2]):.9f}",
         }
 
+    def ground_truth_geometry(self, configured, marker_pose):
+        return ground_truth_aabb(configured, marker_pose, self.world_to_ned)
+
     def try_record(self, configured):
         if self.latest_nominal is None or self.world_to_ned is None:
             return
@@ -477,7 +487,7 @@ class ResidualCalibrationRecorder(Node):
         if history[-1][0] < nominal["timestamp"] + half_window:
             return
         stability_samples = [
-            ground_truth_aabb(configured, pose, self.world_to_ned)
+            self.ground_truth_geometry(configured, pose)
             for timestamp, pose in history
             if abs(timestamp - nominal["timestamp"]) <= half_window
         ]
@@ -503,7 +513,7 @@ class ResidualCalibrationRecorder(Node):
         key = (nominal["capture_id"], configured["object_id"])
         if key in self.recorded:
             return
-        ground_truth = ground_truth_aabb(configured, marker_pose, self.world_to_ned)
+        ground_truth = self.ground_truth_geometry(configured, marker_pose)
         predicted = match_prediction(
             nominal["payload"]["obstacles"], configured, ground_truth, self.match_distance
         )

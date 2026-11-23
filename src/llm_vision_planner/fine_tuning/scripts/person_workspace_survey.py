@@ -225,9 +225,18 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
         if not history:
             return None
         try:
-            return ground_truth_aabb(self.objects[0], history[-1][1], self.world_to_ned)["center"]
+            return self.ground_truth_geometry(self.objects[0], history[-1][1])["center"]
         except (KeyError, TypeError, ValueError):
             return None
+
+    def ground_truth_geometry(self, configured, marker_pose):
+        """Use Vicon translation only; the person footprint stays fixed in NED."""
+        return ground_truth_aabb(
+            configured,
+            marker_pose,
+            self.world_to_ned,
+            fixed_yaw_rad=float(self.config["person"]["yaw_rad"]),
+        )
 
     def refresh_plot(self, force=False):
         if self.plot is None:
@@ -277,7 +286,7 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
         if angle_distance(yaw, hover[3]) > self.config["yaw_tolerance_rad"]:
             return "Vehicle heading differs from the frozen camera heading."
         history = self.object_history[self.objects[0]["topic"]]
-        ground_truth = ground_truth_aabb(self.objects[0], history[-1][1], self.world_to_ned)
+        ground_truth = self.ground_truth_geometry(self.objects[0], history[-1][1])
         if not self.departed and self.previous_target:
             old = [self.previous_target["x"], self.previous_target["y"]]
             if math.dist(ground_truth["center"], old) <= 0.15:
@@ -285,18 +294,14 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
             self.departed = True
         if math.dist(ground_truth["center"], [target["x"], target["y"]]) > self.person_position_tolerance:
             return f"Hover ready. Move to target {self.index + 1}/{len(self.schedule)}: x={target['x']:.2f}, y={target['y']:.2f} (NED)."
-        if angle_distance(ground_truth["yaw"], self.config["person"]["yaw_rad"]) > self.config["yaw_tolerance_rad"]:
-            return f"Face the frozen person heading: {math.degrees(self.config['person']['yaw_rad']):.1f} degrees NED."
         end = history[-1][0]
-        samples = [ground_truth_aabb(self.objects[0], pose, self.world_to_ned) for stamp, pose in history
+        samples = [self.ground_truth_geometry(self.objects[0], pose) for stamp, pose in history
                    if end - self.stability_window <= stamp <= end]
         if len(samples) < self.stability_min_samples:
             return "Hold still; waiting for person stability samples."
         centers = np.array([s["center"] for s in samples])
         if np.max(np.linalg.norm(centers - np.mean(centers, axis=0), axis=1)) > self.stability_position_tolerance:
             return "Hold still."
-        if any(angle_distance(s["yaw"], self.config["person"]["yaw_rad"]) > self.config["yaw_tolerance_rad"] for s in samples):
-            return "Hold the fixed person orientation still."
         return None
 
     def step(self):
@@ -370,7 +375,7 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
         if not history or history[-1][0] < stamp + 0.5 * self.stability_window:
             return
         stamp_gt, pose = min(history, key=lambda item: abs(item[0] - stamp))
-        gt = ground_truth_aabb(self.objects[0], pose, self.world_to_ned)
+        gt = self.ground_truth_geometry(self.objects[0], pose)
         nominal = None
         errors = []
         if abs(stamp_gt - stamp) > self.sync_tolerance:
@@ -384,13 +389,13 @@ class PersonWorkspaceSurvey(ResidualCalibrationRecorder):
             errors += health_errors(scene, nominal, gt, self.config, pending["check_time"], self.previous_frame)
         except (ValueError, TypeError, KeyError) as exc:
             errors.append(f"invalid perception geometry: {exc}")
-        window = [ground_truth_aabb(self.objects[0], p, self.world_to_ned) for t, p in history
+        window = [self.ground_truth_geometry(self.objects[0], p) for t, p in history
                   if abs(t - stamp) <= 0.5 * self.stability_window]
         if len(window) < self.stability_min_samples:
             errors.append("insufficient synchronized stability samples")
         elif any(math.dist(s["center"], [target["x"], target["y"]]) > self.person_position_tolerance
-                 or angle_distance(s["yaw"], self.config["person"]["yaw_rad"]) > self.config["yaw_tolerance_rad"] for s in window):
-            errors.append("person moved outside the target/orientation tolerance")
+                 for s in window):
+            errors.append("person moved outside the target position tolerance")
         else:
             centers = np.array([s["center"] for s in window])
             if np.max(np.linalg.norm(centers - np.mean(centers, axis=0), axis=1)) > self.stability_position_tolerance:

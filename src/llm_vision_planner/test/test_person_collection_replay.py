@@ -8,7 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("scenario", ["success", "miss", "held", "stale", "clock", "restart", "missing", "interrupted", "survey_pause"])
+@pytest.mark.parametrize("scenario", ["success", "rotated_marker", "miss", "held", "stale", "clock", "restart", "missing", "interrupted", "survey_pause"])
 def test_guided_recording(scenario):
     run = subprocess.run([sys.executable, __file__, scenario], cwd=ROOT, text=True,
                          capture_output=True, timeout=45)
@@ -76,7 +76,10 @@ def run_scenario(scenario):
             if not surveying and first_done_at is not None and .1 < t - first_done_at < .9:
                 person_x = .3
             offset = 100 if scenario == "clock" else 0
-            node.object_history["/vicon/person/person"].append((t + offset, (np.array([person_x, 1., 0.]), np.eye(3))))
+            marker_rotation = (np.array([[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]])
+                               if scenario == "rotated_marker" else np.eye(3))
+            node.object_history["/vicon/person/person"].append(
+                (t + offset, (np.array([person_x, 1., 0.]), marker_rotation)))
             node.mission_callback(SimpleNamespace(data=json.dumps({"state": "HOLDING_FOR_PLAN"})))
             scene = {"timestamp": t, "pose": [-3.5, 0, -.5, 0], "healthy": True, "range_is_measured": True,
                      "status": {"detector": "ok", "pose": "ok", "point_cloud": "ok", "detection_frame_id": i,
@@ -112,9 +115,15 @@ def run_scenario(scenario):
         with (root / "measured.raw.csv").open() as stream:
             rows = list(csv.DictReader(stream))
         events = exp.read_events(root / ("survey.events.jsonl" if surveying else "collection.events.jsonl"))
-        if scenario in ("success", "restart"):
+        if scenario in ("success", "rotated_marker", "restart"):
             assert [r["capture_id"] for r in rows] == ["repeat-1", "repeat-2"], (rows, replay.LOG[-8:])
             assert all(r["missed_detection"] == "false" for r in rows)
+            if scenario == "rotated_marker":
+                assert rows[0]["gt_yaw_rad"] == "0.000000000"
+                assert rows[0]["gt_min_x"] == "-0.200000000"
+                assert rows[0]["gt_max_x"] == "0.200000000"
+                assert rows[0]["gt_min_y"] == "0.850000000"
+                assert rows[0]["gt_max_y"] == "1.150000000"
             assert len([e for e in events if e["type"] == "recorded"]) == 2
             assert any("Snapshot recorded: 2/2" in message for _, _, message in replay.LOG)
         elif scenario in ("miss", "held", "stale"):

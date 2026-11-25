@@ -1106,8 +1106,11 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("nominal_depth_source", "perception")
         self.declare_parameter("planner_llm_provider", "transformer")
         self.declare_parameter("planner_model_name", "structured_waypoint_transformer")
+        self.declare_parameter("calibration_mode", "env_uncertainty")
         self.declare_parameter("calibration_csv", "fine_tuning/datasets/calibration_residual_scored.csv")
         self.declare_parameter("delta", 0.20)
+        self.declare_parameter("planner_only_coverage", 0.90)
+        self.declare_parameter("planner_only_beta", 1.0)
         self.declare_parameter("acp_gamma", 0.01)
         self.declare_parameter("acp_state_file", "~/.ros/llm_vision/acp_state.json")
         self.declare_parameter("visualizer", "contraction")
@@ -1178,6 +1181,24 @@ class InteractiveMissionGateway(Node):
         self.declare_parameter("debug", True)
 
         self.environment = str(self.get_parameter("environment").value).strip().lower()
+        self.calibration_mode = str(
+            self.get_parameter("calibration_mode").value
+        ).strip().lower()
+        if self.calibration_mode not in ("env_uncertainty", "planner_only"):
+            raise ValueError("calibration_mode must be env_uncertainty or planner_only")
+        self.planner_only_coverage = float(
+            self.get_parameter("planner_only_coverage").value
+        )
+        self.planner_only_beta = float(self.get_parameter("planner_only_beta").value)
+        if not 0.0 < self.planner_only_coverage < 1.0:
+            raise ValueError("planner_only_coverage must be strictly between zero and one")
+        if not math.isfinite(self.planner_only_beta) or self.planner_only_beta <= 0.0:
+            raise ValueError("planner_only_beta must be finite and positive")
+        self.residual_delta = (
+            round(1.0 - self.planner_only_coverage, 12)
+            if self.calibration_mode == "planner_only"
+            else float(self.get_parameter("delta").value)
+        )
         self.fixed_z = float(self.get_parameter("fixed_z").value)
         self.clearance_m = float(self.get_parameter("clearance_m").value)
         self.default_standoff_m = float(self.get_parameter("default_standoff_m").value)
@@ -1230,11 +1251,19 @@ class InteractiveMissionGateway(Node):
             "z": self.fixed_z,
         }
         configured_mode = str(self.get_parameter("interaction_mode").value).strip().upper()
-        scores = read_scores(str(self.get_parameter("calibration_csv").value))
+        scores = read_scores(
+            str(self.get_parameter("calibration_csv").value),
+            planner_only_beta=(
+                self.planner_only_beta if self.calibration_mode == "planner_only" else None
+            ),
+        )
         split_metadata = None
         try:
-            split_metadata = certificate_from_csv(str(self.get_parameter("calibration_csv").value),
-                                                  float(self.get_parameter("delta").value))
+            split_metadata = certificate_from_csv(
+                str(self.get_parameter("calibration_csv").value),
+                self.residual_delta,
+                self.planner_only_beta if self.calibration_mode == "planner_only" else None,
+            )
         except ValueError:
             if configured_mode != "ADAPTIVE_CONFORMAL_PREDICTION":
                 raise
@@ -1242,7 +1271,7 @@ class InteractiveMissionGateway(Node):
         self.split_certificate_available = split_metadata is not None
         self.acp = AdaptiveResidualCalibration(
             scores,
-            float(self.get_parameter("delta").value), float(self.get_parameter("acp_gamma").value),
+            self.residual_delta, float(self.get_parameter("acp_gamma").value),
             str(self.get_parameter("acp_state_file").value),
             split_metadata)
         if not self.acp.scores:
@@ -1276,6 +1305,11 @@ class InteractiveMissionGateway(Node):
             "MISSION_EXECUTION",
         ):
             raise ValueError("interaction_mode must be ADAPTIVE_CONFORMAL_PREDICTION or MISSION_EXECUTION")
+        if (
+            self.calibration_mode == "planner_only"
+            and self.interaction_mode != "MISSION_EXECUTION"
+        ):
+            raise ValueError("planner_only calibration requires MISSION_EXECUTION split mode")
         self.latest_route_family = None
         self.last_failure = None
         self.calibration_only = bool(self.get_parameter("calibration_only").value)
@@ -1445,7 +1479,8 @@ class InteractiveMissionGateway(Node):
         self.get_logger().info(
             f"interactive gateway ready: intent_provider={self.get_parameter('intent_provider').value}, "
             f"obstacles={obstacle_topic}, obs_safety_bracket={self.obs_safety_bracket}, "
-            f"scene_guard_band={self.scene_guard_band_m:.3f} m, mode={self.interaction_mode}"
+            f"scene_guard_band={self.scene_guard_band_m:.3f} m, "
+            f"mode={self.interaction_mode}, calibration_mode={self.calibration_mode}"
         )
         if self.obs_safety_bracket == "conformal" and self.vision_error_certificate["placeholder"]:
             self.get_logger().warning(
@@ -1480,6 +1515,11 @@ class InteractiveMissionGateway(Node):
         }
 
     def environment_obstacles(self, scene, intent):
+        if self.calibration_mode == "planner_only" and self.environment == "real":
+            return (
+                copy.deepcopy(self.latest_vicon_ground_truth["obstacles"]),
+                copy.deepcopy(self.latest_vicon_ground_truth["obstacles"]),
+            )
         observed = scene["obstacles"]
         if self.obs_safety_bracket == "hardcoded":
             nominal = copy.deepcopy(observed)
@@ -1688,6 +1728,12 @@ class InteractiveMissionGateway(Node):
         requested = str(payload.get("mode", "")).strip().upper()
         if requested not in ("ADAPTIVE_CONFORMAL_PREDICTION", "MISSION_EXECUTION"):
             self.publish_response("MODE_REJECTED", "Unsupported interaction mode.")
+            return
+        if requested == "ADAPTIVE_CONFORMAL_PREDICTION" and self.calibration_mode == "planner_only":
+            self.publish_response(
+                "MODE_REJECTED",
+                "Planner-only calibration is frozen split CP; use mission execution mode.",
+            )
             return
         if requested == "MISSION_EXECUTION" and not self.split_certificate_available:
             self.publish_response("MODE_REJECTED", "Frozen Dcal split certificate is required for mission execution.")
@@ -1995,7 +2041,13 @@ class InteractiveMissionGateway(Node):
         if error:
             self.publish_response("NOT_READY", error)
             return
-        if self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION" and self.environment == "real":
+        if (
+            self.environment == "real"
+            and (
+                self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                or self.calibration_mode == "planner_only"
+            )
+        ):
             error = self.vicon_ground_truth_context_error()
             if error:
                 self.publish_response("GROUND_TRUTH_NOT_READY", error)
@@ -2007,18 +2059,16 @@ class InteractiveMissionGateway(Node):
             self.publish_response("ENVIRONMENT_UNCERTAIN", f"No mission was released: {exc}")
             return
         try:
+            ground_truth_mode = self.environment == "real" and (
+                self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                or self.calibration_mode == "planner_only"
+            )
             goal_obstacles = (
                 self.latest_vicon_ground_truth["obstacles"]
-                if self.environment == "real"
-                and self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                if ground_truth_mode
                 else nominal_obstacles
             )
-            goal_collision_obstacles = (
-                goal_obstacles
-                if self.environment == "real"
-                and self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
-                else planning_obstacles
-            )
+            goal_collision_obstacles = goal_obstacles if ground_truth_mode else planning_obstacles
             goal_relations = normalize_goal_relations(
                 intent.relations,
                 goal_obstacles,
@@ -2026,8 +2076,7 @@ class InteractiveMissionGateway(Node):
                 clearance=self.clearance_m,
                 guard_band=(
                     0.0
-                    if self.environment == "real"
-                    and self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                    if ground_truth_mode
                     else self.scene_guard_band_m
                 ),
                 default_range_half_width=self.default_goal_range_half_width_m,
@@ -2053,7 +2102,11 @@ class InteractiveMissionGateway(Node):
 
         created_at = time.time()
         mission_id = f"M-{int(created_at * 1000)}-{uuid.uuid4().hex[:6]}"
-        snapshot_hash = scene_signature(scene["obstacles"])
+        snapshot_hash = scene_signature(
+            planning_obstacles
+            if self.calibration_mode == "planner_only"
+            else scene["obstacles"]
+        )
         snapshot_id = f"S-{snapshot_hash[:12]}"
         calibration_nominal = self.calibration_nominal_obstacles(
             scene,
@@ -2072,14 +2125,19 @@ class InteractiveMissionGateway(Node):
             "goal_relations": goal_relations,
             "goal_relation_results": goal_relation_results,
             "workspace": copy.deepcopy(self.workspace),
-            "observed_obstacles": copy.deepcopy(scene["obstacles"]),
+            "observed_obstacles": copy.deepcopy(
+                planning_obstacles
+                if self.calibration_mode == "planner_only"
+                else scene["obstacles"]
+            ),
             "nominal_obstacles": copy.deepcopy(nominal_obstacles),
             "expert_obstacles": copy.deepcopy(
                 self.latest_vicon_ground_truth["obstacles"]
-                if self.environment == "real" and self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"
+                if ground_truth_mode
                 else nominal_obstacles
             ),
             "obstacles": planning_obstacles,
+            "calibration_mode": self.calibration_mode,
             "obstacle_safety": self.obstacle_safety_metadata(),
             "created_at": created_at,
             "attempt": 0,
@@ -2262,6 +2320,7 @@ class InteractiveMissionGateway(Node):
             "created_at": mission["created_at"],
             "observed_obstacles": copy.deepcopy(mission["observed_obstacles"]),
             "ground_truth_obstacles": copy.deepcopy(mission["expert_obstacles"]),
+            "calibration_mode": mission.get("calibration_mode", self.calibration_mode),
             "environment_frozen": bool(mission.get("environment_frozen", False)),
             "environment_frozen_at": mission.get("environment_frozen_at"),
             **copy.deepcopy(mission["obstacle_safety"]),
@@ -2379,6 +2438,7 @@ class InteractiveMissionGateway(Node):
             "requested_model": str(self.get_parameter("planner_model_name").value),
             "residual_calibration": self.acp.snapshot(self.interaction_mode == "ADAPTIVE_CONFORMAL_PREDICTION"),
             "interaction_mode": self.interaction_mode,
+            "calibration_mode": self.calibration_mode,
         }
         if mission.get("selected_expert_route"):
             envelope.update(
@@ -2583,6 +2643,11 @@ class InteractiveMissionGateway(Node):
             "tube_colliding_obstacle_ids": tube_status.get("colliding_obstacle_ids", []),
             "tube_minimum_clearance_m": tube_status.get("minimum_clearance_m"),
             "tube_required_radius_m": tube_status.get("required_radius_m"),
+            "tube_required_radius_profile_m": tube_status.get("required_radius_profile_m", []),
+            "conformal_radius_time_s": tube_status.get("conformal_radius_time_s", []),
+            "conformal_radius_profile_m": tube_status.get("conformal_radius_profile_m", []),
+            "conformal_radius_initial_m": tube_status.get("conformal_radius_initial_m"),
+            "conformal_radius_final_m": tube_status.get("conformal_radius_final_m"),
             "q_p_scope": tube_status.get("q_p_scope", "projected trajectory residual bound"),
             "residual_calibration": tube_status.get("residual_calibration", {}),
             **copy.deepcopy(self.active_mission["obstacle_safety"]),
@@ -2699,9 +2764,14 @@ class InteractiveMissionGateway(Node):
         return True
 
     def scene_compatibility_error(self, mission):
+        current = self.latest_scene["obstacles"]
+        if self.calibration_mode == "planner_only" and self.environment == "real":
+            if not self.latest_vicon_ground_truth:
+                return "no current Vicon ground-truth environment"
+            current = self.latest_vicon_ground_truth["obstacles"]
         compatible, reason = scenes_compatible(
             mission["observed_obstacles"],
-            self.latest_scene["obstacles"],
+            current,
             self.scene_position_tolerance_m,
             self.scene_size_tolerance_m,
         )

@@ -23,7 +23,13 @@ except ModuleNotFoundError:
     from min_control_qp import evaluate_sample, generate_trajectory, generate_shared_pair
 
 from postprocess_residual_calibration import residual_score
-from residual_certificate import certificate, certificate_from_csv, resolve_data_path, NO_QUANTILE
+from residual_certificate import (
+    NO_QUANTILE,
+    certificate,
+    certificate_from_csv,
+    resolve_data_path,
+    time_varying_radius_from_quantile,
+)
 
 
 ODOM_QOS = QoSProfile(
@@ -103,35 +109,40 @@ def segment_to_aabb_distance(start, end, minimum, maximum):
 
 
 def evaluate_swept_tube(reference_xy, obstacles, required_radius_m):
-    """Check every piecewise-linear QP segment against expanded obstacle AABBs."""
-    radius = float(required_radius_m)
-    if not math.isfinite(radius) or radius < 0.0:
-        raise ValueError("required tube radius must be finite and non-negative")
+    """Check QP segments against a scalar or per-sample safety radius."""
     if len(reference_xy) < 2:
         return {
             "passed": False,
             "minimum_clearance_m": None,
-            "required_radius_m": radius,
+            "required_radius_m": None,
             "colliding_obstacle_ids": [],
             "reason": "QP reference contains fewer than two samples",
         }
+    if isinstance(required_radius_m, (int, float)):
+        radii = [float(required_radius_m)] * len(reference_xy)
+    else:
+        radii = [float(radius) for radius in required_radius_m]
+    if len(radii) != len(reference_xy) or any(not math.isfinite(radius) or radius < 0.0 for radius in radii):
+        raise ValueError("required tube radius must be finite, non-negative, and match QP samples")
     minimum_clearance = math.inf
     colliding = set()
-    for start, end in zip(reference_xy, reference_xy[1:]):
-        for index, obstacle in enumerate(obstacles, start=1):
+    for index, (start, end) in enumerate(zip(reference_xy, reference_xy[1:])):
+        radius = max(radii[index], radii[index + 1])
+        for obstacle_index, obstacle in enumerate(obstacles, start=1):
             minimum = obstacle.get("min_corner")
             maximum = obstacle.get("max_corner")
             if not isinstance(minimum, list) or not isinstance(maximum, list) or len(minimum) < 2 or len(maximum) < 2:
                 raise ValueError("tube verification requires obstacle min_corner and max_corner")
             clearance = segment_to_aabb_distance(start, end, minimum, maximum) - radius
             if clearance <= 0:
-                colliding.add(str(obstacle.get("object_id", obstacle.get("id", index))))
+                colliding.add(str(obstacle.get("object_id", obstacle.get("id", obstacle_index))))
             minimum_clearance = min(minimum_clearance, clearance)
     passed = not colliding
     return {
         "passed": passed,
         "minimum_clearance_m": None if math.isinf(minimum_clearance) else minimum_clearance,
-        "required_radius_m": radius,
+        "required_radius_m": max(radii),
+        "required_radius_profile_m": radii,
         "colliding_obstacle_ids": sorted(colliding),
         "reason": "" if passed else "the swept QP safety tube intersects an enlarged obstacle",
     }
@@ -167,7 +178,10 @@ class ContractionVisualizer(Node):
             "calibration_csv",
             "fine_tuning/datasets/calibration_residual_scored.csv",
         )
+        self.declare_parameter("calibration_mode", "env_uncertainty")
         self.declare_parameter("delta", 0.20)
+        self.declare_parameter("planner_only_coverage", 0.90)
+        self.declare_parameter("planner_only_beta", 1.0)
         self.declare_parameter("interaction_mode", "MISSION_EXECUTION")
         self.declare_parameter("drone_radius_m", 0.10)
         self.declare_parameter("discretization_allowance_m", 0.0)
@@ -177,14 +191,36 @@ class ContractionVisualizer(Node):
         self.show_window = bool(self.get_parameter("show_window").value)
         self.pose_trail_limit = int(self.get_parameter("pose_trail_limit").value)
         self.calibration_csv = resolve_data_path(str(self.get_parameter("calibration_csv").value))
+        self.calibration_mode = str(
+            self.get_parameter("calibration_mode").value
+        ).strip().lower()
+        if self.calibration_mode not in ("env_uncertainty", "planner_only"):
+            raise ValueError("calibration_mode must be env_uncertainty or planner_only")
+        self.planner_only_coverage = float(
+            self.get_parameter("planner_only_coverage").value
+        )
+        self.planner_only_beta = float(self.get_parameter("planner_only_beta").value)
+        if not 0.0 < self.planner_only_coverage < 1.0:
+            raise ValueError("planner_only_coverage must be strictly between zero and one")
+        if not math.isfinite(self.planner_only_beta) or self.planner_only_beta <= 0.0:
+            raise ValueError("planner_only_beta must be finite and positive")
+        self.residual_delta = (
+            round(1.0 - self.planner_only_coverage, 12)
+            if self.calibration_mode == "planner_only"
+            else float(self.get_parameter("delta").value)
+        )
         try:
-            self.calibration = certificate_from_csv(self.calibration_csv, float(self.get_parameter("delta").value))
+            self.calibration = certificate_from_csv(
+                self.calibration_csv,
+                self.residual_delta,
+                self.planner_only_beta if self.calibration_mode == "planner_only" else None,
+            )
         except ValueError:
             if str(self.get_parameter("interaction_mode").value).strip().upper() != "ADAPTIVE_CONFORMAL_PREDICTION":
                 raise
             # The gateway supplies the adaptive snapshot with each plan. Do not
             # present legacy history as a frozen split certificate at startup.
-            self.calibration = certificate([], float(self.get_parameter("delta").value))
+            self.calibration = certificate([], self.residual_delta)
         self.calibration.update(active_radius_m=self.calibration["calibrated_radius_m"],
                                 active_quantile=self.calibration["calibrated_quantile"])
         self.q_p = self.projected_radius = self.calibration["calibrated_radius_m"] or 0.0
@@ -208,6 +244,7 @@ class ContractionVisualizer(Node):
         self.latest_proposal = None
         self.reference_samples = []
         self.reference_xy = []
+        self.tube_radii_m = []
         self.expert_reference_samples = []
         self.expert_reference_xy = []
         self.pose_trail = []
@@ -311,6 +348,7 @@ class ContractionVisualizer(Node):
         self.latest_verification = None
         self.reference_samples = []
         self.reference_xy = []
+        self.tube_radii_m = []
         self.expert_reference_samples = []
         self.expert_reference_xy = []
         self.pose_trail = []
@@ -343,7 +381,11 @@ class ContractionVisualizer(Node):
                     "sample_count": len(self.reference_xy),
                     "q_p": self.q_p,
                     "q_w": self.q_w,
-                    "q_p_scope": "projected trajectory residual bound",
+                    "q_p_scope": "maximum projected trajectory residual bound",
+                    "conformal_radius_profile_m": self.tube_radii_m,
+                    "conformal_radius_time_s": [float(sample["t"]) for sample in self.reference_samples],
+                    "conformal_radius_initial_m": self.tube_radii_m[0] if self.tube_radii_m else None,
+                    "conformal_radius_final_m": self.tube_radii_m[-1] if self.tube_radii_m else None,
                     "residual_calibration": self.calibration,
                     "trajectory_evaluation": self.trajectory_record,
                     "tube_gate_passed": bool(gate.get("passed", False)),
@@ -353,6 +395,7 @@ class ContractionVisualizer(Node):
                     "reason": gate.get("reason", ""),
                     "llm_prediction_safety_certified": bool(gate.get("passed", False)),
                     "interaction_mode": payload.get("interaction_mode", "MISSION_EXECUTION"),
+                    "calibration_mode": self.calibration_mode,
                     "safety_warning": (
                         "LLM prediction safety not certified: the predicted tube intersects "
                         "an enlarged obstacle. Human approval is required to continue."
@@ -420,7 +463,10 @@ class ContractionVisualizer(Node):
             return True
         self.trajectory_record = {}
         self.calibration = payload.get("residual_calibration") or certificate_from_csv(
-            self.calibration_csv, float(self.get_parameter("delta").value))
+            self.calibration_csv,
+            self.residual_delta,
+            self.planner_only_beta if self.calibration_mode == "planner_only" else None,
+        )
         self.calibration.setdefault("active_radius_m", self.calibration["calibrated_radius_m"])
         self.calibration.setdefault("active_quantile", self.calibration["calibrated_quantile"])
         self.q_p = self.projected_radius = self.calibration["active_radius_m"] or 0.0
@@ -453,35 +499,52 @@ class ContractionVisualizer(Node):
                                       interaction_mode=mode, predicted_samples=trajectory["samples"],
                                       dynamics_model="ideal_planar_double_integrator", frame_id="local_ned",
                                       residual_calibration=self.calibration, limits=trajectory.get("limits", {}))
-        self.optimized_pub.publish(String(data=json.dumps(self.trajectory_record, allow_nan=False)))
         if self.calibration["active_radius_m"] is None:
             self.get_logger().warning(NO_QUANTILE)
             self.plan = None
             self.reference_samples = self.reference_xy = []
+            self.tube_radii_m = []
             return False
         self.plan, self.launched = payload, launched
         self.reference_samples = trajectory["samples"]
         self.reference_xy = [(float(sample["x"][0]), float(sample["x"][1])) for sample in self.reference_samples]
         self.expert_reference_xy = [(float(sample["x"][0]), float(sample["x"][1])) for sample in self.expert_reference_samples]
+        self.tube_radii_m = time_varying_radius_from_quantile(
+            self.calibration["active_quantile"],
+            [float(sample["t"]) for sample in self.reference_samples],
+        ).tolist()
+        self.projected_radius = max(self.tube_radii_m, default=0.0)
+        self.q_p = self.projected_radius
         # Bound ideal-ZOH arc deviation from each plotted/gated chord.
         chord_allowance = max((math.hypot(*a["u"]) * (b["t"] - a["t"]) ** 2 / 8
                                for a, b in zip(self.reference_samples, self.reference_samples[1:])), default=0.0)
-        required_radius = self.drone_radius + self.projected_radius + self.discretization_allowance + chord_allowance
+        required_radii = [
+            self.drone_radius + radius + self.discretization_allowance + chord_allowance
+            for radius in self.tube_radii_m
+        ]
         try:
             self.tube_gate = evaluate_swept_tube(
                 self.reference_xy,
                 payload.get("obstacles", []),
-                required_radius,
+                required_radii,
             )
         except ValueError as exc:
             self.get_logger().error(f"could not verify swept safety tube: {exc}")
             self.tube_gate = {
                 "passed": False,
                 "minimum_clearance_m": None,
-                "required_radius_m": required_radius,
+                "required_radius_m": max(required_radii, default=None),
+                "required_radius_profile_m": required_radii,
                 "colliding_obstacle_ids": [],
                 "reason": str(exc),
             }
+        self.trajectory_record.update(
+            conformal_radius_time_s=[float(sample["t"]) for sample in self.reference_samples],
+            conformal_radius_profile_m=self.tube_radii_m,
+            tube_required_radius_profile_m=required_radii,
+            tube_gate=self.tube_gate,
+        )
+        self.optimized_pub.publish(String(data=json.dumps(self.trajectory_record, allow_nan=False)))
         if launched and not self.tube_gate["passed"] and not self.tube_gate["colliding_obstacle_ids"]:
             self.get_logger().error("refusing launch because tube verification did not complete")
             self.launched = False
@@ -609,11 +672,13 @@ class ContractionVisualizer(Node):
             xs = [point[0] for point in self.reference_xy]
             ys = [point[1] for point in self.reference_xy]
             display_step = max(1, len(self.reference_xy) // 30)
-            for x, y in self.reference_xy[::display_step]:
+            for index in range(0, len(self.reference_xy), display_step):
+                x, y = self.reference_xy[index]
+                radius = self.tube_radii_m[index] if index < len(self.tube_radii_m) else self.q_p
                 axis.add_patch(
                     Circle(
                         (x, y),
-                        self.q_p,
+                        radius,
                         facecolor="#60a5fa",
                         edgecolor="none",
                         alpha=0.10,
@@ -667,11 +732,15 @@ class ContractionVisualizer(Node):
             gate_text = "PASS" if self.tube_gate.get("passed", False) else "WARNING - NOT CERTIFIED"
             clearance = self.tube_gate.get("minimum_clearance_m")
             clearance_text = "unbounded" if clearance is None else f"{float(clearance):.3f} m"
+        radius_text = "--"
+        if self.tube_radii_m:
+            radius_text = f"{self.tube_radii_m[0]:.3f} -> {self.tube_radii_m[-1]:.3f} m"
         self.status_text.set_text(
             f"Scene: {scene_health}\nObjects: {len(observed_obstacles)}\n"
+            f"Tube mode: {self.calibration_mode}\n"
             f"Obstacle safety: {strategy}\nq_obs: {quantile_text}\n"
             f"Placeholder: {'YES' if placeholder else 'NO'}\n"
-            f"Calibrated q: {self.calibration.get('calibrated_quantile')}\nCalibrated radius: {self.calibration.get('calibrated_radius_m')} m\n"
+            f"Calibrated q: {self.calibration.get('calibrated_quantile')}\nTime-varying XY radius: {radius_text}\n"
             f"Adaptive q: {self.calibration.get('adaptive_quantile')}\nAdaptive radius: {self.calibration.get('adaptive_radius_m')} m\n"
             f"Tube gate: {gate_text}\nMinimum clearance: {clearance_text}\nPhase: {phase}"
         )
@@ -693,7 +762,7 @@ class ContractionVisualizer(Node):
                     facecolor="#60a5fa",
                     edgecolor="none",
                     alpha=0.35,
-                    label=rf"Transformer XY radius $r={self.q_p:.2f}$ m",
+                    label=rf"Time-varying {self.calibration_mode} XY radius $0\rightarrow{self.q_p:.2f}$ m",
                 ),
                 Patch(
                     facecolor="#c4b5fd",

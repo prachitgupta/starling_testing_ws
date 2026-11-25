@@ -23,10 +23,32 @@ ros2 daemon start
 read -rsp "OpenAI API key: " OPENAI_API_KEY
 export OPENAI_API_KEY
 TRANSFORMER_CHECKPOINT="$PWD/src/llm_vision_planner/fine_tuning/outputs/final-transformer-vertical-teacher_only_80_10_10/final_transformer_vertical_teacher_only_80_10_10_best/checkpoint"
-RESIDUAL_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_scored.csv"
-DELTA=0.20
+ENV_RESIDUAL_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/calibration_residual_scored.csv"
+PLANNER_ONLY_CSV="$PWD/src/llm_vision_planner/fine_tuning/datasets/planner_only_case_a/Dcal.scored.csv"
+read -rp "Tube mode [env_uncertainty/planner_only]: " CALIBRATION_MODE
+case "$CALIBRATION_MODE" in
+  env_uncertainty)
+    DELTA=0.20
+    PLANNER_ONLY_COVERAGE=0.90
+    PLANNER_ONLY_BETA=1.0
+    OBS_SAFETY_BRACKET=conformal
+    read -rp "Validated vision-calibration CSV (absolute path): " VISION_CERT
+    test -s "$VISION_CERT" || { echo "Missing calibration CSV"; exit 1; }
+    ;;
+  planner_only)
+    DELTA=0.20
+    read -rp "Planner-only coverage [0.90]: " PLANNER_ONLY_COVERAGE
+    PLANNER_ONLY_COVERAGE="${PLANNER_ONLY_COVERAGE:-0.90}"
+    read -rp "Planner-only beta [1.0]: " PLANNER_ONLY_BETA
+    PLANNER_ONLY_BETA="${PLANNER_ONLY_BETA:-1.0}"
+    OBS_SAFETY_BRACKET=hardcoded
+    VISION_CERT="$PWD/src/llm_vision_planner/test/fixtures/calibration_vision_error_dummy.csv"
+    test -s "$PLANNER_ONLY_CSV" || { echo "Generate the planner-only certificate first"; exit 1; }
+    ;;
+  *) echo "Use env_uncertainty or planner_only"; exit 1 ;;
+esac
 
-# Required for Adaptive conformal mode in a real environment.
+# Required for Adaptive conformal and planner-only modes in a real environment.
 read -rp "Chair X width in metres: " CHAIR_WIDTH_M
 read -rp "Chair Y depth in metres: " CHAIR_DEPTH_M
 read -rp "Person X width in metres: " PERSON_WIDTH_M
@@ -50,18 +72,22 @@ print(json.dumps([
 PY
 )"
 
-read -rp "Validated vision-calibration CSV (absolute path): " VISION_CERT
-test -s "$VISION_CERT" || { echo "Missing calibration CSV"; exit 1; }
-
 ros2 launch llm_vision_planner full_plot.launch.py \
+  calibration_mode:="$CALIBRATION_MODE" \
+  calibration_csv:="$ENV_RESIDUAL_CSV" \
+  planner_only_calibration_csv:="$PLANNER_ONLY_CSV" \
   vision_error_calibration_csv:="$VISION_CERT" \
+  obs_safety_bracket:="$OBS_SAFETY_BRACKET" \
   params_file:="$PWD/src/llm_vision_planner/config/llm_vision_planner.yaml" \
   environment:=real \
   interaction_mode:=interactive \
   intent_provider:=openai \
   transformer_checkpoint:="$TRANSFORMER_CHECKPOINT" \
   transformer_device:=auto \
-  calibration_csv:="$RESIDUAL_CSV" delta:="$DELTA" acp_gamma:=0.01 \
+  delta:="$DELTA" \
+  planner_only_coverage:="$PLANNER_ONLY_COVERAGE" \
+  planner_only_beta:="$PLANNER_ONLY_BETA" \
+  acp_gamma:=0.01 \
   acp_state_file:="$HOME/.ros/llm_vision/acp_state.json" \
   log_mission:=true log_directory:="$HOME/.ros/llm_vision/mission_logs" \
   vicon_objects_json:="$VICON_OBJECTS_JSON" \
@@ -79,11 +105,19 @@ dimensions above and omit objects that are not present.
 The vehicle alignment topic is `/vicon/Starling2/Starling2`. `environment:=sim`
 does not use these Vicon inputs and retains the existing simulation behavior.
 
+`calibration_mode:=planner_only` is frozen split CP: Vicon boxes are supplied
+unchanged to the Transformer and the time-varying Case-A tube is shown in the
+contraction display. Keep the web UI in **Mission execution**;
+adaptive conformal mode is rejected for this demonstration. The certificate is
+test-derived and does not include perception or hardware-tracking uncertainty.
+
 From another device on the same network, open
 `http://<ground-station-lan-ip>:8081` once `/llm_vision/mission_state` reports
 `HOLDING_FOR_PLAN`. The `0.0.0.0` value is the server bind address, not the
 address to type into the browser. Select either mode from the left panel before
-submitting the first mission prompt. Review each proposed mission and plan before approving execution.
+submitting the first mission prompt only for `env_uncertainty`; keep **Mission
+execution** selected for `planner_only`. Review each proposed mission and plan
+before approving execution.
 Add `land_after_complete:=false` to the launch command to hold the final goal
 instead of landing automatically.
 

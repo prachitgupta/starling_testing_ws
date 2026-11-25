@@ -309,13 +309,13 @@ def mock_predicted_waypoints(start, goal, perceived, workspace, args):
     return min(payload["routes"], key=lambda route: (route["path_length_m"], route["route_id"]))["waypoints"]
 
 
-def ideal_metric():
+def ideal_metric(q=None, r=None):
     from lqr import B_DOUBLE_INTEGRATOR, solve_care
-    p, k, _ = solve_care()
+    p, k, _ = solve_care(q=q, r=r)
     return B_DOUBLE_INTEGRATOR.copy(), p, k
 
 
-def residual_score(expert_samples, predicted_samples):
+def residual_score(expert_samples, predicted_samples, q=None, r=None, metric_p=None, metric_k=None):
     """Exact interval supremum under ideal zero-order-held controls.
 
     R is quadratic on each interval, so R.T P R is quartic. Check its
@@ -323,7 +323,15 @@ def residual_score(expert_samples, predicted_samples):
     """
     if len(expert_samples) != len(predicted_samples) or not expert_samples:
         raise ValueError("expert and predicted QP samples must share one horizon")
-    b, p, k = ideal_metric()
+    if (metric_p is None) != (metric_k is None):
+        raise ValueError("metric_p and metric_k must be supplied together")
+    if metric_p is None:
+        b, p, k = ideal_metric(q=q, r=r)
+    else:
+        from lqr import B_DOUBLE_INTEGRATOR
+        b = B_DOUBLE_INTEGRATOR.copy()
+        p = np.asarray(metric_p, dtype=float)
+        k = np.asarray(metric_k, dtype=float)
     maximum = None
     for index, (expert, predicted) in enumerate(zip(expert_samples, predicted_samples)):
         if not math.isclose(float(expert["t"]), float(predicted["t"]), abs_tol=1e-9, rel_tol=0):

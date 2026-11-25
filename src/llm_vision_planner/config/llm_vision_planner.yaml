@@ -146,6 +146,7 @@ prompt_generator:
 interactive_mission_gateway:
   ros__parameters:
     environment: real
+    calibration_mode: env_uncertainty
     intent_provider: openai
     openai_intent_model: gpt-5.4-nano
     # perception: perception_detection.py's measured depth (outline + ToF);
@@ -156,6 +157,8 @@ interactive_mission_gateway:
     planner_model_name: structured_waypoint_transformer
     calibration_csv: fine_tuning/datasets/calibration_residual_scored.csv
     delta: 0.20
+    planner_only_coverage: 0.90
+    planner_only_beta: 1.0
     acp_gamma: 0.01
     acp_state_file: ~/.ros/llm_vision/acp_state.json
     visualizer: contraction
@@ -384,6 +387,7 @@ planner_visualizer:
 verify_contraction:
   ros__parameters:
     environment: real
+    calibration_mode: env_uncertainty
     refined_plan_topic: /llm_vision/plan_refined
     candidate_verification_topic: /llm_vision/plan_candidate_verified
     verified_plan_topic: /llm_vision/plan_verified
@@ -404,8 +408,10 @@ verify_contraction:
     max_horizontal_speed_mps: 0.5
     max_horizontal_acceleration_mps2: 0.5
     calibration_csv: fine_tuning/datasets/calibration_residual_scored.csv
-    # Frozen Dcal split certificate; rank ceil((1-delta)*(n+1)), no clamping.
+    # Environment mode uses delta. Planner-only mode uses coverage and beta below.
     delta: 0.20
+    planner_only_coverage: 0.90
+    planner_only_beta: 1.0
     drone_radius_m: 0.10
     # Exact segment/AABB checks need no extra sampling allowance for a piecewise-linear reference.
     discretization_allowance_m: 0.0

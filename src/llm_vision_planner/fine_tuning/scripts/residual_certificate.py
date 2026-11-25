@@ -51,9 +51,16 @@ def resolve_data_path(value):
     return next((p.resolve() for p in candidates if p.is_file()), requested)
 
 
-def read_scores(path, delimiter=","):
+def read_scores(path, delimiter=",", planner_only_beta=None):
     """Only real Transformer/ideal-dynamics rows can calibrate live tubes."""
     path = resolve_data_path(path)
+    beta = None
+    planner_geometry = None
+    if planner_only_beta is not None:
+        beta = float(planner_only_beta)
+        if not math.isfinite(beta) or beta <= 0.0:
+            raise ValueError("planner_only_beta must be finite and positive")
+        planner_geometry = projection_geometry()
     try:
         with path.open(newline="", encoding="utf-8") as stream:
             scores = []
@@ -68,7 +75,13 @@ def read_scores(path, delimiter=","):
                     raise ValueError(f"{path}: duplicate calibration capture")
                 seen.add(key)
                 try:
-                    score = float(row["conformity_score"])
+                    if planner_only_beta is None:
+                        score = float(row["conformity_score"])
+                    else:
+                        residual = float(row["residual_score"])
+                        regret = float(row["language_regret_m"])
+                        rate, gain = planner_geometry
+                        score = max(residual, beta * rate / gain * regret)
                 except (KeyError, TypeError, ValueError) as exc:
                     raise ValueError(f"{path}: invalid score; refusing subset calibration") from exc
                 if not math.isfinite(score) or score < 0:
@@ -102,36 +115,69 @@ def radius_from_quantile(quantile):
     return gain * quantile / rate
 
 
+def time_varying_radius_from_quantile(quantile, time_s, initial_distance=0.0):
+    """Project the contraction transient into XY for one or more elapsed times."""
+    if quantile is None or not math.isfinite(quantile) or quantile < 0:
+        return None
+    initial_distance = float(initial_distance)
+    if not math.isfinite(initial_distance) or initial_distance < 0.0:
+        raise ValueError("initial_distance must be finite and non-negative")
+    time = np.asarray(time_s, dtype=float)
+    if not np.all(np.isfinite(time)) or np.any(time < 0.0):
+        raise ValueError("time_s must be finite and non-negative")
+    rate, gain = projection_geometry()
+    forgetting = np.exp(-rate * time)
+    return gain * (forgetting * initial_distance + (float(quantile) / rate) * (1.0 - forgetting))
+
+
 def certificate(scores, delta, metadata=None):
     scores = list(scores)
     q = split_quantile(scores, delta)
     unbounded = not math.isfinite(q)
+    rate, gain = projection_geometry()
     return {**(metadata or {}),
             "method": "split_cp", "rank": split_rank(len(scores), delta),
             "tracking_assumption": "perfect_tracking_ideal_double_integrator",
             "quantile_unbounded": unbounded,
             "calibrated_quantile": None if unbounded else q,
             "calibrated_radius_m": radius_from_quantile(q),
+            "contraction_rate": rate,
+            "position_projection_gain": gain,
             "calibration_sample_count": len(scores), "delta": delta,
             "calibration_status": "unbounded_insufficient_samples" if unbounded else "valid"}
 
 
-def certificate_from_csv(path, delta):
+def certificate_from_csv(path, delta, planner_only_beta=None):
     path = resolve_data_path(path)
-    result = certificate(read_scores(path), delta)
+    result = certificate(read_scores(path, planner_only_beta=planner_only_beta), delta)
     provenance = path.parent / "split_certificate.json"
     if provenance.is_file():
         frozen = json.loads(provenance.read_text())
-        if path.name != "Dcal.scored.csv" or Path(frozen["calibration_csv"]).resolve() != path.resolve():
+        frozen_csv = Path(frozen["calibration_csv"]).expanduser()
+        if not frozen_csv.is_absolute():
+            frozen_csv = provenance.parent / frozen_csv
+        if path.name != "Dcal.scored.csv" or frozen_csv.resolve() != path.resolve():
             raise ValueError("only the frozen Dcal CSV may calibrate this experiment")
-        if frozen["delta"] != delta:
-            raise ValueError("delta differs from the value chosen before collection")
         if hashlib.sha256(path.read_bytes()).hexdigest() != frozen["calibration_dataset_sha256"]:
             raise ValueError("Dcal CSV changed after certification")
-        for key in ("method", "rank", "calibrated_quantile", "calibration_sample_count"):
-            if frozen.get(key) != result[key]:
-                raise ValueError("frozen split certificate does not match Dcal")
-        result = {**frozen, **result}
+        if planner_only_beta is None:
+            if frozen["delta"] != delta:
+                raise ValueError("delta differs from the value chosen before collection")
+            for key in ("method", "rank", "calibrated_quantile", "calibration_sample_count"):
+                if frozen.get(key) != result[key]:
+                    raise ValueError("frozen split certificate does not match Dcal")
+            result = {**frozen, **result}
+        else:
+            if frozen.get("calibration_mode") != "planner_only":
+                raise ValueError("planner_only_beta is only valid for planner_only calibration")
+            result = {
+                **frozen,
+                **result,
+                "beta": float(planner_only_beta),
+                "runtime_parameterized": True,
+                "base_certificate_delta": frozen.get("delta"),
+                "base_certificate_beta": frozen.get("beta"),
+            }
     elif result["calibration_sample_count"]:
         raise ValueError("frozen split_certificate.json is required; legacy or Dtest scores cannot calibrate split mode")
     return result

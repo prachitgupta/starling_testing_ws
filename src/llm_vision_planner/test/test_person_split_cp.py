@@ -16,7 +16,8 @@ from lqr import A_DOUBLE_INTEGRATOR as A, B_DOUBLE_INTEGRATOR as B, solve_care, 
 from min_control_qp import discrete_dynamics, propagate_state
 from postprocess_residual_calibration import ideal_metric, residual_score
 from residual_certificate import (AdaptiveResidualCalibration, certificate, certificate_from_csv,
-                                  empirical_quantile, read_scores, split_quantile, split_rank)
+                                  empirical_quantile, read_scores, split_quantile, split_rank,
+                                  time_varying_radius_from_quantile)
 
 
 def test_ideal_dynamics_and_shared_metric():
@@ -55,6 +56,12 @@ def test_split_ties_and_no_filtering():
     for bad in (0, 1, -0.1, math.nan):
         with pytest.raises(ValueError):
             split_rank(10, bad)
+
+
+def test_time_varying_radius_starts_at_initial_distance_and_converges():
+    radii = time_varying_radius_from_quantile(2.0, [0.0, 1.0, 100.0])
+    assert radii[0] == pytest.approx(0.0)
+    assert 0.0 < radii[1] < radii[2]
 
 
 def test_acp_history_cannot_activate_split(tmp_path):
@@ -245,6 +252,18 @@ def test_frozen_delta_and_dataset_hash(tmp_path):
     write_scores(path, [1, 2, 3, 5])
     with pytest.raises(ValueError, match="changed"):
         certificate_from_csv(path, .2)
+
+
+def test_frozen_certificate_accepts_adjacent_relative_dcal_path(tmp_path):
+    path = tmp_path / "Dcal.scored.csv"
+    write_scores(path, [1, 2, 3, 4])
+    frozen = certificate(
+        [1, 2, 3, 4],
+        .2,
+        {"calibration_csv": path.name, "calibration_dataset_sha256": exp.file_hash(path)},
+    )
+    exp.write_json(tmp_path / "split_certificate.json", frozen)
+    assert certificate_from_csv(path, .2)["calibrated_quantile"] == 4
 
 
 def test_synthetic_export_matches_trainer_schema(tmp_path):

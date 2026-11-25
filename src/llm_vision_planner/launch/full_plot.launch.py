@@ -38,8 +38,30 @@ def generate_launch_description():
             "final_transformer_vertical_teacher_only_80_10_10_best", "checkpoint"]),
         description="Local structured Transformer checkpoint directory")
     transformer_device_arg = DeclareLaunchArgument("transformer_device", default_value="auto")
-    calibration_csv_arg = DeclareLaunchArgument("calibration_csv", default_value="fine_tuning/datasets/calibration_residual_scored.csv")
+    calibration_mode_arg = DeclareLaunchArgument(
+        "calibration_mode",
+        default_value="env_uncertainty",
+        description="Split-CP tube: env_uncertainty or planner_only.",
+    )
+    calibration_csv_arg = DeclareLaunchArgument(
+        "calibration_csv",
+        default_value="fine_tuning/datasets/calibration_residual_scored.csv",
+        description="Environment-uncertainty Dcal.scored.csv.",
+    )
+    planner_only_calibration_csv_arg = DeclareLaunchArgument(
+        "planner_only_calibration_csv",
+        default_value="fine_tuning/datasets/planner_only_case_a/Dcal.scored.csv",
+        description="Fixed Case-A planner-only Dcal.scored.csv.",
+    )
     delta_arg = DeclareLaunchArgument("delta", default_value="0.20", description="Residual miscoverage; quantile probability=1-delta")
+    planner_only_coverage_arg = DeclareLaunchArgument(
+        "planner_only_coverage", default_value="0.90",
+        description="Planner-only split-conformal coverage in (0,1).",
+    )
+    planner_only_beta_arg = DeclareLaunchArgument(
+        "planner_only_beta", default_value="1.0",
+        description="Planner-only corridor-mismatch regret multiplier.",
+    )
     acp_gamma_arg = DeclareLaunchArgument("acp_gamma", default_value="0.01")
     acp_state_file_arg = DeclareLaunchArgument("acp_state_file", default_value="~/.ros/llm_vision/acp_state.json")
     log_mission_arg = DeclareLaunchArgument("log_mission", default_value="true")
@@ -116,6 +138,17 @@ def generate_launch_description():
         description="Real-ACP Vicon object catalog JSON with object_id, label, topic, and dimensions_m.",
     )
     params_file = LaunchConfiguration("params_file")
+    active_calibration_csv = PythonExpression(
+        [
+            "'",
+            LaunchConfiguration("planner_only_calibration_csv"),
+            "' if '",
+            LaunchConfiguration("calibration_mode"),
+            "' == 'planner_only' else '",
+            LaunchConfiguration("calibration_csv"),
+            "'",
+        ]
+    )
     fixed_goal = {
         "goal_x": ParameterValue(LaunchConfiguration("goal_x"), value_type=float),
         "goal_y": ParameterValue(LaunchConfiguration("goal_y"), value_type=float),
@@ -185,8 +218,15 @@ def generate_launch_description():
                 "intent_provider": LaunchConfiguration("intent_provider"),
                 "planner_llm_provider": "transformer",
                 "planner_model_name": LaunchConfiguration("transformer_checkpoint"),
-                "calibration_csv": LaunchConfiguration("calibration_csv"),
+                "calibration_mode": LaunchConfiguration("calibration_mode"),
+                "calibration_csv": active_calibration_csv,
                 "delta": ParameterValue(LaunchConfiguration("delta"), value_type=float),
+                "planner_only_coverage": ParameterValue(
+                    LaunchConfiguration("planner_only_coverage"), value_type=float
+                ),
+                "planner_only_beta": ParameterValue(
+                    LaunchConfiguration("planner_only_beta"), value_type=float
+                ),
                 "acp_gamma": ParameterValue(LaunchConfiguration("acp_gamma"), value_type=float),
                 "acp_state_file": LaunchConfiguration("acp_state_file"),
                 "visualizer": LaunchConfiguration("visualizer"),
@@ -300,8 +340,15 @@ def generate_launch_description():
         name="verify_contraction",
         output="screen",
         parameters=[params_file, {"environment": LaunchConfiguration("environment"),
-            "calibration_csv": LaunchConfiguration("calibration_csv"),
+            "calibration_mode": LaunchConfiguration("calibration_mode"),
+            "calibration_csv": active_calibration_csv,
             "delta": ParameterValue(LaunchConfiguration("delta"), value_type=float),
+            "planner_only_coverage": ParameterValue(
+                LaunchConfiguration("planner_only_coverage"), value_type=float
+            ),
+            "planner_only_beta": ParameterValue(
+                LaunchConfiguration("planner_only_beta"), value_type=float
+            ),
             "interaction_mode": LaunchConfiguration("interaction_mode")}],
     )
 
@@ -318,7 +365,9 @@ def generate_launch_description():
             goal_x_arg,
             goal_y_arg,
             transformer_checkpoint_arg, transformer_device_arg,
-            calibration_csv_arg, delta_arg, acp_gamma_arg, acp_state_file_arg,
+            calibration_mode_arg, calibration_csv_arg, planner_only_calibration_csv_arg,
+            delta_arg, planner_only_coverage_arg, planner_only_beta_arg,
+            acp_gamma_arg, acp_state_file_arg,
             log_mission_arg, log_directory_arg,
             show_rrt_arg,
             visualizer_arg,
